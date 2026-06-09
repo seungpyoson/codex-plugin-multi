@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
 import { resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -14,14 +14,20 @@ import {
   cancelUnverifiableSuggestedAction,
   consumePromptSidecar,
   externalReviewLaunchedEvent,
+  gitStatusLines,
   parseLifecycleEventsMode,
   parseScopePathsOption,
+  preflightDisclosure,
+  preflightSafetyFields,
   printJson,
   printLifecycleJson,
   scopeBaseForOptions,
+  summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
+import { cleanGitEnv } from "./lib/git-env.mjs";
+import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
@@ -46,6 +52,7 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const PROVIDER_DISPLAY = "Google Antigravity CLI";
 const DEFAULT_TIMEOUT_MS = 900000;
+const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 
 configureState({
   pluginDataEnv: "AGY_PLUGIN_DATA",
@@ -194,6 +201,103 @@ function jobsDir(cwd) {
   return resolveJobsDir(cwd);
 }
 
+function writeSidecar(workspaceRoot, jobId, name, contents) {
+  const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch (err) {
+    if (process.platform !== "win32") throw err;
+  }
+  const file = `${dir}/${name}`;
+  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmpFile, contents ?? "", "utf8");
+    renameSync(tmpFile, file);
+  } catch (e) {
+    try { unlinkSync(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
+function gitStatus(args, cwd, workspaceRoot = null) {
+  return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: gitEnv(cleanGitEnv()),
+  });
+}
+
+function mutationDetectionFailure(error, context = null) {
+  const stderr = String(error?.stderr ?? "").trim().split("\n").find(Boolean);
+  const message = stderr ?? String(error?.message || error).split("\n").find(Boolean) ?? "unknown error";
+  return `mutation_detection_failed: ${context ? `${context}: ` : ""}${message}`;
+}
+
+function prepareMutationContext(invocation) {
+  const context = { checkMutations: true, gitStatusBefore: null, mutations: [] };
+  try {
+    context.gitStatusBefore = gitStatus(
+      ["status", "-s", "--untracked-files=all"],
+      invocation.cwd,
+      invocation.workspace_root,
+    );
+    writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-before.txt", context.gitStatusBefore);
+  } catch (e) {
+    if (isGitBinaryPolicyError(e)) throw e;
+    context.mutations.push(mutationDetectionFailure(e));
+  }
+  return context;
+}
+
+function recordPostRunMutations(invocation, mutationContext) {
+  if (!mutationContext.checkMutations || mutationContext.gitStatusBefore === null) return;
+  let gitStatusAfter = null;
+  try {
+    gitStatusAfter = gitStatus(
+      ["status", "-s", "--untracked-files=all"],
+      invocation.cwd,
+      invocation.workspace_root,
+    );
+    writeGitStatusAfterSidecar(invocation, gitStatusAfter);
+  } catch (e) {
+    if (isGitBinaryPolicyError(e)) throw e;
+    mutationContext.mutations.push(mutationDetectionFailure(e));
+  }
+  if (!gitStatusAfter || gitStatusAfter === mutationContext.gitStatusBefore) return;
+  const beforeLines = new Set(gitStatusLines(mutationContext.gitStatusBefore));
+  mutationContext.mutations.push(...gitStatusLines(gitStatusAfter).filter((line) => !beforeLines.has(line)));
+}
+
+function writeGitStatusAfterSidecar(invocation, gitStatusAfter) {
+  try {
+    writeSidecar(invocation.workspace_root, invocation.job_id, "git-status-after.txt", gitStatusAfter);
+  } catch (e) {
+    process.stderr.write(`agy-companion: warning: sidecar git-status-after.txt write failed: ${e.message}\n`);
+  }
+}
+
+function withMutationReviewFailure(manifest, mutations) {
+  const sourceMutations = Array.isArray(mutations)
+    ? mutations.filter((mutation) => !String(mutation).startsWith("mutation_detection_failed:"))
+    : [];
+  if (!manifest || sourceMutations.length === 0) return manifest;
+  const reviewQuality = manifest.review_quality ?? {};
+  const reasons = new Set(Array.isArray(reviewQuality.semantic_failure_reasons)
+    ? reviewQuality.semantic_failure_reasons
+    : []);
+  reasons.add("source_mutation_detected");
+  return {
+    ...manifest,
+    status: "failed",
+    review_quality: {
+      ...reviewQuality,
+      failed_review_slot: true,
+      semantic_failure_reasons: [...reasons],
+    },
+  };
+}
+
 function buildInvocation({ jobId, mode, cwd, workspaceRoot, binary, model, scope, scopeBase, scopePaths, userPrompt, startedAt }) {
   return {
     job_id: jobId,
@@ -274,7 +378,7 @@ function executionForRecord({ status, pidInfo = null, parsed = null, exitCode = 
   };
 }
 
-function writeRunningRecord(invocation, pidInfo, { promptText, selectedFiles, timeoutMs }) {
+function writeRunningRecord(invocation, pidInfo, mutations, { promptText, selectedFiles, timeoutMs }) {
   const reviewAuditManifest = buildAuditManifest({
     promptText,
     selectedFiles,
@@ -287,7 +391,7 @@ function writeRunningRecord(invocation, pidInfo, { promptText, selectedFiles, ti
   const record = buildJobRecord(
     invocation,
     executionForRecord({ status: "running", pidInfo, reviewAuditManifest, selectedFiles }),
-    [],
+    mutations,
   );
   persistRecord(invocation.workspace_root, record);
 }
@@ -317,6 +421,91 @@ function persistAndPrintScopeFailure(invocation, lifecycleEvents, error) {
   persistRecord(invocation.workspace_root, record);
   printLifecycleJson(record, lifecycleEvents);
   process.exit(2);
+}
+
+function cmdPreflight(rest) {
+  const { options } = parseArgs(rest, {
+    valueOptions: ["mode", "cwd", "binary", "scope", "scope-base", "scope-paths"],
+  });
+  const mode = options.mode;
+  const cwd = commandCwd(options);
+  if (!mode || !PREFLIGHT_MODES.includes(mode)) {
+    fail("bad_args", `--mode must be one of ${PREFLIGHT_MODES.join("|")}; got ${JSON.stringify(mode)}`, {
+      event: "preflight",
+      target: "agy",
+      mode: mode ?? null,
+      cwd,
+      source_content_transmission: "not_sent",
+      ...preflightSafetyFields(),
+      disclosure_note: preflightDisclosure(PROVIDER_DISPLAY),
+    });
+  }
+
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const scopeBase = scopeBaseForOptions(options);
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const {
+    scope,
+    scopeBase: resolvedScopeBase,
+    scopePaths: resolvedScopePaths,
+  } = resolveReviewScope({
+    mode,
+    requestedScope: options.scope ?? null,
+    scopeBase,
+    scopePaths,
+  });
+  const profile = profileForScope(mode, scope);
+  let containment = null;
+  let exitCode = 0;
+  try {
+    containment = setupContainment(profile, cwd);
+    populateScope(profile, cwd, containment.path, {
+      scopeBase: resolvedScopeBase,
+      scopePaths: resolvedScopePaths,
+      workspaceRoot,
+    }, containment);
+    const summary = summarizeScopeDirectory(containment.path);
+    printJson({
+      ok: true,
+      event: "preflight",
+      target: "agy",
+      mode,
+      mode_profile_name: profile.name,
+      cwd,
+      workspace_root: workspaceRoot,
+      containment: profile.containment,
+      scope: profile.scope,
+      scope_base: resolvedScopeBase,
+      scope_paths: resolvedScopePaths,
+      source_content_transmission: "not_sent",
+      ...summary,
+      ...preflightSafetyFields(),
+      disclosure_note: preflightDisclosure(PROVIDER_DISPLAY),
+    });
+  } catch (e) {
+    exitCode = 2;
+    const error = isGitBinaryPolicyError(e) ? "git_binary_rejected" : "scope_failed";
+    printJson({
+      ok: false,
+      event: "preflight",
+      target: "agy",
+      mode,
+      cwd,
+      workspace_root: workspaceRoot,
+      containment: profile.containment,
+      scope: profile.scope,
+      scope_base: resolvedScopeBase,
+      scope_paths: resolvedScopePaths,
+      source_content_transmission: "not_sent",
+      error,
+      error_message: e.message,
+      ...preflightSafetyFields(),
+      disclosure_note: preflightDisclosure(PROVIDER_DISPLAY),
+    });
+  } finally {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+  }
+  process.exit(exitCode);
 }
 
 async function run(rest) {
@@ -408,6 +597,13 @@ async function run(rest) {
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
     fail("prompt_sidecar_failed", error?.message ?? String(error), { target: "agy" });
   }
+  let mutationContext;
+  try {
+    mutationContext = prepareMutationContext(invocation);
+  } catch (error) {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    fail("git_binary_rejected", error?.message ?? String(error), { target: "agy" });
+  }
   printLifecycleJson(
     externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation, null)),
     lifecycleEvents,
@@ -434,7 +630,7 @@ async function run(rest) {
         reviewAuditManifest,
         selectedFiles,
       }),
-      [],
+      mutationContext.mutations,
     );
     persistRecord(invocation.workspace_root, cancelledRecord);
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
@@ -454,7 +650,7 @@ async function run(rest) {
         model: options.model ?? null,
         promptText: sidecarPrompt,
         timeoutMs,
-        onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, {
+        onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, {
           promptText: sidecarPrompt,
           selectedFiles,
           timeoutMs,
@@ -498,7 +694,7 @@ async function run(rest) {
         reviewAuditManifest,
         selectedFiles,
       }),
-      [],
+      mutationContext.mutations,
     );
     persistRecord(invocation.workspace_root, cancelledRecord);
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
@@ -525,9 +721,15 @@ async function run(rest) {
     timeoutMs,
     invocation,
     result: preliminarilyCompleted ? (parsed.result ?? "") : "",
-    status: recordStatus,
-    errorCode: recordErrorCode,
-  });
+      status: recordStatus,
+      errorCode: recordErrorCode,
+    });
+  try {
+    recordPostRunMutations(invocation, mutationContext);
+  } catch (error) {
+    mutationContext.mutations.push(mutationDetectionFailure(error));
+  }
+  reviewAuditManifest = withMutationReviewFailure(reviewAuditManifest, mutationContext.mutations);
   const reviewCompleted = preliminarilyCompleted
     && reviewAuditManifest.review_quality?.failed_review_slot !== true;
   if (!reviewCompleted) {
@@ -549,6 +751,7 @@ async function run(rest) {
       status: recordStatus,
       errorCode: recordErrorCode,
     });
+    reviewAuditManifest = withMutationReviewFailure(reviewAuditManifest, mutationContext.mutations);
   }
   const record = buildJobRecord(invocation, {
     ...execution,
@@ -556,7 +759,7 @@ async function run(rest) {
     reviewAuditManifest,
     sourceFilesForRedaction: sourceFilesForRedaction(selectedFiles),
     sourceRedactionRequired: true,
-  }, []);
+  }, mutationContext.mutations);
   persistRecord(invocation.workspace_root, record);
   if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
   printLifecycleJson(record, lifecycleEvents);
@@ -697,6 +900,10 @@ async function main() {
     doctor(rest);
     return;
   }
+  if (command === "preflight") {
+    cmdPreflight(rest);
+    return;
+  }
   if (command === "run") {
     await run(rest);
     return;
@@ -713,11 +920,14 @@ async function main() {
     cancel(rest);
     return;
   }
-  process.stderr.write("Usage: agy-companion.mjs <doctor|run|status|result|cancel> [options]\n");
+  process.stderr.write("Usage: agy-companion.mjs <doctor|preflight|run|status|result|cancel> [options]\n");
   process.exit(1);
 }
 
 main().catch((error) => {
+  if (isGitBinaryPolicyError(error)) {
+    fail("git_binary_rejected", error.message, { target: "agy" });
+  }
   printJson({
     target: "agy",
     status: "failed",

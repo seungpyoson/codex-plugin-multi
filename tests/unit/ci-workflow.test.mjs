@@ -456,6 +456,7 @@ test("companion foreground cancelled terminal records exit cleanly", () => {
 
 test("companion mutation-detection git calls use safe git resolver", () => {
   for (const rel of [
+    "plugins/agy/scripts/agy-companion.mjs",
     "plugins/claude/scripts/claude-companion.mjs",
     "plugins/gemini/scripts/gemini-companion.mjs",
     "plugins/kimi/scripts/kimi-companion.mjs",
@@ -487,6 +488,7 @@ test("companion mutation-detection git calls use safe git resolver", () => {
 
 test("companion preflight preserves Git binary policy error classification", () => {
   for (const rel of [
+    "plugins/agy/scripts/agy-companion.mjs",
     "plugins/claude/scripts/claude-companion.mjs",
     "plugins/gemini/scripts/gemini-companion.mjs",
     "plugins/kimi/scripts/kimi-companion.mjs",

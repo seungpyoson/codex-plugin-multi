@@ -106,12 +106,19 @@ test("agy foreground lifecycle keeps cancel, sidecar, and stale-job parity hooks
     assert.match(block, /reconcileActiveJobs\(workspaceRoot\);/, `${command} must reconcile stale active jobs`);
   }
 
-  const setupIndex = source.indexOf("containment = setupContainment");
-  const queuedIndex = source.indexOf("const queuedRecord = buildJobRecord(invocation, null, []);");
-  const spawnIndex = source.indexOf("execution = await spawnAgy");
-  const preSpawnCancelIndex = source.indexOf("if (consumeCancelMarker(workspaceRoot, jobId))");
+  const runStart = source.indexOf("async function run(rest)");
+  assert.notEqual(runStart, -1, "expected run command");
+  const runEnd = source.indexOf("\nfunction ", runStart + 1);
+  const runBlock = source.slice(runStart, runEnd === -1 ? source.length : runEnd);
+  const setupIndex = runBlock.indexOf("containment = setupContainment");
+  const queuedIndex = runBlock.indexOf("const queuedRecord = buildJobRecord(invocation, null, []);");
+  const spawnIndex = runBlock.indexOf("execution = await spawnAgy");
+  const preSpawnCancelIndex = runBlock.indexOf("if (consumeCancelMarker(workspaceRoot, jobId))");
   assert.ok(queuedIndex !== -1 && queuedIndex < setupIndex, "queued record must be persisted before scope setup");
   assert.ok(preSpawnCancelIndex !== -1 && preSpawnCancelIndex < spawnIndex, "cancel marker must be consumed before spawn");
+  assert.match(runBlock, /mutationContext = prepareMutationContext\(invocation\);/);
+  assert.match(runBlock, /recordPostRunMutations\(invocation, mutationContext\);/);
+  assert.match(runBlock, /withMutationReviewFailure\(reviewAuditManifest, mutationContext\.mutations\)/);
 
   assert.match(
     source,

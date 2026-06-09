@@ -98,6 +98,26 @@ function writeAgyNoiseMock(dir) {
   ].join("\n"));
 }
 
+function writeAgyMutatingMock(dir) {
+  return writeExecutable(dir, "agy-mutating-mock", [
+    "#!/usr/bin/env node",
+    "const { writeFileSync } = require('node:fs');",
+    "const { join } = require('node:path');",
+    "const args = process.argv.slice(2);",
+    "if (args[0] === 'models') { console.log('verified-local-model'); process.exit(0); }",
+    "const mutationRoot = process.env.AGY_MUTATION_TARGET || process.cwd();",
+    "writeFileSync(join(mutationRoot, 'agy-mutated.txt'), 'AGY target wrote to source workspace\\n', 'utf8');",
+    "console.log('Verdict: APPROVE');",
+    "console.log('Blocking findings');",
+    "console.log('- None. I inspected the selected source and found no blocking issues.');",
+    "console.log('- Scope inspected: I reviewed the supplied selected source packet, including the diff context, file path, and review prompt scope. I checked for source-routing leaks, behavioral regressions, missing tests, and security-sensitive changes.');",
+    "console.log('Non-blocking concerns');",
+    "console.log('- None. The selected source file was reviewed for this scope.');",
+    "console.log('- Residual risk: no additional concern was found after checking the selected source packet against the requested mode, scope base, and expected external-review contract.');",
+    "",
+  ].join("\n"));
+}
+
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "agy-smoke-data-")) } = {}) {
   assert.equal(existsSync(COMPANION), true, "AGY companion entrypoint must exist");
   const result = spawnSync("node", [COMPANION, ...args], {
@@ -127,6 +147,34 @@ test("agy doctor uses a mocked source-free binary and reports readiness without 
     assert.equal(record.source_content_transmission, "not_sent");
     assert.match(record.models.join("\n"), /gemini-3\.1-pro/);
     assert.doesNotMatch(stdout + stderr, /AGY_API_KEY|GOOGLE_API_KEY|selected source body/i);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy preflight validates scoped review setup without launching target or sending source", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-preflight-cwd-"));
+  const binary = writeAgyCaptureMock(cwd);
+  const capturePath = path.join(cwd, "capture.json");
+  const { base, changedFileName } = fixtureBranchDiffRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["preflight", "--mode", "review", "--binary", binary, "--cwd", cwd, "--scope-base", base],
+    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.ok, true);
+    assert.equal(record.event, "preflight");
+    assert.equal(record.target, "agy");
+    assert.equal(record.mode, "review");
+    assert.equal(record.scope, "branch-diff");
+    assert.equal(record.scope_base, base);
+    assert.equal(record.file_count, 1);
+    assert.deepEqual(record.files, [changedFileName]);
+    assert.equal(record.source_content_transmission, "not_sent");
+    assert.equal(existsSync(capturePath), false, "preflight must not launch the AGY target binary");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -178,6 +226,35 @@ for (const mode of ["review", "adversarial-review"]) {
   });
 }
 
+test("agy review fails the review slot when the target mutates source workspace files", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-mutation-cwd-"));
+  const binary = writeAgyMutatingMock(cwd);
+  const { base } = fixtureBranchDiffRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review mutation detection"],
+    { cwd, env: { AGY_MUTATION_TARGET: cwd } },
+  );
+  try {
+    assert.equal(status, 1, `exit ${status}: ${stderr}`);
+    const record = stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    assert.equal(record.status, "failed");
+    assert.equal(record.review_quality.failed_review_slot, true);
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    const result = runCompanion(["result", "--job", record.job_id, "--cwd", cwd], { cwd, dataDir });
+    assert.equal(result.status, 0, `exit ${result.status}: ${result.stderr}`);
+    const persisted = JSON.parse(result.stdout);
+    assert.match(persisted.mutations.join("\n"), /agy-mutated\.txt/);
+    assert.match(
+      persisted.review_metadata.audit_manifest.review_quality.semantic_failure_reasons.join("\n"),
+      /source_mutation_detected/,
+    );
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("agy custom-review uses explicit scope paths without branch-diff fallback", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "agy-custom-cwd-"));
   const binary = writeAgyMock(cwd);
@@ -209,8 +286,9 @@ test("agy custom-review uses explicit scope paths without branch-diff fallback",
 
 test("agy source-bearing review points target at scoped containment, not source cwd", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "agy-containment-cwd-"));
+  const captureDir = mkdtempSync(path.join(tmpdir(), "agy-containment-capture-"));
   const binary = writeAgyCaptureMock(cwd);
-  const capturePath = path.join(cwd, "capture.json");
+  const capturePath = path.join(captureDir, "capture.json");
   const { base } = fixtureBranchDiffRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode", "review", "--foreground", "--lifecycle-events", "jsonl",
@@ -230,6 +308,7 @@ test("agy source-bearing review points target at scoped containment, not source 
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
+    rmTree(captureDir);
   }
 });
 
