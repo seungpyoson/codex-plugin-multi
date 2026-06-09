@@ -40,6 +40,7 @@ import {
   upsertJob,
   writeJobFile,
 } from "./lib/state.mjs";
+import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
@@ -365,6 +366,8 @@ async function run(rest) {
     startedAt,
   });
   const profile = profileForScope(mode, scope);
+  const queuedRecord = buildJobRecord(invocation, null, []);
+  persistRecord(invocation.workspace_root, queuedRecord);
   let containment = null;
   let selectedFiles = [];
   let promptText;
@@ -401,6 +404,7 @@ async function run(rest) {
     writePromptSidecar(jobsDir(workspaceRoot), jobId, promptText);
     sidecarPrompt = consumePromptSidecar(jobsDir(workspaceRoot), jobId) ?? promptText;
   } catch (error) {
+    try { consumePromptSidecar(jobsDir(workspaceRoot), jobId); } catch { /* best-effort prompt sidecar cleanup */ }
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
     fail("prompt_sidecar_failed", error?.message ?? String(error), { target: "agy" });
   }
@@ -408,6 +412,35 @@ async function run(rest) {
     externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation, null)),
     lifecycleEvents,
   );
+
+  if (consumeCancelMarker(workspaceRoot, jobId)) {
+    const reviewAuditManifest = buildAuditManifest({
+      promptText: sidecarPrompt,
+      selectedFiles,
+      timeoutMs,
+      invocation,
+      result: "",
+      status: "cancelled",
+      errorCode: null,
+    });
+    const cancelledRecord = buildJobRecord(
+      invocation,
+      executionForRecord({
+        status: "cancelled",
+        pidInfo: null,
+        parsed: null,
+        exitCode: null,
+        endedAt: new Date().toISOString(),
+        reviewAuditManifest,
+        selectedFiles,
+      }),
+      [],
+    );
+    persistRecord(invocation.workspace_root, cancelledRecord);
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    printLifecycleJson(cancelledRecord, lifecycleEvents);
+    process.exit(0);
+  }
 
   let execution;
   try {
@@ -547,6 +580,7 @@ function status(rest) {
   const { options } = parseArgs(rest, { valueOptions: ["job", "cwd"], booleanOptions: ["all"] });
   const cwd = commandCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  reconcileActiveJobs(workspaceRoot);
   const jobs = listJobs(workspaceRoot);
   if (options.job) {
     const match = jobs.find((job) => job.id === options.job);
@@ -567,6 +601,7 @@ function result(rest) {
   if (!jobId) fail("bad_args", "--job <id> is required");
   const cwd = commandCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  reconcileActiveJobs(workspaceRoot);
   let jobFile;
   try {
     jobFile = resolveJobFile(workspaceRoot, jobId);
@@ -588,6 +623,7 @@ function cancel(rest) {
   if (!options.job) fail("bad_args", "--job <id> is required");
   const cwd = commandCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  reconcileActiveJobs(workspaceRoot);
   const job = listJobs(workspaceRoot).find((entry) => entry.id === options.job);
   if (!job) fail("not_found", `no job with id ${options.job}`);
   if (["completed", "failed", "cancelled", "stale"].includes(job.status)) {

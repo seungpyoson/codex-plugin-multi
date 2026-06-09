@@ -94,6 +94,32 @@ test("agy companion uses prompt sidecars, source hashes, and no raw-source diagn
   assert.doesNotMatch(source, /error_message:\s*[^,\n]*content/i);
 });
 
+test("agy foreground lifecycle keeps cancel, sidecar, and stale-job parity hooks", () => {
+  const source = readFileSync(resolvePath("plugins/agy/scripts/agy-companion.mjs"), "utf8");
+
+  assert.match(source, /import \{ reconcileActiveJobs \} from "\.\/lib\/reconcile\.mjs";/);
+  for (const command of ["status", "result", "cancel"]) {
+    const start = source.indexOf(`function ${command}(rest)`);
+    assert.notEqual(start, -1, `expected ${command} command`);
+    const end = source.indexOf("\nfunction ", start + 1);
+    const block = source.slice(start, end === -1 ? source.length : end);
+    assert.match(block, /reconcileActiveJobs\(workspaceRoot\);/, `${command} must reconcile stale active jobs`);
+  }
+
+  const setupIndex = source.indexOf("containment = setupContainment");
+  const queuedIndex = source.indexOf("const queuedRecord = buildJobRecord(invocation, null, []);");
+  const spawnIndex = source.indexOf("execution = await spawnAgy");
+  const preSpawnCancelIndex = source.indexOf("if (consumeCancelMarker(workspaceRoot, jobId))");
+  assert.ok(queuedIndex !== -1 && queuedIndex < setupIndex, "queued record must be persisted before scope setup");
+  assert.ok(preSpawnCancelIndex !== -1 && preSpawnCancelIndex < spawnIndex, "cancel marker must be consumed before spawn");
+
+  assert.match(
+    source,
+    /catch \(error\) \{\s+try \{ consumePromptSidecar\(jobsDir\(workspaceRoot\), jobId\); \} catch \{ \/\* best-effort prompt sidecar cleanup \*\/ \}/,
+    "prompt sidecar failure path must attempt best-effort sidecar cleanup",
+  );
+});
+
 test("agy state defaults identify the agy adapter", () => {
   const source = readFileSync(resolvePath("plugins/agy/scripts/lib/state.mjs"), "utf8");
 

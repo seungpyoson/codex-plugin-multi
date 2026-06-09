@@ -1,5 +1,5 @@
 ---
-description: Cancel a running AGY-plugin background job. Use Ctrl+C for foreground runs.
+description: Cancel a running AGY-plugin job when ownership can be verified.
 argument-hint: "<job-id> [--force]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
@@ -11,8 +11,8 @@ allowed-tools: Bash(node:*)
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Run `node "<plugin-root>/scripts/agy-companion.mjs" cancel --job "$ARGUMENTS" --cwd "<workspace>"`.
-This command is for background jobs only. Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.
-The companion does not signal attached foreground processes.
+This command records or signals a known running job only when ownership can be verified.
+The companion refuses to signal jobs without verifiable pid ownership.
 For no_pid_info or unverifiable, render `suggested_action` when present and do not invent a PID kill command without an ownership check.
 
 Statuses:

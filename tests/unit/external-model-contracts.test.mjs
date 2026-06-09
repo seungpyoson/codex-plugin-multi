@@ -279,9 +279,14 @@ test("provider-specific external model contracts keep mechanical safety clauses"
       1,
       `${target.path} should not duplicate lifecycle rendering prose`,
     );
-    assert.match(rendered, /resend_confirmation_required/);
-    assert.match(rendered, /--resend-confirmation-approved/);
-    assert.match(rendered, /narrow the source packet/);
+    if (target.provider.workflows.includes("rescue")) {
+      assert.match(rendered, /resend_confirmation_required/);
+      assert.match(rendered, /--resend-confirmation-approved/);
+      assert.match(rendered, /narrow the source packet/);
+    } else {
+      assert.doesNotMatch(rendered, /resend_confirmation_required/);
+      assert.doesNotMatch(rendered, /--resend-confirmation-approved/);
+    }
   }
 
   for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((item) =>

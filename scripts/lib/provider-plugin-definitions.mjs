@@ -56,6 +56,7 @@ function companionProvider({
   workflows = COMPANION_REVIEW_WORKFLOWS,
   setupReadiness,
   resultDescription,
+  delegationDescription,
   synthesizeCustomReview,
 }) {
   const prefix = envPrefix(id);
@@ -68,19 +69,23 @@ function companionProvider({
     setupDescription: `Use when checking ${displayName} ${setupReadiness}.`,
     statusDescription: `Use when listing active or recent ${shortDisplayName}-plugin jobs.`,
     resultDescription: generatedResultDescription,
-    cancelDescription: `Use when cancelling a running ${shortDisplayName}-plugin background job.`,
+    cancelDescription: workflows.includes("rescue")
+      ? `Use when cancelling a running ${shortDisplayName}-plugin background job.`
+      : `Use when cancelling a running ${shortDisplayName}-plugin job.`,
   };
 
   if (workflows.includes("rescue")) {
     descriptionFields.rescueDescription =
       `Use when delegating investigation, fixes, or follow-up rescue work to ${displayName}.`;
     descriptionFields.delegationDescription =
+      delegationDescription ??
       `Use when delegating review, adversarial review, rescue, and setup to ${displayName}.`;
   }
 
   if (workflows.includes("custom-review")) {
     descriptionFields.customReviewDescription = `Use when asking ${displayName} to review explicit files.`;
     descriptionFields.delegationDescription =
+      delegationDescription ??
       `Use when delegating review, adversarial review, custom review, and setup to ${displayName}.`;
   }
 
@@ -216,6 +221,7 @@ export const RELAY_PROVIDER_DEFINITIONS = Object.freeze({
     homeDir: "~/.antigravity",
     workflows: COMPANION_CUSTOM_REVIEW_WORKFLOWS,
     setupReadiness: "installation and authentication readiness",
+    delegationDescription: "Use when delegating AGY reviews to Google Antigravity CLI.",
     synthesizeCustomReview: false,
   }),
   glm: directApiProvider({

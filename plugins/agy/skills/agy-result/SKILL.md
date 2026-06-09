@@ -11,7 +11,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 `<plugin-root>` is `plugins/agy` or an absolute path to that plugin directory. Use skill `relay-agy:agy-result`. Command doc: `plugins/agy/commands/agy-result.md`.
 `<workspace>` is the workspace where the job was launched.
-`<job-id>` is the identifier returned by a background launch or listed by the status workflow.
+`<job-id>` is the identifier returned by a launch or listed by the status workflow.
 Run `node "<plugin-root>/scripts/agy-companion.mjs" result --job "<job-id>" --cwd "<workspace>"`.
 Do not rerun a job from result rendering.
 Return the stored JobRecord output verbatim and use External Model Result Handling.

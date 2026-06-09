@@ -283,8 +283,22 @@ function companionCommandDescription(provider, workflow) {
   if (workflow === "setup") return `Check ${provider.display} installation and authentication readiness.`;
   if (workflow === "status") return `List active or recent ${provider.shortDisplay}-plugin jobs.`;
   if (workflow === "result") return `Show a stored ${provider.shortDisplay}-plugin job result.`;
-  if (workflow === "cancel") return `Cancel a running ${provider.shortDisplay}-plugin background job. Use Ctrl+C for foreground runs.`;
+  if (workflow === "cancel") {
+    return companionSupportsBackground(provider)
+      ? `Cancel a running ${provider.shortDisplay}-plugin background job. Use Ctrl+C for foreground runs.`
+      : `Cancel a running ${provider.shortDisplay}-plugin job when ownership can be verified.`;
+  }
   throw new Error(`unknown companion workflow: ${workflow}`);
+}
+
+function companionSupportsBackground(provider) {
+  return provider.workflows.includes("rescue");
+}
+
+function companionJobIdGuidance(provider) {
+  return companionSupportsBackground(provider)
+    ? "`<job-id>` is the identifier returned by a background launch or listed by the status workflow."
+    : "`<job-id>` is the identifier returned by a launch or listed by the status workflow.";
 }
 
 function companionRunCommand(provider, workflow, afterAuth) {
@@ -433,8 +447,15 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
     return lines(
       sharedHeader(title),
       `Run \`node "<plugin-root>/scripts/${provider.binary}" cancel --job "$ARGUMENTS" --cwd "<workspace>"\`.`,
-      "This command is for background jobs only. Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.",
-      "The companion does not signal attached foreground processes.",
+      ...(companionSupportsBackground(provider)
+        ? [
+            "This command is for background jobs only. Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.",
+            "The companion does not signal attached foreground processes.",
+          ]
+        : [
+            "This command records or signals a known running job only when ownership can be verified.",
+            "The companion refuses to signal jobs without verifiable pid ownership.",
+          ]),
       "For no_pid_info or unverifiable, render `suggested_action` when present and do not invent a PID kill command without an ownership check.",
       "",
       "Statuses:",
@@ -563,7 +584,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       sharedHeader(title),
       `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
       "`<workspace>` is the workspace where the job was launched.",
-      "`<job-id>` is the identifier returned by a background launch or listed by the status workflow.",
+      companionJobIdGuidance(provider),
       `Run \`node "<plugin-root>/scripts/${provider.binary}" result --job "<job-id>" --cwd "<workspace>"\`.`,
       "Do not rerun a job from result rendering.",
       "Return the stored JobRecord output verbatim and use External Model Result Handling.",
@@ -577,10 +598,14 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       sharedHeader(title),
       `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
       "`<workspace>` is the workspace where the job was launched.",
-      "`<job-id>` is the identifier returned by a background launch or listed by the status workflow.",
+      companionJobIdGuidance(provider),
       `Run \`node "<plugin-root>/scripts/${provider.binary}" cancel --job "<job-id>" --cwd "<workspace>"\`.`,
-      "Cancel is for background jobs only.",
-      "Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.",
+      ...(companionSupportsBackground(provider)
+        ? [
+            "Cancel is for background jobs only.",
+            "Foreground runs are owned by the active terminal; interrupt them with Ctrl+C.",
+          ]
+        : ["Cancel records or signals a known running job only when ownership can be verified."]),
       "For no_pid_info or unverifiable, render `suggested_action` when present and do not invent a PID kill command without an ownership check.",
       secretSafetyContract(),
     );
@@ -628,11 +653,15 @@ function companionDelegationSkillDoc(target) {
     `\`<plugin-root>\` is \`plugins/${provider.plugin}\` or an absolute path to that plugin directory. Use skill \`${codexPluginName(provider)}:${skillName}\`.`,
     "",
     runLines,
-    "Continue a job:",
-    `- \`${companionContinueCommand(provider, "--job \"<job-id>\" --foreground --lifecycle-events markdown --cwd \"<workspace>\" -- \"<follow-up>\"")}\``,
-    "- If a continue attempt returns `resend_confirmation_required`, do not retry automatically. Rerun with `--resend-confirmation-approved` only after explicit operator confirmation, or narrow the source packet.",
-    "",
-    "Cancel a background job:",
+    ...(workflowSet.has("rescue")
+      ? [
+          "Continue a job:",
+          `- \`${companionContinueCommand(provider, "--job \"<job-id>\" --foreground --lifecycle-events markdown --cwd \"<workspace>\" -- \"<follow-up>\"")}\``,
+          "- If a continue attempt returns `resend_confirmation_required`, do not retry automatically. Rerun with `--resend-confirmation-approved` only after explicit operator confirmation, or narrow the source packet.",
+          "",
+        ]
+      : []),
+    companionSupportsBackground(provider) ? "Cancel a background job:" : "Cancel a job:",
     `- \`node "<plugin-root>/scripts/${provider.binary}" cancel --job "<job-id>" --cwd "<workspace>"\``,
     "",
     "Run setup:",
@@ -640,7 +669,7 @@ function companionDelegationSkillDoc(target) {
     "",
     ...(maxSteps ? [maxSteps, ""] : []),
     "`<workspace>` is the repository or bundle directory to review. `<focus>` is the user's review prompt or focus area.",
-    "`<job-id>` is the identifier returned by a background launch or listed by the status workflow.",
+    companionJobIdGuidance(provider),
     "",
     reviewOnlyContract(),
     workflowSet.has("rescue") ? rescueContract() : "",

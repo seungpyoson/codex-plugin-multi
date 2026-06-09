@@ -27,6 +27,7 @@ const credentialResolutionSchema = JSON.parse(readFileSync(
 ));
 
 const DIFF_SOURCE_PACKAGE_COPY_PATHS = [
+  "plugins/agy/scripts/lib/diff-source.mjs",
   "plugins/api-reviewers/scripts/lib/diff-source.mjs",
   "plugins/claude/scripts/lib/diff-source.mjs",
   "plugins/gemini/scripts/lib/diff-source.mjs",
@@ -36,7 +37,8 @@ const DIFF_SOURCE_PACKAGE_COPY_PATHS = [
 
 const DIFF_SOURCE_CPD_PATHS = [
   "scripts/lib/diff-source.mjs",
-  ...DIFF_SOURCE_PACKAGE_COPY_PATHS,
+  // AGY scripts are already excluded from Sonar analysis as a whole.
+  ...DIFF_SOURCE_PACKAGE_COPY_PATHS.filter((path) => !path.startsWith("plugins/agy/")),
   "scripts/ci/sync-diff-source.mjs",
 ];
 
@@ -503,6 +505,7 @@ test("companion preflight preserves Git binary policy error classification", () 
 
 test("scope population git calls use authoritative workspace root", () => {
   for (const rel of [
+    "plugins/agy/scripts/lib/scope.mjs",
     "plugins/claude/scripts/lib/scope.mjs",
     "plugins/gemini/scripts/lib/scope.mjs",
     "plugins/kimi/scripts/lib/scope.mjs",
@@ -519,6 +522,7 @@ test("scope population git calls use authoritative workspace root", () => {
   }
 
   for (const rel of [
+    "plugins/agy/scripts/agy-companion.mjs",
     "plugins/claude/scripts/claude-companion.mjs",
     "plugins/gemini/scripts/gemini-companion.mjs",
     "plugins/kimi/scripts/kimi-companion.mjs",

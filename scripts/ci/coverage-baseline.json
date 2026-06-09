@@ -712,7 +712,7 @@
     },
     "plugins/agy/scripts/lib/diff-source.mjs": {
       "lines": 0,
-      "branches": 0,
+      "branches": 100,
       "functions": 0
     },
     "plugins/agy/scripts/lib/external-model-failure-catalog.mjs": {
@@ -781,6 +781,11 @@
       "functions": 0
     },
     "plugins/agy/scripts/lib/provider-route-policy.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/reconcile.mjs": {
       "lines": 0,
       "branches": 0,
       "functions": 0

@@ -430,7 +430,7 @@ test("agy timeout returns terminal timeout without retry", () => {
   }
 });
 
-test("agy cancel rejects foreground and reports background cancel contract", () => {
+test("agy cancel reports not_found without source transmission", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "agy-cancel-cwd-"));
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["cancel", "--job", "missing-job", "--cwd", cwd],
