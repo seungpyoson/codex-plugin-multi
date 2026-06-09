@@ -545,13 +545,12 @@ test("companion reviewer docs require sandbox-first source-send execution", () =
   }
 });
 
-test("AGY reviewer docs avoid direct API approval-token and route wording", () => {
+test("AGY reviewer docs avoid direct API approval-token wording", () => {
   for (const docPath of agySourceReviewDocPaths()) {
     const doc = readRepoFile(docPath);
     assert.match(doc, /Google Antigravity CLI/, docPath);
     assert.doesNotMatch(doc, /approval_token\.value|grant_approval_token|approval-request/, docPath);
     assert.doesNotMatch(doc, /direct API|direct_api/i, docPath);
-    assert.doesNotMatch(doc, /selected_route|route_step|route_steps|fallback_reason/, docPath);
   }
 });
 

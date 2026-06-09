@@ -80,6 +80,13 @@ test("agy companion uses prompt sidecars, source hashes, and no raw-source diagn
   assert.match(source, /writePromptSidecar|consumePromptSidecar|prompt sidecar/i);
   assert.match(source, /buildReviewAuditManifest/);
   assert.match(source, /content_hash/);
+  assert.match(source, /import \{ gitEnv, resolveGitBinary \} from "\.\/lib\/git-binary\.mjs";/);
+  assert.match(source, /import \{ cleanGitEnv \} from "\.\/lib\/git-env\.mjs";/);
+  const gitHelper = /function git[\s\S]*?\n}\n\nfunction realpathOrResolved/.exec(source);
+  assert.ok(gitHelper, "expected AGY branch-diff git helper");
+  assert.match(gitHelper[0], /spawnSync\(resolveGitBinary\(\{ cwd, workspaceRoot \}\),/);
+  assert.match(gitHelper[0], /env:\s*gitEnv\(cleanGitEnv\(\)\)/);
+  assert.doesNotMatch(gitHelper[0], /spawnSync\("git"/);
   assert.doesNotMatch(source, /selected_source[\s\S]*content\s*:/);
   assert.doesNotMatch(source, /error_message:\s*[^,\n]*content/i);
 });

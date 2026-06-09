@@ -735,6 +735,11 @@
       "branches": 0,
       "functions": 0
     },
+    "plugins/agy/scripts/lib/git-env.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
     "plugins/agy/scripts/lib/git.mjs": {
       "lines": 0,
       "branches": 0,
@@ -791,6 +796,11 @@
       "functions": 0
     },
     "plugins/agy/scripts/lib/scope.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/agy/scripts/lib/state.mjs": {
       "lines": 0,
       "branches": 0,
       "functions": 0

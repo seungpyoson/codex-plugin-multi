@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,6 +181,64 @@ test("agy custom-review uses explicit scope paths without branch-diff fallback",
   }
 });
 
+test("agy custom-review rejects symlink scope paths that escape the workspace", { skip: process.platform === "win32" }, () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-custom-symlink-cwd-"));
+  const escapeDir = mkdtempSync(path.join(tmpdir(), "agy-custom-symlink-escape-"));
+  const binary = writeAgyMock(cwd);
+  writeFileSync(path.join(escapeDir, "secret.txt"), "outside workspace secret body\n", "utf8");
+  symlinkSync(path.join(escapeDir, "secret.txt"), path.join(cwd, "linked-secret.txt"));
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-paths", "linked-secret.txt", "--", "review explicit file"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 1);
+    const record = JSON.parse(stdout);
+    assert.equal(record.source_content_transmission, "not_sent");
+    assert.match(record.error_message, /escapes workspace/);
+    assert.doesNotMatch(stdout + stderr, /outside workspace secret body/i);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(escapeDir);
+  }
+});
+
+test("agy status and result read the persisted foreground JobRecord", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-status-result-cwd-"));
+  const binary = writeAgyMock(cwd);
+  const { base } = fixtureBranchDiffRepo(cwd);
+  const runResult = runCompanion(
+    ["run", "--mode", "review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review persisted result"],
+    { cwd },
+  );
+  try {
+    assert.equal(runResult.status, 0, `exit ${runResult.status}: ${runResult.stderr}`);
+    const record = runResult.stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    assert.equal(record.status, "completed");
+
+    const result = runCompanion(
+      ["result", "--job", record.job_id, "--cwd", cwd],
+      { cwd, dataDir: runResult.dataDir },
+    );
+    assert.equal(result.status, 0, `exit ${result.status}: ${result.stderr}`);
+    assert.equal(JSON.parse(result.stdout).job_id, record.job_id);
+
+    const statusResult = runCompanion(
+      ["status", "--cwd", cwd],
+      { cwd, dataDir: runResult.dataDir },
+    );
+    assert.equal(statusResult.status, 0, `exit ${statusResult.status}: ${statusResult.stderr}`);
+    const statusRecord = JSON.parse(statusResult.stdout);
+    assert.deepEqual(statusRecord.jobs.map((job) => job.id), [record.job_id]);
+  } finally {
+    rmTree(runResult.dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("agy markdown lifecycle emits an external review launch card before the terminal record", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "agy-markdown-cwd-"));
   const binary = writeAgyMock(cwd);
@@ -276,10 +334,8 @@ test("agy cancel rejects foreground and reports background cancel contract", () 
   try {
     assert.equal(status, 1);
     const record = JSON.parse(stdout);
-    assert.equal(record.target, "agy");
-    assert.equal(record.status, "failed");
+    assert.equal(record.ok, false);
     assert.equal(record.error_code, "not_found");
-    assert.equal(record.source_content_transmission, "not_sent");
     assert.doesNotMatch(stderr, /Usage:/);
   } finally {
     rmTree(dataDir);

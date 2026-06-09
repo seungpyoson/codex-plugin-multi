@@ -42,6 +42,7 @@ const PROVIDER_ERROR_CODES = new Set([
   "claude_error",
   "gemini_error",
   "kimi_error",
+  "agy_error",
 ]);
 const NEXT_ACTION_BY_FAILURE_CLASS = Object.freeze({
   none: "No action required.",

@@ -329,7 +329,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       explicitScopeRoutingContract(),
       sandboxFirstSourceSendContract(),
       "",
-      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
+      lifecycleRenderingContract(),
       scopeSafetyContract(),
       secretSafetyContract(),
       `This command backs \`plugins/${provider.plugin}/skills/${commandName}/SKILL.md\`.`,
@@ -359,7 +359,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       explicitScopeRoutingContract(),
       sandboxFirstSourceSendContract(),
       "",
-      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
+      lifecycleRenderingContract(),
       scopeSafetyContract(),
       secretSafetyContract(),
       `This command backs \`plugins/${provider.plugin}/skills/${commandName}/SKILL.md\`.`,
@@ -388,7 +388,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       rescueContract(),
       sandboxFirstSourceSendContract(),
       "",
-      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
+      lifecycleRenderingContract(),
       secretSafetyContract(),
       `This command backs \`plugins/${provider.plugin}/skills/${commandName}/SKILL.md\`.`,
     );
@@ -487,7 +487,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       explicitScopeRoutingContract(),
       sandboxFirstSourceSendContract(),
       "",
-      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
+      lifecycleRenderingContract(),
       scopeSafetyContract(),
       secretSafetyContract(),
     );
@@ -508,7 +508,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       explicitScopeRoutingContract(),
       sandboxFirstSourceSendContract(),
       "",
-      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
+      lifecycleRenderingContract(),
       scopeSafetyContract(),
       secretSafetyContract(),
     );
@@ -530,7 +530,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       rescueContract(),
       sandboxFirstSourceSendContract(),
       "",
-      lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
+      lifecycleRenderingContract(),
       secretSafetyContract(),
     );
   }
@@ -646,7 +646,7 @@ function companionDelegationSkillDoc(target) {
     workflowSet.has("rescue") ? rescueContract() : "",
     sandboxFirstSourceSendContract(),
     "",
-    lifecycleRenderingContract({ routeFields: provider.plugin !== "agy" }),
+    lifecycleRenderingContract(),
     "Do not claim commands are available in Codex builds that do not register plugin command files.",
     secretSafetyContract(),
     scopeSafetyContract(),

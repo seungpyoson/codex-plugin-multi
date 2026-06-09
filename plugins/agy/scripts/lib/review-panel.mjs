@@ -2,14 +2,15 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSyn
 import { tmpdir } from "node:os";
 import { isAbsolute, join, parse, relative, resolve } from "node:path";
 
-const PROVIDER_ORDER = ["claude", "gemini", "kimi", "grok", "grok-web", "deepseek", "glm"];
+const PROVIDER_ORDER = ["claude", "gemini", "kimi", "agy", "grok", "grok-web", "deepseek", "glm"];
 const VERDICT_RE = /\bVerdict:\s*(APPROVE|REQUEST[ _]CHANGES|FAIL|REJECT)\b/i;
-const PROVIDER_UNAVAILABLE_CODES = new Set(["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error", "tunnel_unavailable"]);
+const PROVIDER_UNAVAILABLE_CODES = new Set(["provider_unavailable", "spawn_failed", "claude_error", "gemini_error", "kimi_error", "agy_error", "tunnel_unavailable"]);
 const AUTH_FAILURE_CODES = new Set(["not_authed", "oauth_inference_rejected", "auth_not_configured", "session_expired"]);
 const COMPANION_PROVIDERS = [
   { provider: "claude", env: "CLAUDE_PLUGIN_DATA", fallback: "claude-companion" },
   { provider: "gemini", env: "GEMINI_PLUGIN_DATA", fallback: "gemini-companion" },
   { provider: "kimi", env: "KIMI_PLUGIN_DATA", fallback: "kimi-companion" },
+  { provider: "agy", env: "AGY_PLUGIN_DATA", fallback: "agy-companion" },
 ];
 const DIRECT_ROOTS = [
   { env: "GROK_PLUGIN_DATA", plugin: "grok" },
