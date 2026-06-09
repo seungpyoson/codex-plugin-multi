@@ -87,7 +87,7 @@ test("agy companion uses prompt sidecars, source hashes, and no raw-source diagn
   assert.match(source, /populateScope\(profile, cwd, containment\.path,[\s\S]*workspaceRoot/);
   assert.match(source, /includeDirPath:\s*containment\.path/);
   assert.match(source, /catch \(error\) \{\s*if \(containment\) \{ try \{ containment\.cleanup\(\); \} catch/);
-  assert.match(source, /fail\("prompt_sidecar_failed"/);
+  assert.match(source, /persistAndPrintPreSpawnFailure\(invocation, lifecycleEvents, "prompt_sidecar_failed"/);
   assert.doesNotMatch(source, /includeDirPath:\s*cwd/);
   assert.doesNotMatch(source, /function git\(/);
   assert.doesNotMatch(source, /selected_source[\s\S]*content\s*:/);
@@ -116,8 +116,18 @@ test("agy foreground lifecycle keeps cancel, sidecar, and stale-job parity hooks
   const preSpawnCancelIndex = runBlock.indexOf("if (consumeCancelMarker(workspaceRoot, jobId))");
   assert.ok(queuedIndex !== -1 && queuedIndex < setupIndex, "queued record must be persisted before scope setup");
   assert.ok(preSpawnCancelIndex !== -1 && preSpawnCancelIndex < spawnIndex, "cancel marker must be consumed before spawn");
+  const afterQueuedBlock = runBlock.slice(queuedIndex);
+  assert.doesNotMatch(afterQueuedBlock, /fail\("(?:prompt_sidecar_failed|git_binary_rejected)"/);
+  assert.match(afterQueuedBlock, /persistAndPrintPreSpawnFailure\(invocation, lifecycleEvents, "prompt_sidecar_failed"/);
+  assert.match(afterQueuedBlock, /persistAndPrintPreSpawnFailure\(invocation, lifecycleEvents, "git_binary_rejected"/);
   assert.match(runBlock, /mutationContext = prepareMutationContext\(invocation\);/);
   assert.match(runBlock, /recordPostRunMutations\(invocation, mutationContext\);/);
+  assert.match(
+    runBlock,
+    /let postRunPolicyError = null;[\s\S]*recordPostRunMutations\(invocation, mutationContext\);[\s\S]*if \(isGitBinaryPolicyError\(error\)\) \{[\s\S]*postRunPolicyError = error;[\s\S]*reason: "git_binary_rejected"[\s\S]*const reviewCompleted = !postRunPolicyError/,
+    "post-run Git binary policy errors must hard-fail the terminal record without bypassing cleanup",
+  );
+  assert.doesNotMatch(runBlock, /if \(isGitBinaryPolicyError\(error\)\) throw error;/);
   assert.match(runBlock, /withMutationReviewFailure\(reviewAuditManifest, mutationContext\.mutations\)/);
 
   assert.match(

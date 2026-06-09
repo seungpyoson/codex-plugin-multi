@@ -60,6 +60,7 @@ const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "cache_install",
   "git_binary_rejected",
   "preflight_stale",
+  "prompt_sidecar_failed",
   "prompt_too_large",
   "scope_failed",
   "source_packet_too_large",

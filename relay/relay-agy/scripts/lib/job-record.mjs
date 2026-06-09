@@ -271,6 +271,13 @@ export function classifyExecution(execution) {
 }
 
 function classifyProviderParsedFailure({ parsed }) {
+  if (parsed?.reason === "prompt_sidecar_failed" || parsed?.reason === "git_binary_rejected") {
+    return {
+      status: "failed",
+      error_code: parsed.reason,
+      error_message: parsed.error ?? parsed.reason,
+    };
+  }
   if (parsed?.reason === "not_authed") {
     return {
       status: "failed",

@@ -423,6 +423,41 @@ function persistAndPrintScopeFailure(invocation, lifecycleEvents, error) {
   process.exit(2);
 }
 
+function persistAndPrintPreSpawnFailure(
+  invocation,
+  lifecycleEvents,
+  code,
+  error,
+  { promptText = "", selectedFiles = [], timeoutMs = DEFAULT_TIMEOUT_MS, exitCode = 1 } = {},
+) {
+  const message = error?.message ?? String(error);
+  const reviewAuditManifest = buildAuditManifest({
+    promptText,
+    selectedFiles,
+    timeoutMs,
+    invocation,
+    result: "",
+    status: "failed",
+    errorCode: code,
+  });
+  const record = buildJobRecord(
+    invocation,
+    executionForRecord({
+      status: "failed",
+      pidInfo: null,
+      parsed: { ok: false, reason: code, error: message, result: null },
+      exitCode,
+      endedAt: new Date().toISOString(),
+      reviewAuditManifest,
+      selectedFiles,
+    }),
+    [],
+  );
+  persistRecord(invocation.workspace_root, record);
+  printLifecycleJson(record, lifecycleEvents);
+  process.exit(exitCode);
+}
+
 function cmdPreflight(rest) {
   const { options } = parseArgs(rest, {
     valueOptions: ["mode", "cwd", "binary", "scope", "scope-base", "scope-paths"],
@@ -595,14 +630,22 @@ async function run(rest) {
   } catch (error) {
     try { consumePromptSidecar(jobsDir(workspaceRoot), jobId); } catch { /* best-effort prompt sidecar cleanup */ }
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    fail("prompt_sidecar_failed", error?.message ?? String(error), { target: "agy" });
+    persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, "prompt_sidecar_failed", error, {
+      promptText,
+      selectedFiles,
+      timeoutMs,
+    });
   }
   let mutationContext;
   try {
     mutationContext = prepareMutationContext(invocation);
   } catch (error) {
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    fail("git_binary_rejected", error?.message ?? String(error), { target: "agy" });
+    persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, "git_binary_rejected", error, {
+      promptText: sidecarPrompt,
+      selectedFiles,
+      timeoutMs,
+    });
   }
   printLifecycleJson(
     externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation, null)),
@@ -721,16 +764,31 @@ async function run(rest) {
     timeoutMs,
     invocation,
     result: preliminarilyCompleted ? (parsed.result ?? "") : "",
-      status: recordStatus,
-      errorCode: recordErrorCode,
-    });
+    status: recordStatus,
+    errorCode: recordErrorCode,
+  });
+  let postRunPolicyError = null;
   try {
     recordPostRunMutations(invocation, mutationContext);
   } catch (error) {
-    mutationContext.mutations.push(mutationDetectionFailure(error));
+    if (isGitBinaryPolicyError(error)) {
+      postRunPolicyError = error;
+      parsed = {
+        ...parsed,
+        ok: false,
+        reason: "git_binary_rejected",
+        error: error?.message ?? String(error),
+        result: null,
+      };
+      recordStatus = "failed";
+      recordErrorCode = "git_binary_rejected";
+    } else {
+      mutationContext.mutations.push(mutationDetectionFailure(error));
+    }
   }
   reviewAuditManifest = withMutationReviewFailure(reviewAuditManifest, mutationContext.mutations);
-  const reviewCompleted = preliminarilyCompleted
+  const reviewCompleted = !postRunPolicyError
+    && preliminarilyCompleted
     && reviewAuditManifest.review_quality?.failed_review_slot !== true;
   if (!reviewCompleted) {
     parsed = {

@@ -2809,6 +2809,30 @@ test("buildJobRecord: Git binary policy errors are distinct from spawn failures"
   }
 });
 
+test("buildJobRecord: AGY pre-spawn parsed failures preserve specific error codes", () => {
+  const invocation = makeInvocation({
+    target: "agy",
+    binary: "agy",
+    model: null,
+    review_prompt_provider: "Google Antigravity CLI",
+  });
+  for (const [reason, message] of [
+    ["prompt_sidecar_failed", "failed to consume prompt sidecar"],
+    ["git_binary_rejected", "RELAY_GIT_BINARY must not point inside the current workspace."],
+  ]) {
+    const rec = buildAgyJobRecord(invocation, {
+      exitCode: 1,
+      parsed: { ok: false, reason, error: message, result: null },
+      pidInfo: null,
+      agySessionId: null,
+    }, []);
+    assert.equal(rec.status, "failed");
+    assert.equal(rec.error_code, reason);
+    assert.equal(rec.error_message, message);
+    assert.equal(rec.external_review.source_content_transmission, "not_sent");
+  }
+});
+
 test("buildJobRecord: finalization_failed errorMessage classifies as finalization_failed (PR #21 review HIGH 1)", () => {
   // The companion's executeRun fallback synthesizes a record with
   // errorMessage="finalization_failed: meta=… ; state=…" when writeJobFile
