@@ -47,6 +47,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 
+import { matchGlob } from "./diff-source.mjs";
 import { cleanGitEnv as scrubGitEnv } from "./git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./git-binary.mjs";
 
@@ -845,32 +846,6 @@ function scopeHead(sourceCwd, targetPath, containmentHandle, workspaceRoot = nul
     cleanupGitSnapshotTarget(sourceCwd, targetPath);
     throw err;
   }
-}
-
-function matchGlob(rel, pattern) {
-  // Minimal glob: supports '*' (no /) and '**' (any), '?' (single). Good
-  // enough for scope=custom's "<dir>/*.md" and "**/*.js" shapes; we avoid
-  // pulling in a full micromatch dep. This is a small supported subset, not a
-  // claim of full shell-glob compatibility.
-  // Translate to regex.
-  let re = "^";
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i];
-    if (c === "*") {
-      if (pattern[i + 1] === "*") {
-        re += ".*";
-        i += 1;
-        // Skip a trailing slash after ** so "**/a" matches "a" at any depth.
-        if (pattern[i + 1] === "/") i += 1;
-      } else {
-        re += "[^/]*";
-      }
-    } else if (c === "?") re += "[^/]";
-    else if (".^$+(){}|\\[]".includes(c)) re += "\\" + c;
-    else re += c;
-  }
-  re += "$";
-  return new RegExp(re).test(rel);
 }
 
 function scopeCustom(sourceCwd, targetPath, scopePaths) {
