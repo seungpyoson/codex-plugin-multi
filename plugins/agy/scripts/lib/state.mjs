@@ -1,12 +1,12 @@
 // Ported from openai/codex-plugin-cc (MIT) at commit 807e03a.
 // See ./UPSTREAM.md for synced SHA and re-sync procedure.
 //
-// Parametrization (this plugin = gemini):
-//   - Env var for a host-provided plugin-data dir:  GEMINI_PLUGIN_DATA (set by
+// Parametrization (this plugin = agy):
+//   - Env var for a host-provided plugin-data dir:  AGY_PLUGIN_DATA (set by
 //     the host if provided; when running inside Codex this is typically unset,
 //     so the fallback state dir is always taken).
-//   - Env var for capturing a session UUID from caller: GEMINI_COMPANION_SESSION_ID
-//   - Fallback state root dir:  <tmpdir>/gemini-companion
+//   - Env var for capturing a session UUID from caller: AGY_COMPANION_SESSION_ID
+//   - Fallback state root dir:  <tmpdir>/agy-companion
 // To re-use this module for a different target, call configureState() once at
 // companion startup.
 
@@ -31,14 +31,14 @@ const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 const STATE_LOCK_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 const HELD_STATE_LOCKS = new Set();
 
-// Mutable module config. Defaults to the gemini port values; other targets
+// Mutable module config. Defaults to the agy port values; other targets
 // MUST call configureState() before any state read/write to override.
 // `lockTimeoutMs` / `lockStaleMs` are exposed for tests so the deterministic
 // regression suite can simulate live old locks without 30s sleeps.
 const CONFIG = {
-  pluginDataEnv: "GEMINI_PLUGIN_DATA",
-  fallbackStateRootDir: path.join(os.tmpdir(), "gemini-companion"),
-  sessionIdEnv: "GEMINI_COMPANION_SESSION_ID",
+  pluginDataEnv: "AGY_PLUGIN_DATA",
+  fallbackStateRootDir: path.join(os.tmpdir(), "agy-companion"),
+  sessionIdEnv: "AGY_COMPANION_SESSION_ID",
   lockTimeoutMs: DEFAULT_STATE_LOCK_TIMEOUT_MS,
   lockStaleMs: DEFAULT_STATE_LOCK_STALE_MS,
 };

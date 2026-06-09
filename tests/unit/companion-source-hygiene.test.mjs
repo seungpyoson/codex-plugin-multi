@@ -90,3 +90,12 @@ test("agy companion uses prompt sidecars, source hashes, and no raw-source diagn
   assert.doesNotMatch(source, /selected_source[\s\S]*content\s*:/);
   assert.doesNotMatch(source, /error_message:\s*[^,\n]*content/i);
 });
+
+test("agy state defaults identify the agy adapter", () => {
+  const source = readFileSync(resolvePath("plugins/agy/scripts/lib/state.mjs"), "utf8");
+
+  assert.match(source, /pluginDataEnv:\s*"AGY_PLUGIN_DATA"/);
+  assert.match(source, /fallbackStateRootDir:\s*path\.join\(os\.tmpdir\(\),\s*"agy-companion"\)/);
+  assert.match(source, /sessionIdEnv:\s*"AGY_COMPANION_SESSION_ID"/);
+  assert.doesNotMatch(source, /GEMINI_PLUGIN_DATA|GEMINI_COMPANION_SESSION_ID|gemini-companion/);
+});

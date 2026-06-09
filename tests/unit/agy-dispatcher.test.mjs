@@ -144,7 +144,7 @@ test("spawnAgy: timeout is terminal and does not retry the source-bearing prompt
       cwd: dir,
       env: { ...process.env, AGY_COUNT_OUT: countPath },
       promptText: "source-bearing prompt",
-      timeoutMs: process.env.CODEX_PLUGIN_COVERAGE === "1" ? 2000 : 500,
+      timeoutMs: process.env.CODEX_PLUGIN_COVERAGE === "1" ? 2000 : 1000,
     });
 
     assert.equal(execution.timedOut, true);
