@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { fixtureBranchDiffRepo } from "../helpers/fixture-git.mjs";
+import { fixtureBranchDiffRepo, fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/agy/scripts/agy-companion.mjs");
@@ -227,6 +227,36 @@ test("agy source-bearing review points target at scoped containment, not source 
     assert.equal(capture.cwd, capture.addDirReal);
     assert.match(path.basename(capture.addDir), /^agy-worktree-/);
     assert.equal(existsSync(capture.addDir), false, "scoped containment should be cleaned after foreground run");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy empty branch-diff fails closed before prompt fallback or target spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-empty-branch-diff-cwd-"));
+  const binary = writeAgyCaptureMock(cwd);
+  const capturePath = path.join(cwd, "capture.json");
+  fixtureSeedRepo(cwd, {
+    fileName: "seed.txt",
+    fileContents: "selected source body must not be sent\n",
+    message: "seed",
+  });
+  const base = fixtureGit(cwd, ["rev-parse", "HEAD"]).stdout.trim();
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "review", "--foreground",
+     "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review empty branch diff"],
+    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: ${stderr}`);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "scope_failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(existsSync(capturePath), false, "target AGY binary must not spawn on empty branch-diff");
+    assert.doesNotMatch(stdout + stderr, /selected source body must not be sent/);
+    assert.match(record.error_message, /branch-diff selected no files/);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
