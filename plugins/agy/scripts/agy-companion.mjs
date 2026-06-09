@@ -2,48 +2,32 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { resolve as resolvePath } from "node:path";
+import { isAbsolute, relative, resolve as resolvePath } from "node:path";
 
+import { parseArgs } from "./lib/args.mjs";
 import { spawnAgy } from "./lib/agy.mjs";
-import { writePromptSidecar, consumePromptSidecar } from "./lib/companion-common.mjs";
-import { buildJobRecord } from "./lib/job-record.mjs";
+import {
+  consumePromptSidecar,
+  externalReviewLaunchedEvent,
+  parseLifecycleEventsMode,
+  parseScopePathsOption,
+  printJson,
+  printLifecycleJson,
+  scopeBaseForOptions,
+  writePromptSidecar,
+} from "./lib/companion-common.mjs";
+import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
+import {
+  REVIEW_PROMPT_CONTRACT_VERSION,
+  buildReviewAuditManifest,
+  buildReviewPrompt,
+  buildSelectedSourcePromptBlock,
+  scopeResolutionReason,
+} from "./lib/review-prompt.mjs";
 
 const PROVIDER_DISPLAY = "Google Antigravity CLI";
 const DEFAULT_TIMEOUT_MS = 900000;
-
-function parseArgs(argv) {
-  const options = { _: [] };
-  let promptMode = false;
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (promptMode) {
-      options._.push(arg);
-      continue;
-    }
-    if (arg === "--") {
-      promptMode = true;
-      continue;
-    }
-    if (!arg.startsWith("--")) {
-      options._.push(arg);
-      continue;
-    }
-    const key = arg.slice(2).replaceAll("-", "_");
-    const next = argv[index + 1];
-    if (next != null && !next.startsWith("--")) {
-      options[key] = next;
-      index += 1;
-    } else {
-      options[key] = true;
-    }
-  }
-  return options;
-}
-
-function writeJson(value) {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
-}
 
 function commandBinary(options) {
   return typeof options.binary === "string" && options.binary ? options.binary : (process.env.AGY_BINARY || "agy");
@@ -54,13 +38,13 @@ function commandCwd(options) {
 }
 
 function doctor(rest) {
-  const options = parseArgs(rest);
+  const { options } = parseArgs(rest, { valueOptions: ["binary", "cwd"] });
   const binary = commandBinary(options);
   const cwd = commandCwd(options);
   const env = sanitizeTargetEnv(process.env);
   const result = spawnSync(binary, ["models"], { cwd, env, encoding: "utf8", timeout: 30000 });
   if (result.error) {
-    writeJson({
+    printJson({
       provider: "agy",
       ready: false,
       error_code: "not_found",
@@ -70,7 +54,7 @@ function doctor(rest) {
     process.exit(1);
   }
   if (result.status !== 0) {
-    writeJson({
+    printJson({
       provider: "agy",
       ready: false,
       error_code: "not_ready",
@@ -80,7 +64,7 @@ function doctor(rest) {
     process.exit(1);
   }
   const models = String(result.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  writeJson({
+  printJson({
     provider: "agy",
     ready: true,
     status: "ok",
@@ -110,19 +94,78 @@ function selectedFilesForBranchDiff(cwd, base) {
       path: filePath,
       bytes: Buffer.byteLength(content),
       content_hash: createHash("sha256").update(content).digest("hex"),
-      content,
+      text: content,
     };
   });
 }
 
-function promptFor(userPrompt, selectedFiles) {
-  const sourceBlocks = selectedFiles.map((file) => [
-    `AGY FILE ${file.path}`,
-    "```",
-    file.content,
-    "```",
-  ].join("\n"));
-  return [userPrompt, ...sourceBlocks].filter(Boolean).join("\n\n");
+function assertScopedRelativePath(cwd, filePath) {
+  if (typeof filePath !== "string" || !filePath.trim()) {
+    throw new Error("scope_paths_required: custom-review requires explicit --scope-paths");
+  }
+  if (isAbsolute(filePath)) {
+    throw new Error(`scope_base_invalid: custom scope path must be relative: ${filePath}`);
+  }
+  const absPath = resolvePath(cwd, filePath);
+  const relPath = relative(cwd, absPath);
+  if (!relPath || relPath === ".." || relPath.startsWith(`..${"/"}`) || isAbsolute(relPath)) {
+    throw new Error(`scope_base_invalid: custom scope path escapes workspace: ${filePath}`);
+  }
+  return absPath;
+}
+
+function selectedFilesForCustomScope(cwd, scopePaths) {
+  if (!Array.isArray(scopePaths) || scopePaths.length === 0) {
+    throw new Error("scope_paths_required: custom-review requires explicit --scope-paths");
+  }
+  return scopePaths.map((filePath) => {
+    const absPath = assertScopedRelativePath(cwd, filePath);
+    if (!existsSync(absPath)) {
+      throw new Error(`scope_empty: custom scope path does not exist: ${filePath}`);
+    }
+    const content = readFileSync(absPath, "utf8");
+    return {
+      path: filePath,
+      bytes: Buffer.byteLength(content),
+      content_hash: createHash("sha256").update(content).digest("hex"),
+      text: content,
+    };
+  });
+}
+
+function resolveReviewScope({ mode, requestedScope, scopeBase, scopePaths, cwd }) {
+  const scope = mode === "custom-review" || requestedScope === "custom" ? "custom" : "branch-diff";
+  if (scope === "custom") {
+    return {
+      scope,
+      scopeBase: null,
+      scopePaths,
+      selectedFiles: selectedFilesForCustomScope(cwd, scopePaths),
+    };
+  }
+  return {
+    scope,
+    scopeBase,
+    scopePaths: null,
+    selectedFiles: selectedFilesForBranchDiff(cwd, scopeBase),
+  };
+}
+
+function promptFor({ userPrompt, selectedFiles, mode, cwd, scope, scopeBase, scopePaths }) {
+  const contractPrompt = buildReviewPrompt({
+    provider: PROVIDER_DISPLAY,
+    mode,
+    repository: cwd,
+    baseRef: scopeBase,
+    scope,
+    scopePaths,
+    userPrompt,
+  });
+  const selectedSource = buildSelectedSourcePromptBlock(selectedFiles, {
+    title: "Selected source",
+    delimiterPrefix: "AGY FILE",
+  });
+  return [contractPrompt, selectedSource].filter(Boolean).join("\n\n");
 }
 
 function hasSubstantiveReview(text) {
@@ -130,28 +173,15 @@ function hasSubstantiveReview(text) {
     && /Blocking findings/i.test(text);
 }
 
-function selectedSourceAudit(selectedFiles) {
-  return {
-    files: selectedFiles.map(({ path, bytes, content_hash }) => ({ path, bytes, content_hash })),
-  };
-}
-
 function sourceFilesForRedaction(selectedFiles) {
-  return selectedFiles.map(({ path, content }) => ({ path, text: content }));
-}
-
-function renderedPromptHash(promptText) {
-  return {
-    algorithm: "sha256",
-    value: createHash("sha256").update(promptText).digest("hex"),
-  };
+  return selectedFiles.map(({ path, text }) => ({ path, text }));
 }
 
 function jobsDir(cwd) {
   return resolvePath(process.env.AGY_PLUGIN_DATA || resolvePath(cwd, ".relay-agy"), "jobs");
 }
 
-function buildInvocation({ jobId, mode, cwd, binary, model, scopeBase, userPrompt, startedAt }) {
+function buildInvocation({ jobId, mode, cwd, binary, model, scope, scopeBase, scopePaths, userPrompt, startedAt }) {
   return {
     job_id: jobId,
     target: "agy",
@@ -163,11 +193,11 @@ function buildInvocation({ jobId, mode, cwd, binary, model, scopeBase, userPromp
     cwd,
     workspace_root: cwd,
     containment: "worktree",
-    scope: "branch-diff",
+    scope,
     run_kind: "foreground",
     dispose_effective: true,
     scope_base: scopeBase ?? null,
-    scope_paths: null,
+    scope_paths: Array.isArray(scopePaths) ? scopePaths : null,
     prompt_head: userPrompt.slice(0, 200),
     review_prompt_contract_version: 1,
     review_prompt_provider: PROVIDER_DISPLAY,
@@ -177,70 +207,100 @@ function buildInvocation({ jobId, mode, cwd, binary, model, scopeBase, userPromp
   };
 }
 
-function buildAuditManifest({ promptText, selectedFiles, timeoutMs, retryCount, reviewCompleted }) {
-  return {
-    provider: "agy",
-    rendered_prompt_hash: renderedPromptHash(promptText),
-    selected_source: selectedSourceAudit(selectedFiles),
-    request: { timeout_ms: timeoutMs },
-    retry_count: retryCount,
-    review_quality: {
-      failed_review_slot: !reviewCompleted,
-      semantic_failure_reasons: reviewCompleted ? [] : ["missing_verdict"],
+function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, result, status, errorCode }) {
+  return buildReviewAuditManifest({
+    prompt: promptText,
+    sourceFiles: selectedFiles,
+    request: {
+      provider: "agy",
+      model: invocation.model,
+      timeoutMs,
     },
-  };
-}
-
-function externalReview({ jobId, mode, scopeBase, sourceContentTransmission, reviewSlot = null }) {
-  return {
-    marker: "EXTERNAL REVIEW",
-    provider: PROVIDER_DISPLAY,
-    run_kind: "foreground",
-    job_id: jobId,
-    session_id: null,
-    parent_job_id: null,
-    mode,
-    scope: "branch-diff",
-    scope_base: scopeBase ?? null,
-    scope_paths: null,
-    source_content_transmission: sourceContentTransmission,
-    review_slot: reviewSlot,
-    disclosure: sourceContentTransmission === "sent"
-      ? `Selected source content was sent to ${PROVIDER_DISPLAY} for external review.`
-      : `Selected source content may be sent to ${PROVIDER_DISPLAY} for external review.`,
-  };
+    promptBuilder: {
+      contractVersion: REVIEW_PROMPT_CONTRACT_VERSION,
+    },
+    scope: {
+      name: invocation.scope,
+      base: invocation.scope_base,
+      paths: invocation.scope_paths,
+      reason: scopeResolutionReason({
+        scope: invocation.scope,
+        scope_base: invocation.scope_base,
+        scope_paths: invocation.scope_paths,
+      }),
+    },
+    route: {
+      providerId: "agy",
+      mode: invocation.mode,
+      selectedRoute: "companion_cli",
+      routeStep: "agy_print",
+      sourceSendApprovalRequired: false,
+    },
+    result,
+    status,
+    errorCode,
+  });
 }
 
 async function run(rest) {
-  const options = parseArgs(rest);
+  const { options, positionals } = parseArgs(rest, {
+    valueOptions: [
+      "mode", "model", "cwd", "binary", "scope", "scope-base", "scope-paths",
+      "timeout-ms", "lifecycle-events",
+    ],
+    booleanOptions: ["foreground", "background"],
+  });
   const mode = options.mode;
   if (!["review", "adversarial-review", "custom-review"].includes(mode)) {
-    writeJson({ target: "agy", status: "failed", error_code: "bad_mode", source_content_transmission: "not_sent" });
+    printJson({ target: "agy", status: "failed", error_code: "bad_mode", source_content_transmission: "not_sent" });
     process.exit(1);
   }
   const cwd = commandCwd(options);
   const binary = commandBinary(options);
-  const timeoutMs = options.timeout_ms ? Number(options.timeout_ms) : DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options["timeout-ms"] ? Number(options["timeout-ms"]) : DEFAULT_TIMEOUT_MS;
+  const scopeBase = scopeBaseForOptions(options);
+  const scopePaths = parseScopePathsOption(options["scope-paths"]);
+  const lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
   const jobId = randomUUID();
   const startedAt = new Date().toISOString();
-  const userPrompt = options._.join(" ").trim();
-  const selectedFiles = selectedFilesForBranchDiff(cwd, options.scope_base);
-  const promptText = promptFor(userPrompt, selectedFiles);
+  const userPrompt = positionals.join(" ").trim();
+  const {
+    scope,
+    selectedFiles,
+  } = resolveReviewScope({
+    mode,
+    requestedScope: options.scope ?? null,
+    scopeBase,
+    scopePaths,
+    cwd,
+  });
+  const invocation = buildInvocation({
+    jobId,
+    mode,
+    cwd,
+    binary,
+    model: options.model ?? null,
+    scope,
+    scopeBase,
+    scopePaths,
+    userPrompt,
+    startedAt,
+  });
+  const promptText = promptFor({
+    userPrompt,
+    selectedFiles,
+    mode,
+    cwd,
+    scope,
+    scopeBase,
+    scopePaths,
+  });
   writePromptSidecar(jobsDir(cwd), jobId, promptText);
   const sidecarPrompt = consumePromptSidecar(jobsDir(cwd), jobId) ?? promptText;
-  const launch = {
-    event: "external_review_launched",
-    target: "agy",
-    status: "launched",
-    job_id: jobId,
-    external_review: externalReview({
-      jobId,
-      mode,
-      scopeBase: options.scope_base ?? null,
-      sourceContentTransmission: "may_be_sent",
-    }),
-  };
-  if (options.lifecycle_events === "jsonl") writeJson(launch);
+  printLifecycleJson(
+    externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation, null)),
+    lifecycleEvents,
+  );
 
   const execution = await spawnAgy(
     { name: mode, sandbox: true, add_dir: true },
@@ -254,10 +314,10 @@ async function run(rest) {
       timeoutMs,
     },
   );
-  const reviewCompleted = execution.parsed.ok
+  const preliminarilyCompleted = execution.parsed.ok
     && execution.exitCode === 0
     && hasSubstantiveReview(execution.parsed.result ?? "");
-  const parsed = reviewCompleted
+  let parsed = preliminarilyCompleted
     ? execution.parsed
     : {
       ...execution.parsed,
@@ -266,31 +326,48 @@ async function run(rest) {
       error: execution.parsed.error ?? "AGY did not produce a substantive review verdict",
       result: null,
     };
-  const invocation = buildInvocation({
-    jobId,
-    mode,
-    cwd,
-    binary,
-    model: options.model ?? null,
-    scopeBase: options.scope_base ?? null,
-    userPrompt,
-    startedAt,
+  let recordStatus = preliminarilyCompleted ? "completed" : "failed";
+  let recordErrorCode = preliminarilyCompleted ? null : (parsed.reason ?? execution.parsed.reason ?? "review_not_completed");
+  let reviewAuditManifest = buildAuditManifest({
+    promptText: sidecarPrompt,
+    selectedFiles,
+    timeoutMs,
+    invocation,
+    result: preliminarilyCompleted ? (parsed.result ?? "") : "",
+    status: recordStatus,
+    errorCode: recordErrorCode,
   });
-  const record = buildJobRecord(invocation, {
-    ...execution,
-    parsed,
-    reviewAuditManifest: buildAuditManifest({
+  const reviewCompleted = preliminarilyCompleted
+    && reviewAuditManifest.review_quality?.failed_review_slot !== true;
+  if (!reviewCompleted) {
+    parsed = {
+      ...parsed,
+      ok: false,
+      reason: parsed.reason ?? "review_not_completed",
+      error: parsed.error ?? "AGY did not produce a usable review under the shared review-quality contract",
+      result: null,
+    };
+    recordStatus = "failed";
+    recordErrorCode = parsed.reason ?? "review_not_completed";
+    reviewAuditManifest = buildAuditManifest({
       promptText: sidecarPrompt,
       selectedFiles,
       timeoutMs,
-      retryCount: execution.retryCount ?? 0,
-      reviewCompleted,
-    }),
+      invocation,
+      result: "",
+      status: recordStatus,
+      errorCode: recordErrorCode,
+    });
+  }
+  const record = buildJobRecord(invocation, {
+    ...execution,
+    parsed,
+    reviewAuditManifest,
     sourceFilesForRedaction: sourceFilesForRedaction(selectedFiles),
     sourceRedactionRequired: true,
   }, []);
-  writeJson({ event: "external_review_terminal", ...record });
-  process.exit(reviewCompleted ? 0 : 1);
+  printLifecycleJson(record, lifecycleEvents);
+  process.exit(record.status === "completed" ? 0 : 1);
 }
 
 async function main() {
@@ -304,7 +381,7 @@ async function main() {
     return;
   }
   if (command === "cancel") {
-    writeJson({
+    printJson({
       target: "agy",
       status: "failed",
       error_code: "not_found",
@@ -317,7 +394,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  writeJson({
+  printJson({
     target: "agy",
     status: "failed",
     error_code: "agy_companion_error",

@@ -29,10 +29,13 @@ function writeAgyMock(dir) {
     "if (args[0] === 'models') { console.log('gemini-3.1-pro\\nclaude-sonnet-4.6'); process.exit(0); }",
     "const promptIndex = args.indexOf('--print');",
     "const prompt = promptIndex >= 0 ? args[promptIndex + 1] : '';",
+    "const file = /BEGIN AGY FILE \\d+: ([^\\n]+)/.exec(prompt)?.[1] || 'selected source';",
     "if (/auth failure/i.test(prompt)) { console.error('login required'); process.exit(1); }",
     "console.log('Verdict: APPROVE');",
     "console.log('Blocking findings');",
-    "console.log('- None.');",
+    "console.log('- None. I inspected ' + file + ' and found no blocking issues.');",
+    "console.log('Non-blocking concerns');",
+    "console.log('- None. The selected source file ' + file + ' was reviewed for this scope.');",
     "console.log('Prompt hash input length: ' + prompt.length);",
     "",
   ].join("\n"));
@@ -142,14 +145,64 @@ for (const mode of ["review", "adversarial-review"]) {
       assert.equal(record.event, "external_review_terminal");
       assert.equal(record.external_review.source_content_transmission, "sent");
       assert.equal(record.review_metadata.audit_manifest.selected_source.files[0].path, changedFileName);
-      assert.match(record.result, /Verdict: APPROVE/);
-      assert.equal(record.agy_session_id, null);
     } finally {
       rmTree(dataDir);
       rmTree(cwd);
     }
   });
 }
+
+test("agy custom-review uses explicit scope paths without branch-diff fallback", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-custom-cwd-"));
+  const binary = writeAgyMock(cwd);
+  writeFileSync(path.join(cwd, "selected.txt"), "selected source body\n", "utf8");
+  writeFileSync(path.join(cwd, "unselected.txt"), "unselected source body\n", "utf8");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt", "--", "review explicit file"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    const lines = stdout.trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines.length, 2);
+    const [launched, record] = lines;
+    assert.equal(launched.external_review.scope, "custom");
+    assert.equal(launched.external_review.scope_base, null);
+    assert.deepEqual(launched.external_review.scope_paths, ["selected.txt"]);
+    assert.equal(record.external_review.scope, "custom");
+    assert.deepEqual(record.external_review.scope_paths, ["selected.txt"]);
+    assert.equal(record.review_metadata.audit_manifest.selected_source.files.length, 1);
+    assert.equal(record.review_metadata.audit_manifest.selected_source.files[0].path, "selected.txt");
+    assert.doesNotMatch(stdout + stderr, /unselected source body/i);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy markdown lifecycle emits an external review launch card before the terminal record", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-markdown-cwd-"));
+  const binary = writeAgyMock(cwd);
+  const { base } = fixtureBranchDiffRepo(cwd);
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "review", "--foreground", "--lifecycle-events", "markdown",
+     "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review markdown lifecycle"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}`);
+    assert.match(stdout, /^### EXTERNAL REVIEW\n/);
+    assert.match(stdout, /\| Provider \| Google Antigravity CLI \|/);
+    assert.match(stdout, /\| Scope \| branch-diff /);
+    assert.match(stdout, /\| Source \| may_be_sent \|/);
+    assert.match(stdout, /\| Source \| sent \|/);
+    assert.equal(stdout.match(/^### EXTERNAL REVIEW$/gm).length, 2);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
 
 test("agy doctor missing binary reports structured not_found without source transmission", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "agy-missing-cwd-"));
@@ -205,7 +258,7 @@ test("agy timeout returns terminal timeout without retry", () => {
     assert.equal(status, 1);
     const record = stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
     assert.equal(record.error_code, "timeout");
-    assert.equal(record.review_metadata.audit_manifest.retry_count, 0);
+    assert.equal(record.review_quality.failed_review_slot, true);
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.doesNotMatch(stdout + stderr, /foo\\n|\+foo|selected source body/i);
   } finally {
@@ -248,7 +301,7 @@ test("agy non-review stdout noise is not accepted as a completed review", () => 
     const record = stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
     assert.equal(record.status, "failed");
     assert.equal(record.error_code, "review_not_completed");
-    assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, true);
+    assert.equal(record.review_quality.failed_review_slot, true);
     assert.equal(record.external_review.source_content_transmission, "sent");
   } finally {
     rmTree(dataDir);

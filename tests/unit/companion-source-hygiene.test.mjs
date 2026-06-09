@@ -78,7 +78,7 @@ test("agy companion uses prompt sidecars, source hashes, and no raw-source diagn
   const source = readFileSync(resolvePath("plugins/agy/scripts/agy-companion.mjs"), "utf8");
 
   assert.match(source, /writePromptSidecar|consumePromptSidecar|prompt sidecar/i);
-  assert.match(source, /rendered_prompt_hash/);
+  assert.match(source, /buildReviewAuditManifest/);
   assert.match(source, /content_hash/);
   assert.doesNotMatch(source, /selected_source[\s\S]*content\s*:/);
   assert.doesNotMatch(source, /error_message:\s*[^,\n]*content/i);
