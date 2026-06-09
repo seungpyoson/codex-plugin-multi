@@ -396,8 +396,14 @@ async function run(rest) {
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
     persistAndPrintScopeFailure(invocation, lifecycleEvents, error);
   }
-  writePromptSidecar(jobsDir(workspaceRoot), jobId, promptText);
-  const sidecarPrompt = consumePromptSidecar(jobsDir(workspaceRoot), jobId) ?? promptText;
+  let sidecarPrompt;
+  try {
+    writePromptSidecar(jobsDir(workspaceRoot), jobId, promptText);
+    sidecarPrompt = consumePromptSidecar(jobsDir(workspaceRoot), jobId) ?? promptText;
+  } catch (error) {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    fail("prompt_sidecar_failed", error?.message ?? String(error), { target: "agy" });
+  }
   printLifecycleJson(
     externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation, null)),
     lifecycleEvents,

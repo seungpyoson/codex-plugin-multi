@@ -86,6 +86,8 @@ test("agy companion uses prompt sidecars, source hashes, and no raw-source diagn
   assert.match(source, /import \{ diffSourceFiles \} from "\.\/lib\/diff-source\.mjs";/);
   assert.match(source, /populateScope\(profile, cwd, containment\.path,[\s\S]*workspaceRoot/);
   assert.match(source, /includeDirPath:\s*containment\.path/);
+  assert.match(source, /catch \(error\) \{\s*if \(containment\) \{ try \{ containment\.cleanup\(\); \} catch/);
+  assert.match(source, /fail\("prompt_sidecar_failed"/);
   assert.doesNotMatch(source, /includeDirPath:\s*cwd/);
   assert.doesNotMatch(source, /function git\(/);
   assert.doesNotMatch(source, /selected_source[\s\S]*content\s*:/);
