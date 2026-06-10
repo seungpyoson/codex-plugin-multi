@@ -337,6 +337,41 @@ test("kimi doctor probes configured review model, not only native auth", () => {
   }
 });
 
+test("kimi doctor defaults to kimi-cli when kimi is absent from PATH", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-doctor-kimi-cli-cwd-"));
+  const binDir = mkdtempSync(path.join(tmpdir(), "kimi-doctor-kimi-cli-bin-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-doctor-kimi-cli-data-"));
+  const binary = path.join(binDir, "kimi-cli");
+  writeFileSync(binary, [
+    "#!/bin/sh",
+    `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(MOCK)} "$@"`,
+    "",
+  ].join("\n"));
+  chmodSync(binary, 0o755);
+  const baseEnv = { ...process.env };
+  delete baseEnv.KIMI_BINARY;
+  try {
+    const result = spawnSync(process.execPath, [COMPANION, "doctor"], {
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...baseEnv,
+        PATH: binDir,
+        KIMI_PLUGIN_DATA: dataDir,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.model, "kimi-code/kimi-for-coding");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("kimi doctor default timeout allows slow review-model startup", { timeout: 70000 }, () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-doctor-slow-review-model-"));
   try {

@@ -21,6 +21,7 @@ import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
+import { binaryAvailable } from "./lib/process.mjs";
 import {
   latestSourcePacketPreviousAttempt,
   selectProviderRoute,
@@ -703,6 +704,16 @@ function readOnlyLaunchInputs(launchFiles) {
   };
 }
 
+function resolveKimiBinary(options = {}) {
+  if (typeof options.binary === "string" && options.binary.length > 0) return options.binary;
+  if (typeof process.env.KIMI_BINARY === "string" && process.env.KIMI_BINARY.length > 0) {
+    return process.env.KIMI_BINARY;
+  }
+  if (binaryAvailable("kimi", ["--version"]).available) return "kimi";
+  if (binaryAvailable("kimi-cli", ["--version"]).available) return "kimi-cli";
+  return "kimi";
+}
+
 async function kimiReadinessPreflight(invocation, profile) {
   const readinessProfile = resolveProfile("ping");
   const candidates = modelCandidatesForInvocation(profile, invocation);
@@ -1163,7 +1174,7 @@ async function cmdRun(rest) {
     review_prompt_contract_version: profile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
     review_prompt_provider: profile.name === "rescue" ? null : "Kimi",
     schema_spec: null,
-    binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+    binary: resolveKimiBinary(options),
     run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
     max_steps_per_turn: maxStepsPerTurn,
@@ -1797,7 +1808,7 @@ async function cmdContinue(rest) {
     review_prompt_contract_version: priorProfile.name === "rescue" ? null : REVIEW_PROMPT_CONTRACT_VERSION,
     review_prompt_provider: priorProfile.name === "rescue" ? null : "Kimi",
     schema_spec: prior.schema_spec ?? null,
-    binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+    binary: resolveKimiBinary(options),
     run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
     max_steps_per_turn: maxStepsPerTurn,
@@ -2071,7 +2082,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
         model: selectedModel,
         promptText: PING_PROMPT,
         cwd: pingCwd,
-        binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
+        binary: resolveKimiBinary(options),
         timeoutMs,
         ...readOnlyLaunchInputs(launchFiles),
       });
