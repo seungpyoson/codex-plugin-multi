@@ -140,6 +140,11 @@
       "branches": 73.68,
       "functions": 92.86
     },
+    "plugins/claude/scripts/lib/companion-readiness-probe.mjs": {
+      "lines": 95,
+      "branches": 88,
+      "functions": 100
+    },
     "plugins/claude/scripts/lib/containment.mjs": {
       "lines": 96.55,
       "branches": 88.89,
@@ -574,6 +579,11 @@
       "lines": 44.97,
       "branches": 66.67,
       "functions": 85.71
+    },
+    "plugins/kimi/scripts/lib/kimi-capabilities.mjs": {
+      "lines": 96,
+      "branches": 78,
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/kimi.mjs": {
       "lines": 53.81,

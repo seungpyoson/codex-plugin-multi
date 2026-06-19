@@ -42,6 +42,7 @@ import { setupContainment } from "./lib/containment.mjs";
 import { populateScope } from "./lib/scope.mjs";
 import { newJobId, verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, classifyExecution, externalReviewForInvocation, isOAuthInferenceRejected } from "./lib/job-record.mjs";
+import { probeWithReprobe } from "./lib/companion-readiness-probe.mjs";
 import { sourceContentTransmissionForExecution } from "./lib/external-review.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
@@ -1883,15 +1884,23 @@ async function claudeOAuthInferencePreflight(invocation, authSelection, { allowA
   const profile = resolveProfile("ping");
   let execution;
   try {
-    execution = await spawnClaude(profile, {
-      model: invocation.model,
-      promptText: PING_PROMPT,
-      sessionId: newJobId(),
-      cwd: tmpdir(),
-      binary: resolveCliBinary(invocation.cwd, invocation.binary),
-      timeoutMs: Math.min(Number(invocation.timeout_ms ?? DEFAULT_CLAUDE_PING_TIMEOUT_MS), DEFAULT_CLAUDE_PING_TIMEOUT_MS),
-      sessionPersistence: false,
-      authSelection,
+    // Bounded same-path re-probe (#223): a transient mid-OAuth-refresh 401 must
+    // not terminally block a source-bearing review. Re-probe the SAME OAuth path
+    // once; a reproduced rejection falls through to terminal classification below.
+    execution = await probeWithReprobe({
+      attempt: () => spawnClaude(profile, {
+        model: invocation.model,
+        promptText: PING_PROMPT,
+        sessionId: newJobId(),
+        cwd: tmpdir(),
+        binary: resolveCliBinary(invocation.cwd, invocation.binary),
+        timeoutMs: Math.min(Number(invocation.timeout_ms ?? DEFAULT_CLAUDE_PING_TIMEOUT_MS), DEFAULT_CLAUDE_PING_TIMEOUT_MS),
+        sessionPersistence: false,
+        authSelection,
+      }),
+      isTransientFailure: (ex) =>
+        authSelection.selected_auth_path === "subscription_oauth"
+        && isOAuthInferenceRejected(ex, invocation),
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -2892,7 +2901,15 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
       binary,
       timeoutMs,
     };
-    execution = await runClaudePingAttempt({ ...pingInputs, authSelection });
+    // Bounded same-path re-probe (#223): a transient mid-OAuth-refresh 401 can
+    // clear on an immediate retry. Re-probe the SAME subscription path once
+    // before any auth-path fallback; a reproduced rejection stays terminal.
+    execution = await probeWithReprobe({
+      attempt: () => runClaudePingAttempt({ ...pingInputs, authSelection }),
+      isTransientFailure: (ex) =>
+        ex.exitCode !== 0
+        && isOAuthInferenceRejected(ex, authSelectionClassifierContext(authSelection)),
+    });
     if (execution.exitCode !== 0) {
       const fallbackReason = pingApiFallbackReason(execution, authSelection);
       const fallbackSelection = fallbackReason
