@@ -7,6 +7,7 @@ import {
   missingKimiFlags,
   assertKimiContract,
   KimiContractMismatchError,
+  KIMI_CAPABILITY_PROBE_TIMEOUT_MS,
 } from "../../plugins/kimi/scripts/lib/kimi-capabilities.mjs";
 
 // Abridged real kimi-code 0.18.0 --help (the installed contract).
@@ -72,6 +73,34 @@ test("detectKimiCapabilities reports ok with parsed flags + version on a real he
   assert.equal(caps.ok, true);
   assert.equal(caps.version, "0.18.0");
   assert.ok(caps.supportedFlags.has("--prompt"));
+});
+
+test("detectKimiCapabilities bounds the --help/--version probe with a positive timeout", () => {
+  const seen = [];
+  const caps = detectKimiCapabilities("kimi", {
+    runImpl: (_binary, args, options) => {
+      seen.push({ args: args.join(" "), timeout: options?.timeout });
+      if (args[0] === "--help") return { status: 0, stdout: KIMI_CODE_HELP, stderr: "" };
+      return { status: 0, stdout: "0.18.0\n", stderr: "" };
+    },
+  });
+  assert.equal(caps.ok, true);
+  // Every probe must carry the bounded timeout so a wedged CLI cannot hang the
+  // synchronous capability detection that runs on every spawnKimi.
+  assert.ok(KIMI_CAPABILITY_PROBE_TIMEOUT_MS > 0);
+  for (const call of seen) {
+    assert.equal(call.timeout, KIMI_CAPABILITY_PROBE_TIMEOUT_MS, `probe ${call.args} must pass the bounded timeout`);
+  }
+});
+
+test("detectKimiCapabilities fails open (ok:false) when --help times out (ETIMEDOUT)", () => {
+  // spawnSync sets result.error on timeout; detection must treat that like any
+  // unprobeable CLI and report ok:false so callers SKIP the contract guard.
+  const caps = detectKimiCapabilities("kimi", {
+    runImpl: () => ({ status: null, stdout: "", stderr: "", error: Object.assign(new Error("spawnSync kimi ETIMEDOUT"), { code: "ETIMEDOUT" }) }),
+  });
+  assert.equal(caps.ok, false);
+  assert.deepEqual([...caps.supportedFlags], []);
 });
 
 test("detectKimiCapabilities is fail-open (ok:false) when --help errors", () => {

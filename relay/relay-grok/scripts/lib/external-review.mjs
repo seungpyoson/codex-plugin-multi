@@ -56,6 +56,7 @@ const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "approval_required",
   "approval_scope_changed",
   "cache_install",
+  "cli_contract_mismatch",
   "git_binary_rejected",
   "preflight_stale",
   "prompt_too_large",
@@ -91,6 +92,7 @@ const NOT_SENT_DISCLOSURE_BY_STATUS = Object.freeze({
 const NOT_SENT_DISCLOSURE_BY_ERROR = Object.freeze({
   approval_scope_changed: (provider) => `Selected source content was not sent to ${provider}; approval scope changed before the review target was started.`,
   cache_install: (provider) => `Selected source content was not sent to ${provider}; installed cache repair is required before the review target starts.`,
+  cli_contract_mismatch: (provider) => `Selected source content was not sent to ${provider}; the installed CLI does not support the adapter's command surface, so the review target was not started.`,
   preflight_stale: (provider) => `Selected source content was not sent to ${provider}; immediate pre-send readiness proof was stale or missing.`,
   prompt_too_large: (provider) => `Selected source content was not sent to ${provider}; the rendered prompt exceeded the provider budget before the review target was started.`,
   scope_failed: (provider) => `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`,

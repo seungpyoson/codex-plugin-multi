@@ -191,6 +191,13 @@ export function classifyCommonParsedFailure(parsed) {
       error_message: parsed.error ?? reason,
     };
   }
+  if (reason === "cli_contract_mismatch") {
+    return {
+      status: "failed",
+      error_code: "cli_contract_mismatch",
+      error_message: parsed.error ?? reason,
+    };
+  }
   if (reason === "usage_limited") {
     return {
       status: "failed",

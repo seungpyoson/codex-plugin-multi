@@ -2572,6 +2572,38 @@ test("kimi continue background: launched event and terminal JobRecord keep paren
   }
 });
 
+test("kimi run against a non-kimi-code CLI fails clean as cli_contract_mismatch (source NOT sent)", () => withRepo((cwd) => {
+  const binDir = mkdtempSync(path.join(tmpdir(), "kimi-legacy-cli-"));
+  // A CLI whose --help advertises the legacy --print surface (no -p/--output-format)
+  // — assertKimiContract must reject it before any prompt is sent.
+  const legacy = path.join(binDir, "legacy-kimi.mjs");
+  writeFileSync(legacy, `#!/usr/bin/env node
+const argv = process.argv.slice(2);
+if (argv.includes("--version") || argv.includes("-V")) { process.stdout.write("1.47.0\\n"); process.exit(0); }
+if (argv.includes("--help")) {
+  process.stdout.write("Usage: kimi-cli [options]\\n\\nOptions:\\n  --print   Print mode.\\n  --input-format <f>   Input.\\n  -h, --help   Show help.\\n");
+  process.exit(0);
+}
+process.stderr.write("legacy CLI must not be reached with kimi-code argv\\n");
+process.exit(1);
+`);
+  chmodSync(legacy, 0o755);
+  try {
+    const result = runCompanion([
+      "run", "--mode", "review", "--cwd", cwd, "--foreground", "--", "Review this scope.",
+    ], { cwd, env: { KIMI_BINARY: legacy } });
+    assert.equal(result.status, 2, result.stderr);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "cli_contract_mismatch");
+    assert.match(record.error_message, /command surface|does not support|cli_contract_mismatch/i);
+    assert.ok(record.error_summary && record.suggested_action, "must carry catalog diagnostic fields");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+  } finally {
+    rmSync(binDir, { recursive: true, force: true });
+  }
+}));
+
 test("kimi preflight success and bad_args emit safety fields", () => withRepo((cwd) => {
   const ok = runCompanion(["preflight", "--mode", "review", "--cwd", cwd], { cwd });
   assert.equal(ok.status, 0, ok.stderr);

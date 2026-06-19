@@ -685,6 +685,25 @@ async function kimiReadinessPreflight(invocation, profile) {
     }
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
+    // A contract mismatch (installed CLI lacks the kimi-code command surface) is a
+    // clean, terminal pre-launch failure — classify it structurally so the review
+    // reports cli_contract_mismatch (NOT_SENT) rather than a generic error
+    // (#222/#223). Re-probing cannot help; the same argv is rejected every time.
+    if (e?.code === "cli_contract_mismatch") {
+      // errorMessage is left null so classification uses the structured
+      // parsed.reason (cli_contract_mismatch) instead of the generic
+      // error-message fallback; the detail is preserved in parsed.error.
+      return {
+        preflight: true,
+        exitCode: null,
+        parsed: { ok: false, reason: "cli_contract_mismatch", error: detail },
+        pidInfo: null,
+        kimiSessionId: null,
+        stdout: "",
+        stderr: "",
+        errorMessage: null,
+      };
+    }
     return {
       preflight: true,
       exitCode: null,
@@ -1382,9 +1401,20 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   } catch (e) {
     releaseProviderWorkloadLease(workloadLease);
     workloadLease = null;
+    // A contract mismatch thrown by assertKimiContract (installed CLI lacks the
+    // kimi-code command surface) is a clean pre-launch failure: classify it as
+    // cli_contract_mismatch (NOT_SENT) instead of a generic kimi_error, mirroring
+    // the structured verdict cmdPing produces (#222/#223).
+    const contractMismatch = e?.code === "cli_contract_mismatch";
     const errorRecord = buildJobRecord(executedInvocation, {
-      exitCode: null, parsed: null, pidInfo: null, kimiSessionId: null,
-      errorMessage: e.message,
+      exitCode: null,
+      parsed: contractMismatch
+        ? { ok: false, reason: "cli_contract_mismatch", error: e.message }
+        : null,
+      pidInfo: null, kimiSessionId: null,
+      // For a contract mismatch, leave errorMessage null so classification uses
+      // the structured parsed.reason rather than the generic message fallback.
+      errorMessage: contractMismatch ? null : e.message,
       ...redactionFieldsForPrompt(prompt),
     }, mutations);
     writeJobFile(workspaceRoot, jobId, errorRecord);

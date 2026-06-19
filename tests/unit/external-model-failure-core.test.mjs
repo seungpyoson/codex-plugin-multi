@@ -109,6 +109,7 @@ test("buildExternalModelFailureDiagnostic covers shared emitted failure codes", 
     "kimi_error",
     "source_packet_too_large",
     "prompt_too_large",
+    "cli_contract_mismatch",
     "resend_confirmation_required",
   ]) {
     const diagnostic = buildExternalModelFailureDiagnostic(code, "Claude Code CLI");
@@ -151,6 +152,7 @@ test("shared failure diagnostics cover the T088 cross-provider fixture table", (
     "review_not_completed",
     "source_packet_too_large",
     "prompt_too_large",
+    "cli_contract_mismatch",
     "resend_confirmation_required",
   ];
 
@@ -483,6 +485,16 @@ test("external-model failure core plugin copies cover shared classifier branches
       status: "failed",
       error_code: "prompt_too_large",
       error_message: "prompt_too_large",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "cli_contract_mismatch", error: "installed Kimi CLI does not support --output-format" }), {
+      status: "failed",
+      error_code: "cli_contract_mismatch",
+      error_message: "installed Kimi CLI does not support --output-format",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "cli_contract_mismatch" }), {
+      status: "failed",
+      error_code: "cli_contract_mismatch",
+      error_message: "cli_contract_mismatch",
     });
     assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "json_parse_error" }), {
       status: "failed",

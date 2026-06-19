@@ -15,6 +15,13 @@
 
 import { runCommand } from "./process.mjs";
 
+// Bound the capability probe. detectKimiCapabilities runs on every spawnKimi
+// (ping, review, continue), so a `kimi` binary that hangs on `--help`/`--version`
+// (wedged auth prompt, NFS stall, broken wrapper) must not block the review
+// indefinitely. On timeout spawnSync sets result.error (ETIMEDOUT) → we report
+// ok:false and callers SKIP the guard (fail-open), exactly like an unprobeable CLI.
+export const KIMI_CAPABILITY_PROBE_TIMEOUT_MS = 5000;
+
 export class KimiContractMismatchError extends Error {
   constructor(message, { missingFlags = [], detectedVersion = null } = {}) {
     super(message);
@@ -43,7 +50,7 @@ export function parseKimiHelpFlags(helpText) {
 // { ok, supportedFlags:Set, version, detail }. ok is true ONLY when --help
 // clearly produced an options screen (exit 0 AND it lists its own --help/-h).
 export function detectKimiCapabilities(binary, { env = process.env, runImpl = runCommand } = {}) {
-  const help = runImpl(binary, ["--help"], { env });
+  const help = runImpl(binary, ["--help"], { env, timeout: KIMI_CAPABILITY_PROBE_TIMEOUT_MS });
   if (help.error || help.status !== 0) {
     return {
       ok: false,
@@ -58,7 +65,7 @@ export function detectKimiCapabilities(binary, { env = process.env, runImpl = ru
     return { ok: false, supportedFlags: new Set(), version: null, detail: "kimi --help output not recognized" };
   }
   let version = null;
-  const ver = runImpl(binary, ["--version"], { env });
+  const ver = runImpl(binary, ["--version"], { env, timeout: KIMI_CAPABILITY_PROBE_TIMEOUT_MS });
   if (!ver.error && ver.status === 0) {
     version = String(ver.stdout ?? "").trim().split("\n")[0] || null;
   }

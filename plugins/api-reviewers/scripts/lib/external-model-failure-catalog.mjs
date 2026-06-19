@@ -47,6 +47,14 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
       "Treat this review slot as not launched. Narrow or shard the source packet so the rendered prompt fits within the CLI argument-size limit, then retry. The selected source was not sent.",
   }),
   Object.freeze({
+    error_code: "cli_contract_mismatch",
+    category: "cli_contract",
+    error_cause: "cli_command_surface_mismatch",
+    error_summary: "The external model review was blocked before launch because the installed CLI does not support the command-surface flags the adapter emits.",
+    suggested_action:
+      "Treat this review slot as not launched. The selected source was not sent. Install or update the provider CLI to the supported command surface, then retry the same review scope.",
+  }),
+  Object.freeze({
     error_code: "resend_confirmation_required",
     category: "source_packet_policy",
     error_cause: "pre_send_resend_gate",
