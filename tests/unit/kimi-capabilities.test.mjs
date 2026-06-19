@@ -132,3 +132,18 @@ test("assertKimiContract is a no-op when the legacy surface IS supported", () =>
 test("assertKimiContract is fail-open (no-op) when capabilities are unknown", () => {
   assert.doesNotThrow(() => assertKimiContract(["--print"], { ok: false, supportedFlags: new Set() }));
 });
+
+test("missingKimiFlags normalizes --flag=value before membership (no false mismatch)", () => {
+  const caps = detectKimiCapabilities("kimi", {
+    runImpl: fakeRun({
+      "--help": { status: 0, stdout: KIMI_CODE_HELP, stderr: "" },
+      "--version": { status: 0, stdout: "0.18.0" },
+    }),
+  });
+  // help advertises bare `--output-format`; an attached-value token must not be
+  // reported as missing, and assertKimiContract must not throw on it.
+  assert.deepEqual(missingKimiFlags(["--output-format=stream-json", "-p", "review this"], caps), []);
+  assert.doesNotThrow(() => assertKimiContract(["-p", "review this", "--output-format=stream-json"], caps));
+  // a genuinely unsupported flag is still caught, in either syntax.
+  assert.deepEqual(missingKimiFlags(["--print=1"], caps), ["--print"]);
+});

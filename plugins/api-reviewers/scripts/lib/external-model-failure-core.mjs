@@ -184,6 +184,13 @@ export function classifyCommonParsedFailure(parsed) {
       error_message: parsed.error ?? reason,
     };
   }
+  if (reason === "prompt_too_large") {
+    return {
+      status: "failed",
+      error_code: "prompt_too_large",
+      error_message: parsed.error ?? reason,
+    };
+  }
   if (reason === "usage_limited") {
     return {
       status: "failed",

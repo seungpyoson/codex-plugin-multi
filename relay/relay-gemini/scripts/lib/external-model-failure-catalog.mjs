@@ -39,6 +39,14 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
       "Treat this review slot as not launched. Narrow or shard the source packet, or record an explicit capability fact that raises the source packet budget before retrying.",
   }),
   Object.freeze({
+    error_code: "prompt_too_large",
+    category: "source_packet_policy",
+    error_cause: "pre_send_prompt_arg_budget",
+    error_summary: "The external model review was blocked before launch because the rendered prompt exceeded the CLI argument-size limit.",
+    suggested_action:
+      "Treat this review slot as not launched. Narrow or shard the source packet so the rendered prompt fits within the CLI argument-size limit, then retry. The selected source was not sent.",
+  }),
+  Object.freeze({
     error_code: "resend_confirmation_required",
     category: "source_packet_policy",
     error_cause: "pre_send_resend_gate",

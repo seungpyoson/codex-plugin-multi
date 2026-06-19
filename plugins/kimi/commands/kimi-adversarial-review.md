@@ -1,6 +1,6 @@
 ---
 description: Ask Kimi Code CLI to challenge the current diff adversarially.
-argument-hint: "[--scope-base REF] [--timeout-ms MS] [--max-steps-per-turn N] [focus area]"
+argument-hint: "[--scope-base REF] [--timeout-ms MS] [focus area]"
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -14,7 +14,6 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 If present, pass `--scope-base REF` before `--`; pass the remaining focus text after `--`.
 Preserve raw `$ARGUMENTS` exactly except for routing documented flags.
 Review timeout defaults to 900000 ms. Use `--timeout-ms <ms>` or `KIMI_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
-Route `--max-steps-per-turn N` before `--`; `N` must be a positive integer.
 
 Run:
 

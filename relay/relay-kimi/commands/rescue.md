@@ -1,6 +1,6 @@
 ---
 description: Delegate investigation or a fix to Kimi Code CLI. Supports foreground or background runs.
-argument-hint: "[--foreground|--background] [--model <id>] [--max-steps-per-turn N] [task]"
+argument-hint: "[--foreground|--background] [--model <id>] [task]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
@@ -24,7 +24,7 @@ For quick attached work, run in the foreground:
 
 - `node "${CLAUDE_PLUGIN_ROOT}/scripts/relay-run.mjs" kimi-companion.mjs run --mode=rescue --foreground --lifecycle-events markdown --prompt-file "$RELAY_PROMPT_FILE"`
 
-If the user provides a step budget, add `--max-steps-per-turn N` as a CLI flag before `--prompt-file`; `N` must be a positive integer.
+
 ## Rescue Contract
 This is a rescue contract, not a review contract.
 Rescue may investigate, edit files, and run verification when the user asks for implementation work.

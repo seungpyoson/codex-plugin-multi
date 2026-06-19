@@ -22,13 +22,13 @@ needed by the run:
 ```toml
 [sandbox_workspace_write]
 network_access = true
-writable_roots = ["/Users/<you>/.kimi/logs"]
+writable_roots = ["/Users/<you>/.kimi-code/logs"]
 ```
 
 `network_access = true` is required for DeepSeek and GLM direct API calls. Kimi
-may also need a writable root under `~/.kimi` because the first-party CLI writes
-logs and auth/session state there. Start with `/Users/<you>/.kimi/logs`; if the
-next denial names an OAuth/session file, fall back to `/Users/<you>/.kimi`.
+may also need a writable root under `~/.kimi-code` because the first-party CLI writes
+logs and auth/session state there. Start with `/Users/<you>/.kimi-code/logs`; if the
+next denial names an OAuth/session file, fall back to `/Users/<you>/.kimi-code`.
 
 If you do not want persistent sandbox network access, use one-off escalation for
 the single trusted E2E command. In an interactive Codex session, keep

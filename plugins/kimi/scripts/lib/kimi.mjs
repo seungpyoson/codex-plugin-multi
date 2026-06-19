@@ -5,6 +5,20 @@ import { sanitizeTargetEnv } from "./provider-env.mjs";
 import { usageLimitMessage } from "./usage-limit.mjs";
 import { detectKimiCapabilities, assertKimiContract, selectKimiSurface } from "./kimi-capabilities.mjs";
 
+// kimi-code delivers the prompt as a `-p` argv argument (not stdin), so the
+// rendered prompt is bounded by the OS argv limit. macOS ARG_MAX (1048576 bytes)
+// bounds the ENTIRE argv+envp block — all args plus the serialized environment —
+// not just the prompt, so we hold a wide ~148KB margin. This is an OS-level
+// ceiling and is NOT relaxed by --allow-large-source-packet (that flag only
+// governs the selected-source-packet policy, a separate budget). An oversized
+// prompt fails clean as `prompt_too_large` (NOT_SENT) rather than crashing the
+// spawn with E2BIG.
+export const KIMI_CODE_PROMPT_MAX_BYTES = 900000;
+
+export function kimiCodePromptExceedsArgLimit(promptText) {
+  return Buffer.byteLength(String(promptText ?? ""), "utf8") > KIMI_CODE_PROMPT_MAX_BYTES;
+}
+
 function assertProfile(profile) {
   if (!profile || typeof profile !== "object") {
     throw new Error("buildKimiArgs: first argument must be a mode profile object");
@@ -79,17 +93,16 @@ export function buildKimiArgs(profile, runtimeInputs = {}) {
 }
 
 // Single source of truth for which profiles may use the kimi-code `-p` surface.
-// `-p` prompt mode forces `auto` permission and has NO flag equivalent for the
-// legacy `tools: []` restriction (no `--agent-file`/`--mcp-config-file`), so a
-// profile may only run here if it does not depend on per-invocation tool
-// restriction. Today that is exactly the readiness ping: its prompt is a fixed
-// no-op probe that never calls tools, run in a neutral cwd. Review-family
-// profiles depend on hard zero-tool enforcement and must NOT be routed here —
-// they stay on the legacy surface and fail-clean via assertKimiContract until
-// the kimi-code review-enforcement mechanism is wired (#222 follow-up). Both
-// spawnKimi (routing) and buildKimiCodeArgs (fail-loud guard) consult this.
+// Post-migration that is EVERY mode. The kimi-code prompt embeds the selected
+// source and instructs the model not to call tools, so review-family runs
+// complete tools-on without any per-invocation enforcement (live-proven on
+// 0.18.0: zero tool calls, correct verdict), and rescue runs tools-on in the
+// working tree (proven to edit files). The legacy `--agent-file` zero-tool
+// mechanism no longer exists and is no longer needed. A null/unknown profile is
+// rejected; assertProfile (via buildKimiCodeArgs) is the structural guard for
+// malformed profiles. Both spawnKimi (routing) and buildKimiCodeArgs consult this.
 export function kimiCodeSurfaceEligible(profile) {
-  return profile?.name === "ping";
+  return Boolean(profile && typeof profile === "object" && typeof profile.name === "string");
 }
 
 // Build the argv for the rewritten kimi-code CLI's non-interactive prompt mode
@@ -99,18 +112,21 @@ export function kimiCodeSurfaceEligible(profile) {
 // of the permission flags.
 export function buildKimiCodeArgs(profile, runtimeInputs = {}) {
   assertProfile(profile);
-  // Fail loud rather than silently dropping a profile's tool policy: if a caller
-  // ever routes a tool-restricted (review-family) profile to the -p surface, its
-  // `tools: []` intent would be lost (kimi-code -p runs tool-permissive). Refuse.
-  if (!kimiCodeSurfaceEligible(profile)) {
-    throw new Error(
-      `buildKimiCodeArgs: profile "${profile.name}" is not eligible for the kimi-code -p surface; ` +
-      "it depends on per-invocation tool restriction that -p cannot express (#222 review-enforcement follow-up).",
-    );
-  }
   const { model, promptText, resumeId = null } = runtimeInputs;
   if (typeof promptText !== "string" || promptText.length === 0) {
     throw new Error("buildKimiCodeArgs: promptText is required (kimi-code delivers the prompt as a -p arg)");
+  }
+  // Backstop for the OS argv limit. spawnKimi pre-checks this and fails clean
+  // with a `prompt_too_large` result before reaching here; this typed throw
+  // protects any other caller that bypasses that pre-check.
+  if (kimiCodePromptExceedsArgLimit(promptText)) {
+    throw Object.assign(
+      new Error(
+        `prompt_too_large: rendered prompt is ${Buffer.byteLength(promptText, "utf8")} bytes, ` +
+        `exceeding the ${KIMI_CODE_PROMPT_MAX_BYTES}-byte kimi-code -p argv ceiling`,
+      ),
+      { code: "prompt_too_large", reason: "prompt_too_large" },
+    );
   }
   const args = ["-p", promptText, "--output-format", "stream-json"];
   if (typeof model === "string" && model) args.push("-m", model);
@@ -168,12 +184,13 @@ function stepLimitResult(match, stdout, stderr) {
   };
 }
 
-// kimi-code session ids are ULID-shaped (26-char alphanumeric), so the legacy
-// hex-with-dashes resume regex misses them. Read the structured `role:"meta"`
-// session.resume_hint line first; fall back to the human "kimi -r <id>" hint
-// text (which appears on stderr in text mode).
+// kimi-code session ids are underscore-prefixed UUIDs (e.g.
+// session_eeee19b6-5926-4180-a880-1d7d33dfc227), so the legacy hex-with-dashes
+// resume regex misses them and the char class must include "_". Read the
+// structured `role:"meta"` session.resume_hint line first; fall back to the
+// human "kimi -r <id>" hint text (which appears on stderr in text mode).
 function parseKimiCodeResumeHint(text) {
-  return /\bkimi\s+-r\s+([0-9A-Za-z][0-9A-Za-z-]{9,})/.exec(String(text ?? ""))?.[1] ?? null;
+  return /\bkimi\s+-r\s+([0-9A-Za-z][0-9A-Za-z_-]{9,})/.exec(String(text ?? ""))?.[1] ?? null;
 }
 
 // Parse the kimi-code `--output-format stream-json` transcript: one JSON object
@@ -187,10 +204,17 @@ function parseKimiCodeStreamJson(stdout, stderr = "", options = {}) {
     if (!trimmed.startsWith("{")) continue;
     try { objects.push(JSON.parse(trimmed)); } catch { /* tolerate non-JSON transcript noise */ }
   }
-  const assistantText = objects
+  const assistantTurns = objects
     .filter((o) => o && o.role === "assistant" && typeof o.content === "string")
-    .map((o) => o.content)
-    .join("\n");
+    .map((o) => o.content);
+  // Review-family parses take ONLY the final assistant text turn: the review
+  // contract requires the verdict marker on line 1, and kimi-code has no
+  // --final-message-only flag, so any interim "thinking out loud" turn must not
+  // be prepended to the verdict. Rescue keeps the full transcript joined (its
+  // result is a summary of the work done across turns).
+  const assistantText = options?.finalMessageOnly
+    ? (assistantTurns.length > 0 ? assistantTurns[assistantTurns.length - 1] : "")
+    : assistantTurns.join("\n");
   const metaSession = objects.find((o) => o && o.role === "meta" && o.session_id)?.session_id ?? null;
   const sessionId = metaSession ?? parseKimiCodeResumeHint(`${stdout}\n${stderr}`);
   const errorObject = objects.find((o) => o && (o.is_error === true || o.role === "error" || o.error != null));
@@ -341,6 +365,33 @@ export async function spawnKimi(profile, runtimeInputs = {}) {
   const capabilities = detectKimiCapabilities(binary, { env });
   const useKimiCode = kimiCodeSurfaceEligible(profile) && selectKimiSurface(capabilities) === "kimi-code";
   const surface = useKimiCode ? "kimi-code" : "legacy";
+
+  // OS argv-limit guard for the kimi-code -p path (the prompt is an argv arg, not
+  // stdin). Fail clean as a pre-spawn `prompt_too_large` result — no child is
+  // spawned, pidInfo stays null, so source_content_transmission resolves NOT_SENT
+  // — instead of crashing the spawn with E2BIG. The legacy stdin path is exempt
+  // (no argv limit there).
+  if (useKimiCode && kimiCodePromptExceedsArgLimit(promptText)) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      endedAt: new Date().toISOString(),
+      stdout: "",
+      stderr: "",
+      kimiSessionId: null,
+      pidInfo: null,
+      parsed: {
+        ok: false,
+        reason: "prompt_too_large",
+        error: `rendered prompt is ${Buffer.byteLength(promptText, "utf8")} bytes, ` +
+          `exceeding the ${KIMI_CODE_PROMPT_MAX_BYTES}-byte kimi-code -p argv ceiling (ARG_MAX)`,
+        sessionId: null,
+        raw: "",
+      },
+    };
+  }
+
   let args;
   let stdinText;
   if (useKimiCode) {
@@ -407,7 +458,14 @@ export async function spawnKimi(profile, runtimeInputs = {}) {
     });
     child.on("close", (exitCode, signal) => {
       const endedAt = new Date().toISOString();
-      const parsed = parseKimiResult(stdout, stderr, { exitCode, signal, surface });
+      const parsed = parseKimiResult(stdout, stderr, {
+        exitCode,
+        signal,
+        surface,
+        // Review-family runs must report only the final verdict turn; rescue keeps
+        // the full multi-turn transcript. Only meaningful on the kimi-code surface.
+        finalMessageOnly: surface === "kimi-code" && profile?.name !== "rescue",
+      });
       finishResolve({
         exitCode,
         signal,

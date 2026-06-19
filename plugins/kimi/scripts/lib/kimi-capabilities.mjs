@@ -82,8 +82,15 @@ export function selectKimiSurface(capabilities) {
 }
 
 // The distinct flag tokens an argv array uses (entries starting with "-").
+// `--flag=value` is normalized to the bare `--flag`: a CLI --help screen
+// advertises bare flag names, so comparing an attached-value token verbatim
+// would wrongly report a supported flag as missing (false cli_contract_mismatch).
 export function argFlags(args) {
-  return [...new Set((args ?? []).filter((a) => typeof a === "string" && a.startsWith("-")))];
+  return [...new Set(
+    (args ?? [])
+      .filter((a) => typeof a === "string" && a.startsWith("-"))
+      .map((a) => a.split("=", 1)[0]),
+  )];
 }
 
 // Flags the built argv uses that the installed CLI does not advertise. Empty
@@ -101,8 +108,8 @@ export function assertKimiContract(args, capabilities) {
   const ver = capabilities.version ? ` ${capabilities.version}` : "";
   throw new KimiContractMismatchError(
     `cli_contract_mismatch: installed Kimi CLI${ver} does not support ${missing.join(", ")}. ` +
-    "Relay's adapter targets the legacy kimi-cli flag surface; the installed CLI uses a different " +
-    "command contract (e.g. -p/--prompt instead of --print). Adapter migration tracked in #222.",
+    "Relay's adapter targets the kimi-code prompt-mode surface (-p/--prompt, --output-format, --session); " +
+    "the installed CLI advertises a different command contract. Install or update to the kimi-code CLI (#222).",
     { missingFlags: missing, detectedVersion: capabilities.version },
   );
 }

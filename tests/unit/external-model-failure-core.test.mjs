@@ -108,6 +108,7 @@ test("buildExternalModelFailureDiagnostic covers shared emitted failure codes", 
     "gemini_error",
     "kimi_error",
     "source_packet_too_large",
+    "prompt_too_large",
     "resend_confirmation_required",
   ]) {
     const diagnostic = buildExternalModelFailureDiagnostic(code, "Claude Code CLI");
@@ -149,6 +150,7 @@ test("shared failure diagnostics cover the T088 cross-provider fixture table", (
     "privacy_persistence",
     "review_not_completed",
     "source_packet_too_large",
+    "prompt_too_large",
     "resend_confirmation_required",
   ];
 
@@ -262,6 +264,17 @@ test("classifyCompanionExecution centralizes review-quality and common parsed fa
       status: "failed",
       error_code: "step_limit_exceeded",
       error_message: "max steps",
+    },
+  );
+  assert.deepEqual(
+    classifyCompanionExecution(
+      { exitCode: 1, parsed: { ok: false, reason: "prompt_too_large", error: "rendered prompt exceeded ARG_MAX budget" } },
+      { catchallCode: "kimi_error" },
+    ),
+    {
+      status: "failed",
+      error_code: "prompt_too_large",
+      error_message: "rendered prompt exceeded ARG_MAX budget",
     },
   );
 });
@@ -460,6 +473,16 @@ test("external-model failure core plugin copies cover shared classifier branches
       status: "failed",
       error_code: "step_limit_exceeded",
       error_message: "max steps",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "prompt_too_large", error: "rendered prompt 901000 > 900000 bytes" }), {
+      status: "failed",
+      error_code: "prompt_too_large",
+      error_message: "rendered prompt 901000 > 900000 bytes",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "prompt_too_large" }), {
+      status: "failed",
+      error_code: "prompt_too_large",
+      error_message: "prompt_too_large",
     });
     assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "json_parse_error" }), {
       status: "failed",

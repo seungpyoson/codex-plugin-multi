@@ -1985,7 +1985,7 @@ function pingNotFoundFields() {
   return {
     ready: false,
     summary: "Kimi Code CLI binary was not found on PATH.",
-    next_action: "Install Kimi Code CLI from https://moonshotai.github.io/kimi-cli/, or rerun setup with --binary pointing at your kimi executable.",
+    next_action: "Install Kimi Code CLI from https://moonshotai.github.io/kimi-code/, or rerun setup with --binary pointing at your kimi executable.",
   };
 }
 
@@ -2001,7 +2001,7 @@ function pingContractMismatchFields() {
   return {
     ready: false,
     summary: "Installed Kimi CLI is incompatible with relay's Kimi adapter (command-surface mismatch).",
-    next_action: "Relay targets the legacy kimi-cli flag surface; the installed kimi-code CLI uses a different command contract. Adapter migration is tracked in #222.",
+    next_action: "The installed Kimi CLI does not advertise the kimi-code prompt-mode flags relay requires (e.g. -p/--prompt, --output-format). Install or update to the kimi-code CLI from https://moonshotai.github.io/kimi-code/.",
   };
 }
 
@@ -2009,7 +2009,7 @@ function pingSandboxBlockedFields() {
   return {
     ready: false,
     summary: "Kimi Code CLI is blocked by Codex sandbox access to Kimi state.",
-    next_action: "First add ~/.kimi/logs to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, keep KIMI_SHARE_DIR unset so Kimi uses its normal auth/config, then start a fresh Codex session and rerun setup. If the next denial is an OAuth/session file under ~/.kimi, fall back to ~/.kimi as the writable root. Alternatively, run this check outside sandbox.",
+    next_action: "First add ~/.kimi-code/logs to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, leave KIMI_CODE_HOME at its default so Kimi uses your normal ~/.kimi-code auth/config, then start a fresh Codex session and rerun setup. If the next denial is an OAuth/session file under ~/.kimi-code, fall back to ~/.kimi-code as the writable root. Alternatively, run this check outside sandbox.",
   };
 }
 
@@ -2047,7 +2047,7 @@ function pingFailureDetail(execution) {
 function isKimiCodexSandboxBlocked(detail) {
   if (!isCodexSandbox(process.env)) return false;
   const permissionRe = /Operation not permitted|Permission denied|PermissionError|EACCES|EPERM/i;
-  const kimiPathRe = /(?:^|[/\\])\.kimi(?:[/\\]|['"\s:)]|$)/;
+  const kimiPathRe = /(?:^|[/\\])\.kimi(?:-code)?(?:[/\\]|['"\s:)]|$)/;
   const lines = String(detail ?? "").split("\n");
   return lines.some((line, i) => {
     if (permissionRe.test(line) && kimiPathRe.test(line)) return true;
@@ -2147,7 +2147,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
       printJson({ status: "not_found", ...pingNotFoundFields(),
         ...pingRouteAuthFields(),
         detail: "kimi binary not found on PATH (or KIMI_BINARY override)",
-        install_url: "https://moonshotai.github.io/kimi-cli/" });
+        install_url: "https://moonshotai.github.io/kimi-code/" });
       process.exit(2);
     }
     const detail = e.message;

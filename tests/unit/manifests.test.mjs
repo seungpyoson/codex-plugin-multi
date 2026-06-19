@@ -83,12 +83,8 @@ function assertCompanionWorkflowInvocation(skill, plugin, workflow, rel) {
   assert.match(skill, new RegExp(`--mode=${workflow}\\b`), `${rel} missing --mode=${workflow}`);
   if (workflow === "rescue") {
     assert.match(skill, /--background\b/, `${rel} missing --background`);
-    if (plugin === "kimi") {
-      assert.match(skill, /--max-steps-per-turn N/, `${rel} missing Kimi max-step option`);
-      assert.match(skill, /`N` must be a positive integer/, `${rel} must define Kimi max-step value`);
-    } else {
-      assert.doesNotMatch(skill, /--max-steps-per-turn\b/, `${rel} must not document Kimi-only max-step option`);
-    }
+    // kimi-code has no per-turn step budget; no provider documents a max-step flag.
+    assert.doesNotMatch(skill, /--max-steps-per-turn\b/, `${rel} must not document a max-step option (kimi-code has none)`);
   } else {
     assert.match(skill, /--foreground\b/, `${rel} missing --foreground`);
   }
@@ -98,12 +94,8 @@ function assertCompanionWorkflowInvocation(skill, plugin, workflow, rel) {
     assert.match(skill, /--scope-base REF/, `${rel} missing optional --scope-base`);
     assert.match(skill, /`<focus>` is the user's review prompt or focus area/, `${rel} must define focus placeholder`);
     assert.match(skill, /external_review|claude-result-handling/, `${rel} missing external review rendering guidance`);
-    if (plugin === "kimi") {
-      assert.match(skill, /--max-steps-per-turn N/, `${rel} missing Kimi max-step option`);
-      assert.match(skill, /`N` must be a positive integer/, `${rel} must define Kimi max-step value`);
-    } else {
-      assert.doesNotMatch(skill, /--max-steps-per-turn\b/, `${rel} must not document Kimi-only max-step option`);
-    }
+    // kimi-code has no per-turn step budget; no provider documents a max-step flag.
+    assert.doesNotMatch(skill, /--max-steps-per-turn\b/, `${rel} must not document a max-step option (kimi-code has none)`);
   }
 }
 
@@ -408,11 +400,8 @@ test("claude, gemini, and kimi expose user-invocable skill fallbacks", () => {
       assert.match(skill, /event:\s*"launched"/, `${rel} must render background launched envelopes`);
       assert.match(skill, /background[\s\S]*external_review/, `${rel} must render background external_review cards`);
     }
-    if (plugin === "kimi") {
-      assert.match(skill, /rescue[\s\S]*--max-steps-per-turn N/, `${rel} must document Kimi rescue step budget`);
-    } else {
-      assert.doesNotMatch(skill, /--max-steps-per-turn\b/, `${rel} must not document Kimi-only max-step option`);
-    }
+    // kimi-code has no per-turn step budget; no delegation skill documents a max-step flag.
+    assert.doesNotMatch(skill, /--max-steps-per-turn\b/, `${rel} must not document a max-step option (kimi-code has none)`);
     assertPickerDescription(skill, rel);
   }
 });

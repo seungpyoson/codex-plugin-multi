@@ -397,8 +397,11 @@ test("kimi ping classifies timeout as transient latency", () => {
   }
 });
 
-test("kimi doctor reports cli_contract_mismatch when the installed CLI is kimi-code (no legacy --print) (#222, #223)", () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-doctor-contract-mismatch-"));
+test("kimi doctor runs the review profile on the kimi-code surface and reports ready (#222 migration)", () => {
+  // Post-migration the review profile routes to the kimi-code -p surface, so
+  // doctor (which probes with the review profile) must succeed on kimi-code —
+  // the inverse of the pre-migration cli_contract_mismatch behavior.
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-doctor-kimi-code-"));
   const bin = path.join(cwd, "kimi-code");
   writeFileSync(bin, `#!/usr/bin/env node
 const args = process.argv.slice(2);
@@ -426,25 +429,23 @@ if (args.includes("--help") || args.includes("-h")) {
   ].join("\\n"));
   process.exit(0);
 }
-// Must never be reached: relay must fail the contract check before spawning,
-// instead of dying here on the legacy --print flag.
-process.stderr.write("error: unknown option '--print'\\n");
-process.exit(1);
+// kimi-code rejects the legacy --print surface; relay must never emit it.
+if (args.includes("--print")) { process.stderr.write("error: unknown option '--print'\\n"); process.exit(1); }
+const pIdx = args.indexOf("-p");
+const prompt = pIdx >= 0 ? (args[pIdx + 1] ?? "") : "";
+if (!prompt) { process.stderr.write("mock: missing -p prompt arg\\n"); process.exit(1); }
+process.stdout.write(JSON.stringify({ role: "assistant", content: "pong" }) + "\\n");
+process.stdout.write(JSON.stringify({ role: "meta", type: "session.resume_hint", session_id: "session_doctor-1234", command: "kimi -r session_doctor-1234" }) + "\\n");
+process.exit(0);
 `, "utf8");
   chmodSync(bin, 0o755);
   try {
     const result = runCompanion(["doctor", "--binary", bin], { cwd });
-    assert.equal(result.status, 2, result.stderr || result.stdout);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
     const parsed = parseJson(result.stdout);
-    assert.equal(parsed.status, "cli_contract_mismatch");
-    assert.equal(parsed.ready, false);
-    assert.ok(Array.isArray(parsed.missing_flags));
-    assert.ok(parsed.missing_flags.includes("--print"), result.stdout);
-    assert.equal(parsed.detected_version, "0.18.0");
-    assert.match(parsed.detail, /#222/);
-    assert.match(parsed.next_action, /#222/);
-    // The cryptic "unknown option" path must NOT be what the operator sees.
-    assert.doesNotMatch(parsed.summary, /unknown option/);
+    assert.equal(parsed.status, "ok");
+    assert.equal(parsed.ready, true);
+    assert.notEqual(parsed.status, "cli_contract_mismatch");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -454,7 +455,7 @@ test("kimi ping classifies Codex sandbox denial for Kimi state as sandbox_blocke
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-denied-"));
   const bin = path.join(cwd, "kimi-denied");
   writeFileSync(bin, `#!/usr/bin/env node
-process.stderr.write("[Errno 1] Operation not permitted: '/Users/test/.kimi/tmpabc.tmp'\\n");
+process.stderr.write("[Errno 1] Operation not permitted: '/Users/test/.kimi-code/tmpabc.tmp'\\n");
 process.exit(1);
 `, "utf8");
   chmodSync(bin, 0o755);
@@ -469,8 +470,8 @@ process.exit(1);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.equal(parsed.ready, false);
     assert.match(parsed.summary, /Codex sandbox/);
-    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
-    assert.match(parsed.next_action, /fall back to ~\/\.kimi/);
+    assert.match(parsed.next_action, /~\/\.kimi-code\/logs/);
+    assert.match(parsed.next_action, /fall back to ~\/\.kimi-code/);
     assert.match(parsed.next_action, /writable_roots/);
     assert.match(parsed.detail, /Operation not permitted/);
   } finally {
@@ -482,7 +483,7 @@ test("kimi ping classifies Codex sandbox denial when traceback truncates before 
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-long-denied-"));
   const bin = path.join(cwd, "kimi-long-denied");
   writeFileSync(bin, `#!/usr/bin/env node
-process.stderr.write("Traceback (most recent call last)\\\\n" + "x".repeat(700) + "\\\\nPermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/logs/kimi.log'\\\\n");
+process.stderr.write("Traceback (most recent call last)\\\\n" + "x".repeat(700) + "\\\\nPermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi-code/logs/kimi.log'\\\\n");
 process.exit(1);
 `, "utf8");
   chmodSync(bin, 0o755);
@@ -496,8 +497,8 @@ process.exit(1);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.equal(parsed.ready, false);
-    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
-    assert.match(parsed.next_action, /fall back to ~\/\.kimi/);
+    assert.match(parsed.next_action, /~\/\.kimi-code\/logs/);
+    assert.match(parsed.next_action, /fall back to ~\/\.kimi-code/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -507,7 +508,7 @@ test("kimi ping classifies Codex sandbox denial for Kimi OAuth files before auth
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-auth-denied-"));
   const bin = path.join(cwd, "kimi-auth-denied");
   writeFileSync(bin, `#!/usr/bin/env node
-process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/auth.json'\\n");
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi-code/auth.json'\\n");
 process.exit(1);
 `, "utf8");
   chmodSync(bin, 0o755);
@@ -521,7 +522,7 @@ process.exit(1);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.match(parsed.next_action, /writable_roots/);
-    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
+    assert.match(parsed.next_action, /~\/\.kimi-code\/logs/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -531,7 +532,7 @@ test("kimi ping classifies Codex sandbox denial for bare Kimi state directory", 
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-dir-denied-"));
   const bin = path.join(cwd, "kimi-dir-denied");
   writeFileSync(bin, `#!/usr/bin/env node
-process.stderr.write("Permission denied: '/Users/test/.kimi'\\n");
+process.stderr.write("Permission denied: '/Users/test/.kimi-code'\\n");
 process.exit(1);
 `, "utf8");
   chmodSync(bin, 0o755);
@@ -544,8 +545,8 @@ process.exit(1);
     assert.equal(result.status, 2);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
-    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
-    assert.match(parsed.next_action, /fall back to ~\/\.kimi/);
+    assert.match(parsed.next_action, /~\/\.kimi-code\/logs/);
+    assert.match(parsed.next_action, /fall back to ~\/\.kimi-code/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -579,7 +580,7 @@ test("kimi ping ignores false-like CODEX_SANDBOX values for sandbox classificati
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-false-env-"));
   const bin = path.join(cwd, "kimi-false-env-denied");
   writeFileSync(bin, `#!/usr/bin/env node
-process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/auth.json'\\n");
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi-code/auth.json'\\n");
 process.exit(1);
 `, "utf8");
   chmodSync(bin, 0o755);
@@ -604,7 +605,7 @@ test("kimi ping classifies indented continuation-line Kimi permission denials", 
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-continuation-"));
   const bin = path.join(cwd, "kimi-continuation-denied");
   writeFileSync(bin, `#!/usr/bin/env node
-process.stderr.write("PermissionError: [Errno 1] Operation not permitted:\\n    '/Users/test/.kimi/config.toml'\\n");
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted:\\n    '/Users/test/.kimi-code/config.toml'\\n");
 process.exit(1);
 `, "utf8");
   chmodSync(bin, 0o755);
@@ -618,7 +619,7 @@ process.exit(1);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.match(parsed.next_action, /writable_roots/);
-    assert.match(parsed.next_action, /~\/\.kimi\/logs/);
+    assert.match(parsed.next_action, /~\/\.kimi-code\/logs/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -1577,7 +1578,7 @@ test("kimi foreground review timeout returns actionable JobRecord", () => withRe
 test("kimi foreground run fails closed on Codex sandbox denial before review launch", () => withRepo((cwd) => {
   const bin = path.join(cwd, "kimi-state-denied");
   writeFileSync(bin, `#!/usr/bin/env node
-process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi/logs/kimi.log'\\n");
+process.stderr.write("PermissionError: [Errno 1] Operation not permitted: '/Users/test/.kimi-code/logs/kimi.log'\\n");
 process.exit(1);
 `, "utf8");
   chmodSync(bin, 0o755);
