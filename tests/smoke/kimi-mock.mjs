@@ -1,34 +1,51 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
-import { writeFileSync } from "node:fs";
+// Fake kimi-code 0.18.0 CLI for the companion smoke suite. It speaks the
+// migrated prompt-mode surface only: `-p <prompt> --output-format stream-json
+// [-m model] [-S/--session id]`. The prompt arrives as the `-p` argv arg (never
+// stdin), and the response is emitted as NDJSON stream-json: an assistant turn
+// plus a `role:"meta"` session.resume_hint line. There is no legacy `--print`,
+// `--input-format`, `--agent-file`, `--add-dir`, or `--max-steps-per-turn`.
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PING_PROMPT } from "../../plugins/kimi/scripts/lib/companion-common.mjs";
 
-if (process.argv.includes("--version") || process.argv.includes("-v")) {
-  process.stdout.write("1.41.0\n");
+// kimi-code --help screen: advertises exactly the prompt-mode flag surface the
+// adapter emits, so detectKimiCapabilities reports ok:true and assertKimiContract
+// is exercised faithfully (rather than failing open on an unprobed CLI).
+const KIMI_CODE_HELP = `Usage: kimi [options] [command]
+
+Options:
+  -V, --version                 output the version number
+  -m, --model <model>           LLM model alias to use for this invocation.
+  -p, --prompt <prompt>         Run one prompt non-interactively and print the response.
+  --output-format <format>      Output format for prompt mode. (choices: "text", "stream-json")
+  -S, --session [id]            Resume a session.
+  -y, --yolo                    Automatically approve all actions.
+  --plan                        Start in plan mode.
+  -h, --help                    Show help.
+`;
+
+if (process.argv.includes("--help")) {
+  process.stdout.write(KIMI_CODE_HELP);
+  process.exit(0);
+}
+if (process.argv.includes("--version") || process.argv.includes("-V")) {
+  process.stdout.write("0.18.0\n");
   process.exit(0);
 }
 
 function parseCli(argv) {
-  const valueFlags = new Set([
-    "-p", "--prompt", "-m", "--model", "--output-format",
-    "--input-format", "--session", "--resume", "--add-dir", "--max-steps-per-turn",
-    "--agent-file", "--mcp-config-file", "--skills-dir",
-  ]);
-  const boolFlags = new Set(["--print", "--final-message-only", "--thinking", "--plan", "-y", "--yolo"]);
+  const valueFlags = new Set(["-p", "--prompt", "-m", "--model", "--output-format", "-S", "--session"]);
   const out = { flags: {}, positional: [] };
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i];
     if (valueFlags.has(tok)) {
       out.flags[tok] = argv[i + 1] ?? "";
       i += 1;
-    } else if (boolFlags.has(tok)) {
-      out.flags[tok] = true;
+    } else if (tok.startsWith("-")) {
+      process.stderr.write(`kimi-mock: unknown flag ${tok}\n`);
+      process.exit(1);
     } else {
-      if (tok.startsWith("-")) {
-        process.stderr.write(`kimi-mock: unknown flag ${tok}\n`);
-        process.exit(1);
-      }
       out.positional.push(tok);
     }
   }
@@ -36,24 +53,11 @@ function parseCli(argv) {
 }
 
 const parsed = parseCli(process.argv.slice(2));
-const stdin = readFileSync(0, "utf8");
-const promptArg = parsed.flags["-p"] ?? parsed.flags["--prompt"] ?? "";
-const prompt = `${promptArg}${stdin}`;
+const prompt = parsed.flags["-p"] ?? parsed.flags["--prompt"] ?? "";
 const isPingPrompt = prompt.trim() === PING_PROMPT;
 const isCompanionPreflight = isPingPrompt && process.env.KIMI_COMPANION_PREFLIGHT === "1";
-const includeDirs = String(parsed.flags["--add-dir"] ?? "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-const expectedAllowedTools = [
-  "kimi_cli.tools.file:ReadFile",
-  "kimi_cli.tools.file:Glob",
-  "kimi_cli.tools.file:Grep",
-];
-const agentFileText = parsed.flags["--agent-file"]
-  ? readFileSync(parsed.flags["--agent-file"], "utf8")
-  : "";
-const sessionId = (parsed.flags["--session"] ?? parsed.flags["--resume"])
+const resumeId = parsed.flags["-S"] ?? parsed.flags["--session"] ?? "";
+const sessionId = resumeId
   ? "77777777-8888-4999-aaaa-bbbbbbbbbbbb"
   : "22222222-3333-4444-9555-666666666666";
 const model = parsed.flags["-m"] ?? parsed.flags["--model"] ?? "unknown";
@@ -96,19 +100,10 @@ if (excludedPromptText && !isCompanionPreflight && prompt.includes(excludedPromp
   process.exit(1);
 }
 
-const expectedMaxSteps = process.env.KIMI_MOCK_ASSERT_MAX_STEPS_PER_TURN;
-if (expectedMaxSteps && String(parsed.flags["--max-steps-per-turn"] ?? "") !== expectedMaxSteps) {
-  process.stderr.write(
-    `kimi-mock: --max-steps-per-turn mismatch: expected ${expectedMaxSteps}, got ${parsed.flags["--max-steps-per-turn"] ?? "<missing>"}\n`,
-  );
-  process.exit(1);
-}
-
 const expectedResumeId = process.env.KIMI_MOCK_ASSERT_RESUME_ID;
-const actualResumeId = parsed.flags["--session"] ?? parsed.flags["--resume"] ?? "";
-if (expectedResumeId && !isCompanionPreflight && actualResumeId !== expectedResumeId) {
+if (expectedResumeId && !isCompanionPreflight && resumeId !== expectedResumeId) {
   process.stderr.write(
-    `kimi-mock: resume id mismatch: expected ${expectedResumeId}, got ${actualResumeId || "<missing>"}\n`,
+    `kimi-mock: resume id mismatch: expected ${expectedResumeId}, got ${resumeId || "<missing>"}\n`,
   );
   process.exit(1);
 }
@@ -132,56 +127,26 @@ if (!isCompanionPreflight && process.env.KIMI_MOCK_MUTATE_FILE) {
   writeFileSync(process.env.KIMI_MOCK_MUTATE_FILE, "kimi mock mutation\n", "utf8");
 }
 
-if (!isCompanionPreflight && process.env.KIMI_MOCK_STEP_LIMIT) {
-  const limit = process.env.KIMI_MOCK_STEP_LIMIT;
-  if (process.env.KIMI_MOCK_STEP_LIMIT_PREFIX_JSON === "1") {
-    process.stdout.write(JSON.stringify({ content: "Partial Kimi response.", session_id: sessionId }) + "\n");
-  }
-  process.stdout.write(`Max number of steps reached: ${limit}\n`);
-  const resumeHint = `To resume this session: kimi -r ${sessionId}\n`;
-  if (process.env.KIMI_MOCK_STEP_LIMIT_RESUME_ON_STDOUT === "1") {
-    process.stdout.write(resumeHint);
-  } else {
-    process.stderr.write(resumeHint);
-  }
-  process.exit(1);
+// stream-json transcript: a single assistant verdict turn followed by the
+// session resume-hint meta line. parseKimiCodeStreamJson takes the last
+// assistant turn for review modes and the meta session_id verbatim.
+const assistantLine = () => JSON.stringify({ role: "assistant", content: mockResponse });
+const metaLine = () => JSON.stringify({
+  role: "meta",
+  type: "session.resume_hint",
+  session_id: sessionId,
+  command: `kimi -r ${sessionId}`,
+  content: `To resume this session: kimi -r ${sessionId}`,
+});
+function emitTranscript() {
+  process.stdout.write(`${assistantLine()}\n`);
+  process.stdout.write(`${metaLine()}\n`);
 }
 
-const fixture = {
-  session_id: sessionId,
-  response: mockResponse,
-  stats: {
-    models: {
-      [model]: {
-        tokens: { total: 12 },
-      },
-    },
-  },
-  t7_plan: parsed.flags["--plan"] === true,
-  t7_yolo: parsed.flags["-y"] === true || parsed.flags["--yolo"] === true,
-  t7_print: parsed.flags["--print"] === true,
-  t7_output_format: parsed.flags["--output-format"] ?? null,
-  t7_prompt_from_stdin: promptArg === "" && stdin.length > 0 && prompt.length > 0,
-  t7_resume_id: parsed.flags["--session"] ?? parsed.flags["--resume"] ?? null,
-  t7_include_dirs: includeDirs,
-  t7_agent_file: parsed.flags["--agent-file"] ?? null,
-  t7_mcp_config_file: parsed.flags["--mcp-config-file"] ?? null,
-  t7_skills_dir: parsed.flags["--skills-dir"] ?? null,
-  t7_agent_allowed_tools: expectedAllowedTools.filter((tool) => agentFileText.includes(tool)),
-  t7_agent_forbidden_tool_mentions: [
-    "kimi_cli.tools.file:WriteFile",
-    "kimi_cli.tools.file:StrReplaceFile",
-    "kimi_cli.tools.shell:Shell",
-    "kimi_cli.tools.agent:Agent",
-    "kimi_cli.tools.plan:ExitPlanMode",
-    "kimi_cli.tools.plan.enter:EnterPlanMode",
-  ].filter((tool) => agentFileText.includes(tool)),
-};
-
 const assertCwdAbs = process.env.KIMI_MOCK_ASSERT_CWD;
-if (assertCwdAbs) {
-  fixture.t7_cwd_match = process.cwd() === assertCwdAbs;
-  fixture.t7_cwd = process.cwd();
+if (assertCwdAbs && process.cwd() !== assertCwdAbs) {
+  process.stderr.write(`kimi-mock: cwd must be ${assertCwdAbs}, got ${process.cwd()}\n`);
+  process.exit(1);
 }
 
 const assertCwdNot = process.env.KIMI_MOCK_ASSERT_CWD_NOT;
@@ -189,18 +154,11 @@ if (assertCwdNot && process.cwd() === assertCwdNot) {
   process.stderr.write(`kimi-mock: cwd must not be ${assertCwdNot}\n`);
   process.exit(1);
 }
-if (assertCwdNot) fixture.t7_cwd = process.cwd();
 
 const assertCwdPrefix = process.env.KIMI_MOCK_ASSERT_CWD_PREFIX;
 if (assertCwdPrefix && !process.cwd().startsWith(assertCwdPrefix)) {
   process.stderr.write(`kimi-mock: cwd ${process.cwd()} does not start with ${assertCwdPrefix}\n`);
   process.exit(1);
-}
-if (assertCwdPrefix) fixture.t7_cwd = process.cwd();
-
-const assertFileRel = process.env.KIMI_MOCK_ASSERT_FILE;
-if (assertFileRel) {
-  fixture.t7_saw_file = includeDirs.some((dir) => existsSync(resolve(dir, assertFileRel)));
 }
 
 // Kimi's companion does not pass --session-id to the target CLI, so the
@@ -273,13 +231,13 @@ if (process.env.KIMI_MOCK_STATE_LOCK_CONFLICT === "1" && !isCompanionPreflight) 
 }
 
 // Issue #22 sub-task 2 oracle: `KIMI_MOCK_TRAP_SIGTERM=1` makes the mock
-// handle SIGTERM cleanly — emits the fixture and exits 0, exactly like a
+// handle SIGTERM cleanly — emits the transcript and exits 0, exactly like a
 // well-behaved CLI that traps signals. Without the cancel-marker fix,
 // classifyExecution would mis-report this as "completed" even when the
 // operator had asked for a cancel.
 if (process.env.KIMI_MOCK_TRAP_SIGTERM === "1") {
   process.on("SIGTERM", () => {
-    process.stdout.write(JSON.stringify(fixture) + "\n");
+    emitTranscript();
     process.exit(0);
   });
 }
@@ -287,9 +245,9 @@ if (process.env.KIMI_MOCK_TRAP_SIGTERM === "1") {
 const delayMs = isCompanionPreflight ? 0 : Number(process.env.KIMI_MOCK_DELAY_MS ?? "0");
 if (Number.isFinite(delayMs) && delayMs > 0) {
   setTimeout(() => {
-    process.stdout.write(JSON.stringify(fixture) + "\n");
+    emitTranscript();
     process.exit(0);
   }, delayMs);
 } else {
-  process.stdout.write(JSON.stringify(fixture) + "\n");
+  emitTranscript();
 }

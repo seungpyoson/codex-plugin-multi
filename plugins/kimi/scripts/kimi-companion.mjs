@@ -376,7 +376,7 @@ function reviewAuditManifest(invocation, prompt, containmentPath, execution) {
       model: invocation.model,
       timeoutMs: invocation.timeout_ms ?? null,
       maxTokens: null,
-      maxStepsPerTurn: invocation.max_steps_per_turn ?? null,
+      maxStepsPerTurn: null, // kimi-code has no per-invocation step budget
       temperature: null,
     },
     truncation: { prompt: false, source: false, output: false },
@@ -658,58 +658,11 @@ function makeKimiPingCwd() {
   return dir;
 }
 
-function createKimiReadOnlyLaunchFiles(profile) {
-  if (!Array.isArray(profile.allowed_tools)) return null;
-  const dir = mkdtempSync(joinPath(tmpdir(), "kimi-policy-"));
-  const skillsDir = joinPath(dir, "skills");
-  const mcpConfigFile = joinPath(dir, "empty-mcp.json");
-  const agentFilePath = joinPath(dir, "agent.yaml");
-  const systemPromptPath = joinPath(dir, "system.md");
-  mkdirSync(skillsDir, { recursive: true, mode: 0o700 });
-  writeFileSync(mcpConfigFile, "{}\n", "utf8");
-  writeFileSync(systemPromptPath, [
-    "You are a read-only external reviewer.",
-    "Use only the prompt text supplied by the caller.",
-    "Do not use tools, inspect the workspace, edit files, or fetch external content.",
-    "Return the requested review verdict and findings directly.",
-    "",
-  ].join("\n"), "utf8");
-  writeFileSync(agentFilePath, [
-    "version: 1",
-    "agent:",
-    "  name: codex-readonly-reviewer",
-    "  system_prompt_path: ./system.md",
-    ...(profile.allowed_tools.length === 0
-      ? ["  tools: []"]
-      : ["  tools:", ...profile.allowed_tools.map((tool) => `    - ${JSON.stringify(tool)}`)]),
-    "  subagents: {}",
-    "",
-  ].join("\n"), "utf8");
-  let cleaned = false;
-  const cleanup = () => {
-    if (cleaned) return;
-    cleaned = true;
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
-  };
-  try { process.once("exit", cleanup); } catch { /* best-effort */ }
-  return Object.freeze({ dir, agentFilePath, mcpConfigFile, skillsDir, cleanup });
-}
-
-function readOnlyLaunchInputs(launchFiles) {
-  if (!launchFiles) return {};
-  return {
-    agentFilePath: launchFiles.agentFilePath,
-    mcpConfigFile: launchFiles.mcpConfigFile,
-    skillsDir: launchFiles.skillsDir,
-  };
-}
-
 async function kimiReadinessPreflight(invocation, profile) {
   const readinessProfile = resolveProfile("ping");
   const candidates = modelCandidatesForInvocation(profile, invocation);
   let execution = null;
   const pingCwd = makeKimiPingCwd();
-  const launchFiles = createKimiReadOnlyLaunchFiles(readinessProfile);
   try {
     for (let i = 0; i < candidates.length; i++) {
       execution = await spawnKimi(readinessProfile, {
@@ -719,8 +672,6 @@ async function kimiReadinessPreflight(invocation, profile) {
         binary: invocation.binary,
         env: { ...process.env, KIMI_COMPANION_PREFLIGHT: "1" },
         timeoutMs: KIMI_READINESS_PREFLIGHT_TIMEOUT_MS,
-        maxStepsPerTurn: invocation.max_steps_per_turn,
-        ...readOnlyLaunchInputs(launchFiles),
       });
       if (execution.parsed?.ok === true) return null;
       if (
@@ -744,8 +695,6 @@ async function kimiReadinessPreflight(invocation, profile) {
       stderr: "",
       errorMessage: isKimiCodexSandboxBlocked(detail) ? `sandbox_blocked: ${detail}` : detail,
     };
-  } finally {
-    if (launchFiles) launchFiles.cleanup();
   }
 
   const failureText = pingFailureText(execution);
@@ -770,16 +719,11 @@ function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
 }
 
 function runtimeOptionsForRecord(record, runtimeOptions = {}) {
-  const profile = resolveProfile(record.mode_profile_name ?? record.mode);
   return {
     timeout_ms:
       runtimeOptions.timeout_ms ??
       record.review_metadata?.audit_manifest?.request?.timeout_ms ??
       DEFAULT_KIMI_REVIEW_TIMEOUT_MS,
-    max_steps_per_turn:
-      runtimeOptions.max_steps_per_turn ??
-      profile.max_steps_per_turn ??
-      8,
   };
 }
 
@@ -795,7 +739,6 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
   const payload = {
     timeout_ms: options.timeout_ms,
-    max_steps_per_turn: options.max_steps_per_turn,
   };
   if (options.previous_source_attempt && typeof options.previous_source_attempt === "object") {
     payload.previous_source_attempt = options.previous_source_attempt;
@@ -842,10 +785,8 @@ function readRuntimeOptionsSidecar(workspaceRoot, jobId) {
   const parsed = consumed.value;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const timeoutMs = parsed.timeout_ms;
-  const maxSteps = parsed.max_steps_per_turn;
   const options = {};
   if (Number.isSafeInteger(timeoutMs) && timeoutMs > 0) options.timeout_ms = timeoutMs;
-  if (Number.isSafeInteger(maxSteps) && maxSteps > 0) options.max_steps_per_turn = maxSteps;
   if (parsed.previous_source_attempt && typeof parsed.previous_source_attempt === "object" && !Array.isArray(parsed.previous_source_attempt)) {
     options.previous_source_attempt = parsed.previous_source_attempt;
   }
@@ -906,7 +847,6 @@ function invocationFromRecord(record, runtimeOptions = {}) {
     binary: record.binary,
     timeout_ms: resolvedRuntimeOptions.timeout_ms,
     run_kind: runKindFromRecord(record),
-    max_steps_per_turn: resolvedRuntimeOptions.max_steps_per_turn,
     ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(record.mode) }),
     previous_source_attempt: runtimeOptions.previous_source_attempt ?? null,
     review_slot_prior_attempts: runtimeOptions.review_slot_prior_attempts ?? [],
@@ -944,15 +884,6 @@ function rejectUnsupportedAuthMode(options = {}) {
   if (options["auth-mode"] !== undefined) {
     fail("bad_args", "Kimi supports subscription auth only; --auth-mode is not supported.");
   }
-}
-
-function parsePositiveMaxStepsPerTurn(value, fallback) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const parsed = Number(value);
-  if (parsed <= 0 || !Number.isSafeInteger(parsed)) {
-    fail("bad_args", `--max-steps-per-turn must be a positive integer; got ${JSON.stringify(value)}`);
-  }
-  return parsed;
 }
 
 async function spawnDetachedWorker(cwd, jobId) {
@@ -1098,7 +1029,7 @@ async function cmdRun(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: [
       "mode", "model", "cwd", "binary", "scope", "scope-base", "scope-paths",
-      "override-dispose", "timeout-ms", "max-steps-per-turn", "lifecycle-events", "auth-mode",
+      "override-dispose", "timeout-ms", "lifecycle-events", "auth-mode",
       "review-slot-disposition", "review-slot-waiver-artifact", "review-slot-override-artifact",
       "prompt-file",
     ],
@@ -1138,10 +1069,6 @@ async function cmdRun(rest) {
   const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_REVIEW_TIMEOUT_MS, {
     envName: "KIMI_REVIEW_TIMEOUT_MS",
   });
-  const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
-    options["max-steps-per-turn"],
-    profile.max_steps_per_turn ?? 8,
-  );
 
   const jobId = newJobId();
   const reviewSlotPriorAttempts = collectPriorReviewSlotAttempts(workspaceRoot, jobId);
@@ -1167,7 +1094,6 @@ async function cmdRun(rest) {
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
     run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
-    max_steps_per_turn: maxStepsPerTurn,
     ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(mode) }),
     previous_source_attempt: latestSourcePacketPreviousAttempt(reviewSlotPriorAttempts),
     review_slot_prior_attempts: reviewSlotPriorAttempts,
@@ -1179,7 +1105,6 @@ async function cmdRun(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeRuntimeOptionsSidecar(workspaceRoot, jobId, {
     timeout_ms: timeoutMs,
-    max_steps_per_turn: maxStepsPerTurn,
     previous_source_attempt: invocation.previous_source_attempt,
     review_slot_prior_attempts: invocation.review_slot_prior_attempts,
     review_slot_disposition: invocation.review_slot_disposition,
@@ -1277,7 +1202,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   const resumeId = invocation.resume_chain && invocation.resume_chain.length > 0
     ? invocation.resume_chain[invocation.resume_chain.length - 1]
     : null;
-  const launchFiles = createKimiReadOnlyLaunchFiles(profile);
 
   // Pre-spawn cancel-marker check (Class 1 + Finding A, race window α).
   // cmdRunWorker has its own check at the top of the worker body, but a
@@ -1293,7 +1217,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     if (neutralCwd) {
       try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
-    if (launchFiles) launchFiles.cleanup();
     if (disposeEffective) {
       try { containment.cleanup(); } catch { /* best-effort */ }
     }
@@ -1312,7 +1235,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     if (neutralCwd) {
       try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
-    if (launchFiles) launchFiles.cleanup();
     if (disposeEffective) {
       try { containment.cleanup(); } catch { /* best-effort */ }
     }
@@ -1348,7 +1270,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     if (neutralCwd) {
       try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
-    if (launchFiles) launchFiles.cleanup();
     if (disposeEffective) {
       try { containment.cleanup(); } catch { /* best-effort */ }
     }
@@ -1398,7 +1319,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     releaseProviderWorkloadLease(workloadLease);
     workloadLease = null;
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-    if (launchFiles) launchFiles.cleanup();
     if (disposeEffective) containment.cleanup();
     if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
     process.exit(2);
@@ -1422,13 +1342,10 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       execution = await spawnKimi(profile, {
         model: attemptModel,
         promptText: prompt,
-        includeDirPath: containment.path,
         cwd: neutralCwd ?? containment.path,
         binary: invocation.binary,
         resumeId,
         timeoutMs: invocation.timeout_ms,
-        maxStepsPerTurn: invocation.max_steps_per_turn,
-        ...readOnlyLaunchInputs(launchFiles),
         onSpawn: (pidInfo) => {
           const runningExecution = {
             status: "running",
@@ -1473,7 +1390,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     writeJobFile(workspaceRoot, jobId, errorRecord);
     upsertJob(workspaceRoot, errorRecord);
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-    if (launchFiles) launchFiles.cleanup();
     if (disposeEffective) containment.cleanup();
     stopHeartbeat();
     if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
@@ -1587,7 +1503,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       }
     }
     if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-    if (launchFiles) launchFiles.cleanup();
     if (containment.disposed && disposeEffective) {
       try { containment.cleanup(); } catch { /* best-effort */ }
     }
@@ -1597,7 +1512,6 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
   }
 
   if (neutralCwd) rmSync(neutralCwd, { recursive: true, force: true });
-  if (launchFiles) launchFiles.cleanup();
   if (containment.disposed && disposeEffective) containment.cleanup();
   if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
   process.exit(finalRecord.status === "completed" || finalRecord.status === "cancelled" ? 0 : 2);
@@ -1703,7 +1617,7 @@ async function cmdRunWorker(rest) {
 async function cmdContinue(rest) {
   const { options, positionals } = parseArgs(rest, {
     valueOptions: [
-      "job", "cwd", "model", "binary", "timeout-ms", "max-steps-per-turn", "lifecycle-events", "auth-mode",
+      "job", "cwd", "model", "binary", "timeout-ms", "lifecycle-events", "auth-mode",
       "review-slot-disposition", "review-slot-waiver-artifact", "review-slot-override-artifact",
       "prompt-file",
     ],
@@ -1768,10 +1682,6 @@ async function cmdContinue(rest) {
     prior.review_metadata?.audit_manifest?.request?.timeout_ms ??
     DEFAULT_KIMI_REVIEW_TIMEOUT_MS;
   const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], priorTimeoutMs, { envName: "KIMI_REVIEW_TIMEOUT_MS" });
-  const maxStepsPerTurn = parsePositiveMaxStepsPerTurn(
-    options["max-steps-per-turn"],
-    priorRuntimeOptions.max_steps_per_turn ?? priorProfile.max_steps_per_turn ?? 8,
-  );
   const previousSourceAttempt = sourcePacketPreviousAttemptForContinuation(prior, priorRuntimeOptions);
   const resumeWithoutSourceResend =
     (
@@ -1801,7 +1711,6 @@ async function cmdContinue(rest) {
     binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
     run_kind: options.background ? "background" : "foreground",
     timeout_ms: timeoutMs,
-    max_steps_per_turn: maxStepsPerTurn,
     ...subscriptionRouteFacts({ sourceBearing: modeSendsSelectedSource(priorModeName) }),
     previous_source_attempt: previousSourceAttempt,
     review_slot_prior_attempts: reviewSlotPriorAttempts,
@@ -1815,7 +1724,6 @@ async function cmdContinue(rest) {
   const queuedRecord = buildJobRecord(invocation, null, []);
   writeRuntimeOptionsSidecar(workspaceRoot, newJobId_, {
     timeout_ms: timeoutMs,
-    max_steps_per_turn: maxStepsPerTurn,
     previous_source_attempt: previousSourceAttempt,
     review_slot_prior_attempts: invocation.review_slot_prior_attempts,
     resend_confirmation_approved: options["resend-confirmation-approved"] === true,
@@ -2068,7 +1976,6 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
   const candidates = modelCandidates.length > 0 ? modelCandidates : [model];
   const timeoutMs = parsePositiveTimeoutMs(options["timeout-ms"], DEFAULT_KIMI_PING_TIMEOUT_MS);
   const pingCwd = makeKimiPingCwd();
-  const launchFiles = createKimiReadOnlyLaunchFiles(profile);
   try {
     let execution = null;
     let selectedModel = model;
@@ -2082,7 +1989,6 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
         cwd: pingCwd,
         binary: options.binary ?? process.env.KIMI_BINARY ?? "kimi",
         timeoutMs,
-        ...readOnlyLaunchInputs(launchFiles),
       });
       if (
         execution.exitCode !== 0 &&
@@ -2157,8 +2063,6 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     }
     printJson({ status: "error", ...pingErrorFields(), ...pingRouteAuthFields(), detail });
     process.exit(2);
-  } finally {
-    if (launchFiles) launchFiles.cleanup();
   }
 }
 

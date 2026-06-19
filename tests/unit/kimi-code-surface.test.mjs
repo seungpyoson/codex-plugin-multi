@@ -5,8 +5,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
-  selectKimiSurface,
-  detectKimiCapabilities,
   KimiContractMismatchError,
 } from "../../plugins/kimi/scripts/lib/kimi-capabilities.mjs";
 import {
@@ -42,57 +40,10 @@ Options:
   -h, --help                    Show help.
 `;
 
-// Legacy kimi-cli --help (the --print surface relay's buildKimiArgs targets).
-const LEGACY_HELP = `Usage: kimi [options]
-
-Options:
-  --print                       Print mode.
-  --final-message-only          Only the final message.
-  --input-format <fmt>          Input format.
-  --output-format <fmt>         Output format.
-  -m, --model <model>           Model.
-  --thinking                    Thinking.
-  -h, --help                    Show help.
-`;
-
 // The real kimi-code session id shape: an underscore-prefixed UUID. Both the
 // legacy [0-9a-fA-F-] resume regex and an un-anchored fallback that excludes "_"
 // miss the session_ prefix, so the resume-hint regex must include "_".
 const KIMI_CODE_SESSION_ID = "session_eeee19b6-5926-4180-a880-1d7d33dfc227";
-
-function fakeRun(map) {
-  return (_binary, args) => map[args.join(" ")] ?? { status: 1, stdout: "", stderr: "unknown", error: null };
-}
-
-function kimiCodeCaps() {
-  return detectKimiCapabilities("kimi", {
-    runImpl: fakeRun({
-      "--help": { status: 0, stdout: KIMI_CODE_HELP, stderr: "" },
-      "--version": { status: 0, stdout: "0.18.0\n", stderr: "" },
-    }),
-  });
-}
-
-test("selectKimiSurface: -p/--prompt without --print is the kimi-code surface", () => {
-  assert.equal(selectKimiSurface(kimiCodeCaps()), "kimi-code");
-});
-
-test("selectKimiSurface: --print is the legacy surface", () => {
-  const caps = detectKimiCapabilities("kimi", {
-    runImpl: fakeRun({
-      "--help": { status: 0, stdout: LEGACY_HELP, stderr: "" },
-      "--version": { status: 0, stdout: "1.41.0\n", stderr: "" },
-    }),
-  });
-  assert.equal(selectKimiSurface(caps), "legacy");
-});
-
-test("selectKimiSurface: unknown/unprobed capabilities select no surface (null)", () => {
-  assert.equal(selectKimiSurface({ ok: false, supportedFlags: new Set() }), null);
-  assert.equal(selectKimiSurface(null), null);
-  // ok but neither --print nor --prompt advertised -> still null (do not guess).
-  assert.equal(selectKimiSurface({ ok: true, supportedFlags: new Set(["--help"]) }), null);
-});
 
 test("buildKimiCodeArgs: native ping uses -p prompt arg + stream-json, no legacy/permission flags", () => {
   const args = buildKimiCodeArgs(resolveProfile("ping"), { model: null, promptText: "say pong" });
@@ -285,8 +236,8 @@ process.exit(0);
 test("spawnKimi: a kimi-code-ish CLI that advertises -p but not --output-format fails as cli_contract_mismatch, not raw", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "kimi-code-partial-"));
   const binary = path.join(dir, "kimi-partial.mjs");
-  // --help advertises the -p surface (so selectKimiSurface => kimi-code) but is
-  // missing --output-format, which buildKimiCodeArgs emits.
+  // --help advertises the -p surface but is missing --output-format, which
+  // buildKimiCodeArgs emits.
   const partialHelp = `Usage: kimi [options]
 
 Options:
@@ -311,11 +262,11 @@ process.stderr.write("should not reach prompt mode\\n"); process.exit(3);
   }
 });
 
-test("parseKimiResult(kimi-code): step exhaustion classifies as kimi_error, never the dead legacy step_limit branch", () => {
-  // kimi-code surfaces step exhaustion as an error event / nonzero exit — NOT the
-  // legacy "Max number of steps reached: N" plain line (that sentinel is parsed
-  // only on the legacy surface). Assert the kimi-code branch never returns
-  // step_limit_exceeded, so max_steps_per_turn is correctly inert here.
+test("parseKimiResult(kimi-code): step exhaustion classifies as kimi_error, never a step_limit branch", () => {
+  // kimi-code surfaces step exhaustion as an error event / nonzero exit — the
+  // adapter has no per-invocation step budget. Assert parsing never returns
+  // step_limit_exceeded: the "Max number of steps reached: N" plain line is not a
+  // recognized sentinel on the only (kimi-code) surface.
   const errEvent = parseKimiResult(`{"role":"error","is_error":true,"error":"Max number of steps reached: 16"}\n`,
     "", { exitCode: 1, surface: "kimi-code" });
   assert.equal(errEvent.ok, false);

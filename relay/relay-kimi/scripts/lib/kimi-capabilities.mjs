@@ -1,13 +1,13 @@
 // Kimi CLI capability detection + command-surface contract guard (#222, #223).
 //
-// Relay's `buildKimiArgs` emits the legacy `kimi-cli` flag surface (e.g.
-// `--print`, `--input-format`, `--max-steps-per-turn`). The rewritten
-// `kimi-code` CLI uses a different contract (e.g. `-p/--prompt`, no
-// `--input-format`), so spawning it with the legacy flags dies on the first
-// unknown option with a cryptic "unknown option" error before auth is ever
-// reached. Rather than hardcode either generation's flag spellings, we read the
-// installed CLI's own `--help` and fail with a clear, terminal
-// `cli_contract_mismatch` when relay's emitted flags are not supported.
+// Relay targets the kimi-code prompt-mode surface (`-p/--prompt`,
+// `--output-format`, `--session`). A different CLI generation (e.g. the legacy
+// `kimi-cli` `--print` surface) advertises a different contract, so spawning it
+// with relay's flags dies on the first unknown option with a cryptic "unknown
+// option" error before auth is ever reached. Rather than hardcode any
+// generation's flag spellings, we read the installed CLI's own `--help` and
+// fail with a clear, terminal `cli_contract_mismatch` when relay's emitted
+// flags are not supported.
 //
 // Detection is FAIL-OPEN: when we cannot confidently read the CLI's contract
 // (e.g. `--help` errors, or its output is unrecognizable) we report ok:false and
@@ -63,22 +63,6 @@ export function detectKimiCapabilities(binary, { env = process.env, runImpl = ru
     version = String(ver.stdout ?? "").trim().split("\n")[0] || null;
   }
   return { ok: true, supportedFlags, version, detail: null };
-}
-
-// Decide which command surface the installed CLI exposes, from detected
-// capabilities. "kimi-code" = the rewritten -p/--prompt CLI (no --print);
-// "legacy" = the original kimi-cli --print surface; null = unknown — either
-// detection failed or the surface is unrecognized, so callers keep the legacy
-// default + assertKimiContract guard rather than guessing. Routing on the
-// advertised flag set (not a version string) keeps this a class-level decision:
-// a future CLI generation is classified by what it supports, not by a hardcoded
-// version match (#222).
-export function selectKimiSurface(capabilities) {
-  if (!capabilities?.ok) return null;
-  const flags = capabilities.supportedFlags;
-  if ((flags.has("--prompt") || flags.has("-p")) && !flags.has("--print")) return "kimi-code";
-  if (flags.has("--print")) return "legacy";
-  return null;
 }
 
 // The distinct flag tokens an argv array uses (entries starting with "-").

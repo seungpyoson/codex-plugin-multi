@@ -29,7 +29,9 @@ Commands:
   doctor                        Validate Kimi Code configuration files.
 `;
 
-// Legacy kimi-cli help (the surface relay's buildKimiArgs targets).
+// A non-kimi-code CLI help screen (the older `--print` surface). Used as a
+// fixture to prove the contract guard rejects a CLI that does not advertise the
+// kimi-code prompt-mode flags relay emits.
 const LEGACY_HELP = `Usage: kimi [options]
 
 Options:
