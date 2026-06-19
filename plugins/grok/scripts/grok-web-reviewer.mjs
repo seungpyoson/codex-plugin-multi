@@ -2014,7 +2014,15 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
   }
   const modelsInfo = parseGrokCliModels(models.stdout, cfg);
   const ignoredEnvCredentials = ignoredGrokDirectApiEnvKeys(cfg, env);
-  if (authFreshness.status === "expired") {
+  // Precedence: the live `grok models` result is authoritative over the cached
+  // access-token expiry snapshot taken above (before `grok models` ran). The
+  // bounded `grok models` call triggers the Grok CLI's own silent token refresh,
+  // so a stale cached `exp` alone does NOT mean the session is dead. Only fail
+  // fast on expired auth when the live result ALSO fails to confirm a working
+  // session (not logged in, or model not ready). This leans entirely on the
+  // CLI's refresh — it reads no refresh_token and makes no auth-file schema
+  // assumptions (see #190, #223).
+  if (authFreshness.status === "expired" && !(modelsInfo.logged_in && modelsInfo.model_ready)) {
     return providerFailureWithDiagnostic(
       "grok_cli_auth_expired",
       grokCliAuthExpiredMessage(cfg, env),
@@ -2079,6 +2087,13 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
   const sourceFree = await callGrokCli(cfg, REVIEW_READINESS_PREFLIGHT_PROMPT, {
     sourceBearing: false,
     env,
+    // If we proceeded past an expired cached access-token exp (because the live
+    // `grok models` confirmed logged_in/model_ready), bound this refresh probe
+    // so a session that still stalls on interactive OAuth fails fast instead of
+    // waiting out the full review timeout (#187 hang regression guard; #190, #223).
+    timeoutMs: authFreshness.status === "expired"
+      ? Math.min(cfg.timeout_ms, cfg.refresh_probe_timeout_ms)
+      : cfg.timeout_ms,
     baseDiagnostics: {
       grok_version: versionText,
       default_model: modelsInfo.default_model,
@@ -2128,7 +2143,7 @@ async function grokCliReadinessPreflight(cfg, env = process.env) {
   };
 }
 
-async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics = {}, env = process.env } = {}) {
+async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics = {}, env = process.env, timeoutMs = cfg.timeout_ms } = {}) {
   const neutralCwd = resolve(tmpdir(), `grok-cli-cwd-${randomUUID()}`);
   let promptDir = null;
   let promptFile = null;
@@ -2158,7 +2173,7 @@ async function callGrokCli(cfg, prompt, { sourceBearing = true, baseDiagnostics 
     ];
     result = await runGrokCliCommandAsync(cfg, args, {
       cwd: neutralCwd,
-      timeoutMs: cfg.timeout_ms,
+      timeoutMs,
       env: {
         GROK_HOME: runtimeHome.dir,
         GROK_MEMORY: "0",
