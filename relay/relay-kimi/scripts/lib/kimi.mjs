@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { attachPidCapture } from "./identity.mjs";
 import { sanitizeTargetEnv } from "./provider-env.mjs";
 import { usageLimitMessage } from "./usage-limit.mjs";
+import { detectKimiCapabilities, assertKimiContract } from "./kimi-capabilities.mjs";
 
 function assertProfile(profile) {
   if (!profile || typeof profile !== "object") {
@@ -230,6 +231,11 @@ export async function spawnKimi(profile, runtimeInputs = {}) {
     mcpConfigFile,
     skillsDir,
   });
+  // Fail fast with a clear cli_contract_mismatch if the installed CLI does not
+  // support the flag surface we are about to emit, instead of dying on a cryptic
+  // "unknown option" before auth (#222, #223). No-op when the contract cannot be
+  // probed (fail-open).
+  assertKimiContract(args, detectKimiCapabilities(binary, { env }));
   const targetEnv = sanitizeTargetEnv(env);
 
   return new Promise((resolve, reject) => {

@@ -21,6 +21,7 @@ import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { spawnKimi } from "./lib/kimi.mjs";
+import { KimiContractMismatchError } from "./lib/kimi-capabilities.mjs";
 import {
   latestSourcePacketPreviousAttempt,
   selectProviderRoute,
@@ -1996,6 +1997,14 @@ function pingErrorFields() {
   };
 }
 
+function pingContractMismatchFields() {
+  return {
+    ready: false,
+    summary: "Installed Kimi CLI is incompatible with relay's Kimi adapter (command-surface mismatch).",
+    next_action: "Relay targets the legacy kimi-cli flag surface; the installed kimi-code CLI uses a different command contract. Adapter migration is tracked in #222.",
+  };
+}
+
 function pingSandboxBlockedFields() {
   return {
     ready: false,
@@ -2127,6 +2136,13 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     printJson({ status: "error", ...pingErrorFields(), ...pingRouteAuthFields(), exit_code: execution.exitCode, detail });
     process.exit(2);
   } catch (e) {
+    if (e instanceof KimiContractMismatchError) {
+      printJson({ status: "cli_contract_mismatch", ...pingContractMismatchFields(), ...pingRouteAuthFields(),
+        detail: e.message,
+        missing_flags: e.missingFlags ?? [],
+        detected_version: e.detectedVersion ?? null });
+      process.exit(2);
+    }
     if (e.code === "ENOENT") {
       printJson({ status: "not_found", ...pingNotFoundFields(),
         ...pingRouteAuthFields(),

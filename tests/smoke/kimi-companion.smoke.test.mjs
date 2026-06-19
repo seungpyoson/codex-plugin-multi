@@ -397,6 +397,59 @@ test("kimi ping classifies timeout as transient latency", () => {
   }
 });
 
+test("kimi doctor reports cli_contract_mismatch when the installed CLI is kimi-code (no legacy --print) (#222, #223)", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-doctor-contract-mismatch-"));
+  const bin = path.join(cwd, "kimi-code");
+  writeFileSync(bin, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes("--version") || args.includes("-V")) {
+  process.stdout.write("0.18.0\\n");
+  process.exit(0);
+}
+if (args.includes("--help") || args.includes("-h")) {
+  process.stdout.write([
+    "Usage: kimi [options] [command]",
+    "",
+    "Options:",
+    "  -V, --version              output the version number",
+    "  -S, --session [id]         Resume a session.",
+    "  -m, --model <model>        LLM model alias.",
+    "  -p, --prompt <prompt>      Run one prompt non-interactively.",
+    "  --output-format <format>   Output format. (choices: text, stream-json)",
+    "  --skills-dir <dir>         Load skills from this directory.",
+    "  --plan                     Start in plan mode.",
+    "  -h, --help                 Show help.",
+    "",
+    "Commands:",
+    "  doctor                     Validate Kimi Code configuration files.",
+    "",
+  ].join("\\n"));
+  process.exit(0);
+}
+// Must never be reached: relay must fail the contract check before spawning,
+// instead of dying here on the legacy --print flag.
+process.stderr.write("error: unknown option '--print'\\n");
+process.exit(1);
+`, "utf8");
+  chmodSync(bin, 0o755);
+  try {
+    const result = runCompanion(["doctor", "--binary", bin], { cwd });
+    assert.equal(result.status, 2, result.stderr || result.stdout);
+    const parsed = parseJson(result.stdout);
+    assert.equal(parsed.status, "cli_contract_mismatch");
+    assert.equal(parsed.ready, false);
+    assert.ok(Array.isArray(parsed.missing_flags));
+    assert.ok(parsed.missing_flags.includes("--print"), result.stdout);
+    assert.equal(parsed.detected_version, "0.18.0");
+    assert.match(parsed.detail, /#222/);
+    assert.match(parsed.next_action, /#222/);
+    // The cryptic "unknown option" path must NOT be what the operator sees.
+    assert.doesNotMatch(parsed.summary, /unknown option/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi ping classifies Codex sandbox denial for Kimi state as sandbox_blocked", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-ping-sandbox-denied-"));
   const bin = path.join(cwd, "kimi-denied");
