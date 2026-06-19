@@ -65,6 +65,22 @@ export function detectKimiCapabilities(binary, { env = process.env, runImpl = ru
   return { ok: true, supportedFlags, version, detail: null };
 }
 
+// Decide which command surface the installed CLI exposes, from detected
+// capabilities. "kimi-code" = the rewritten -p/--prompt CLI (no --print);
+// "legacy" = the original kimi-cli --print surface; null = unknown — either
+// detection failed or the surface is unrecognized, so callers keep the legacy
+// default + assertKimiContract guard rather than guessing. Routing on the
+// advertised flag set (not a version string) keeps this a class-level decision:
+// a future CLI generation is classified by what it supports, not by a hardcoded
+// version match (#222).
+export function selectKimiSurface(capabilities) {
+  if (!capabilities?.ok) return null;
+  const flags = capabilities.supportedFlags;
+  if ((flags.has("--prompt") || flags.has("-p")) && !flags.has("--print")) return "kimi-code";
+  if (flags.has("--print")) return "legacy";
+  return null;
+}
+
 // The distinct flag tokens an argv array uses (entries starting with "-").
 export function argFlags(args) {
   return [...new Set((args ?? []).filter((a) => typeof a === "string" && a.startsWith("-")))];
