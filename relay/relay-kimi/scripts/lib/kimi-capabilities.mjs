@@ -46,10 +46,32 @@ export function parseKimiHelpFlags(helpText) {
   return flags;
 }
 
+// Per-process cache of successful capability probes, keyed by binary path.
+// detectKimiCapabilities runs on every spawnKimi (ping, review, continue), so a
+// single review would otherwise re-probe the same binary 2-3× (×2 spawnSync
+// each). We cache only SUCCESSFUL probes: a failed/transient probe (timeout,
+// non-zero --help) must stay re-tryable, never sticky for the process lifetime.
+// Only the real (default runImpl) path is cached — an injected runImpl (tests)
+// always re-runs so fixtures stay isolated.
+const capabilityCache = new Map();
+
+// Test-only: clear the per-process capability cache.
+export function __resetKimiCapabilityCache() {
+  capabilityCache.clear();
+}
+
 // Probe the installed Kimi CLI's supported flags via `--help`. Returns
 // { ok, supportedFlags:Set, version, detail }. ok is true ONLY when --help
 // clearly produced an options screen (exit 0 AND it lists its own --help/-h).
 export function detectKimiCapabilities(binary, { env = process.env, runImpl = runCommand } = {}) {
+  const cacheable = runImpl === runCommand;
+  if (cacheable && capabilityCache.has(binary)) return capabilityCache.get(binary);
+  const result = probeKimiCapabilities(binary, { env, runImpl });
+  if (cacheable && result.ok) capabilityCache.set(binary, result);
+  return result;
+}
+
+function probeKimiCapabilities(binary, { env, runImpl }) {
   const help = runImpl(binary, ["--help"], { env, timeout: KIMI_CAPABILITY_PROBE_TIMEOUT_MS });
   if (help.error || help.status !== 0) {
     return {

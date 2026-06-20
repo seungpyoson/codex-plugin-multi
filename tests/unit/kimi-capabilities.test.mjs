@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   parseKimiHelpFlags,
@@ -8,6 +11,7 @@ import {
   assertKimiContract,
   KimiContractMismatchError,
   KIMI_CAPABILITY_PROBE_TIMEOUT_MS,
+  __resetKimiCapabilityCache,
 } from "../../plugins/kimi/scripts/lib/kimi-capabilities.mjs";
 
 // Abridged real kimi-code 0.18.0 --help (the installed contract).
@@ -73,6 +77,50 @@ test("detectKimiCapabilities reports ok with parsed flags + version on a real he
   assert.equal(caps.ok, true);
   assert.equal(caps.version, "0.18.0");
   assert.ok(caps.supportedFlags.has("--prompt"));
+});
+
+test("detectKimiCapabilities caches a successful probe per binary (real path, no re-probe)", () => {
+  __resetKimiCapabilityCache();
+  const dir = mkdtempSync(path.join(tmpdir(), "kimi-cap-cache-ok-"));
+  const counter = path.join(dir, "count");
+  const bin = path.join(dir, "kimi-ok.mjs");
+  writeFileSync(bin, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+const argv = process.argv.slice(2);
+if (argv.includes("--help")) { appendFileSync(${JSON.stringify(counter)}, "h"); process.stdout.write("Options:\\n  -p, --prompt <p>\\n  --output-format <f>\\n  -h, --help\\n"); process.exit(0); }
+if (argv.includes("--version")) { process.stdout.write("0.18.0\\n"); process.exit(0); }
+process.exit(1);
+`);
+  chmodSync(bin, 0o755);
+  try {
+    assert.equal(detectKimiCapabilities(bin).ok, true);
+    assert.equal(detectKimiCapabilities(bin).ok, true);
+    assert.equal(readFileSync(counter, "utf8"), "h", "second call must hit the cache, not re-probe the binary");
+  } finally {
+    __resetKimiCapabilityCache();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detectKimiCapabilities does not cache a failed probe (stays re-tryable)", () => {
+  __resetKimiCapabilityCache();
+  const dir = mkdtempSync(path.join(tmpdir(), "kimi-cap-cache-fail-"));
+  const counter = path.join(dir, "count");
+  const bin = path.join(dir, "kimi-bad.mjs");
+  writeFileSync(bin, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+if (process.argv.slice(2).includes("--help")) { appendFileSync(${JSON.stringify(counter)}, "f"); process.exit(1); }
+process.exit(1);
+`);
+  chmodSync(bin, 0o755);
+  try {
+    assert.equal(detectKimiCapabilities(bin).ok, false);
+    assert.equal(detectKimiCapabilities(bin).ok, false);
+    assert.equal(readFileSync(counter, "utf8"), "ff", "a failed probe must be re-tried, never cached");
+  } finally {
+    __resetKimiCapabilityCache();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("detectKimiCapabilities bounds the --help/--version probe with a positive timeout", () => {
