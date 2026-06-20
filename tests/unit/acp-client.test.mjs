@@ -81,8 +81,10 @@ test("wrong CLI (non-JSON banner on stdout) -> cli_contract_mismatch, source NOT
   const r = await run({}, { MOCK_ACP_INIT_GARBAGE: "1" });
   assert.equal(r.ok, false);
   assert.equal(r.sourceSent, false);
-  // The banner makes initialize unparseable; the turn fails before source is sent.
-  assert.ok(["cli_contract_mismatch", "acp_protocol_error", "timeout"].includes(r.reason), `got ${r.reason}`);
+  // The banner is a non-JSON line on stdout -> peer.protocolError set -> initialize
+  // rejected on child close -> deterministic cli_contract_mismatch. Pin it exactly;
+  // a loose set would let a future timeout/hang regression pass unnoticed.
+  assert.equal(r.reason, "cli_contract_mismatch", `got ${r.reason}`);
 });
 
 test("prompt-level failure (assert miss) AFTER source sent -> kimi_error, source sent", async () => {
@@ -119,6 +121,30 @@ test("timeout: a stalled prompt turn fails clean as timeout", async () => {
   assert.equal(r.ok, false);
   assert.equal(r.reason, "timeout");
   assert.equal(r.timedOut, true);
+});
+
+test("an EXTERNAL signal that kills the child mid-prompt is reported as the real signal, not masked", async () => {
+  // The adapter masks its OWN teardown SIGTERM (adapterInitiatedKill) so the
+  // companion does not misread it as an operator cancel. But a GENUINE external
+  // signal that terminates the child before the catch runs must NOT be masked:
+  // the catch path also calls kill(), and that no-op cleanup must not erase the
+  // real signal. Drive a long prompt, then SIGTERM the child from onSpawn.
+  let killed = false;
+  const r = await run(
+    {
+      timeoutMs: 15000, // long — the adapter timeout must NOT fire; this is a pure external signal
+      onSpawn: (pidInfo) => {
+        if (pidInfo?.pid && !killed) {
+          killed = true;
+          setTimeout(() => { try { process.kill(pidInfo.pid, "SIGTERM"); } catch { /* gone */ } }, 250);
+        }
+      },
+    },
+    { MOCK_ACP_PROMPT_DELAY_MS: "5000" },
+  );
+  assert.equal(r.ok, false);
+  assert.equal(r.timedOut, false, "this must be a signal kill, not a timeout");
+  assert.equal(r.signal, "SIGTERM", "a genuine external signal must propagate (not be masked to null by the catch-path kill)");
 });
 
 test("resume: session/load echoes the resumed sessionId", async () => {
@@ -179,9 +205,32 @@ test("the stdout 'end' flush is independently load-bearing (server ends stdout b
   assert.equal(r.result, "VERDICT: PASS");
 });
 
+test("non-JSON stdout AFTER the prompt is sent stays sourceSent:true (kimi_error), not a pre-target cli_contract_mismatch", async () => {
+  // peer.protocolError is set by any non-JSON stdout line at any time. A leak that
+  // happens AFTER the prompt was written must not be reported as source-NOT-sent.
+  const r = await run({}, { MOCK_ACP_POST_PROMPT_GARBAGE_STDOUT: "1" });
+  assert.equal(r.ok, false);
+  assert.equal(r.sourceSent, true, "the prompt was already written; the source was sent");
+  assert.equal(r.reason, "kimi_error", "a post-prompt stdout leak is a model failure, not a pre-target contract mismatch");
+});
+
 test("a server negotiating a different protocolVersion fails clean as cli_contract_mismatch, source NOT sent", async () => {
   const r = await run({}, { MOCK_ACP_PROTOCOL_VERSION: "2" });
   assert.equal(r.ok, false);
   assert.equal(r.reason, "cli_contract_mismatch");
   assert.equal(r.sourceSent, false, "must abort before sending source against an unknown protocol version");
+});
+
+test("protocolVersion as the STRING \"1\" is tolerated (no false-negative); a string mismatch still fails SAFE", async () => {
+  // The version check coerces with Number(), so a server that serializes the
+  // version as a JSON string "1" is accepted (failing it would be a false-negative
+  // readiness error). A genuine mismatch as a string ("2") must still fail safe.
+  const ok = await run({}, { MOCK_ACP_PROTOCOL_VERSION_RAW: "1", MOCK_ACP_REPLY: "VERDICT: PASS" });
+  assert.equal(ok.ok, true, ok.error ?? "string \"1\" must be accepted, not rejected as a contract mismatch");
+  assert.equal(ok.stopReason, "end_turn");
+
+  const bad = await run({}, { MOCK_ACP_PROTOCOL_VERSION_RAW: "2" });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.reason, "cli_contract_mismatch");
+  assert.equal(bad.sourceSent, false, "a string mismatch must still abort before sending source");
 });

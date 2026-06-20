@@ -234,7 +234,14 @@ export async function runAcpPrompt({
   // failure/teardown path. That teardown signal is NOT an operator cancel, so it
   // must not be reported to the companion classifier (which would otherwise read it
   // as a cancelled run and mis-disclose a pre-prompt failure as "source sent").
+  // BUT a genuine EXTERNAL signal that terminates the child before the catch runs
+  // must still propagate: every failure path also routes through the catch's kill(),
+  // and that no-op cleanup must not erase the real signal (child.signalCode) that
+  // already killed the child. So kill() only claims attribution while the child is
+  // still alive — once it has closed, child.signalCode is the single authority for
+  // what terminated it.
   let adapterInitiatedKill = false;
+  let childClosed = false;
   const peer = new AcpPeer(child, {
     onNotification: (method, params) => {
       if (method !== "session/update") return;
@@ -279,17 +286,27 @@ export async function runAcpPrompt({
     sourceSent,
     pidInfo: getPidInfo(),
     exitCode: child.exitCode,
-    // Suppress an adapter-initiated teardown SIGTERM so the companion does not
-    // misread it as an operator cancel. A genuine external signal (not our kill)
-    // still propagates.
-    signal: adapterInitiatedKill ? null : child.signalCode,
+    // Report the terminating signal ONLY for a genuine external kill that lands
+    // after the source was sent — i.e. an operator cancelling an in-flight review,
+    // which the companion classifies as cancelled (source SENT). Mask it otherwise:
+    //  - adapterInitiatedKill: our own teardown is not an operator cancel; and
+    //  - !sourceSent: before the prompt is written, a kill (ours OR external) means
+    //    the review never started transmitting. The companion's CANCEL_SIGNALS path
+    //    discloses cancelled+pid as SENT without consulting sourceSent, so reporting
+    //    a pre-prompt signal there would falsely claim the source was sent. Masking
+    //    routes it to the pre-target failure path (acp_protocol_error -> NOT_SENT).
+    signal: (adapterInitiatedKill || !sourceSent) ? null : child.signalCode,
     timedOut,
     stderr,
     ...over,
   });
 
   const kill = () => {
-    adapterInitiatedKill = true;
+    // Only attribute the kill to the adapter when the child is still alive. If the
+    // child has already closed (e.g. an external SIGTERM that triggered this
+    // teardown via the catch path), this kill() is a no-op and must NOT mask the
+    // real terminating signal already recorded at close.
+    if (!childClosed) adapterInitiatedKill = true;
     try { child.kill("SIGTERM"); } catch { /* gone */ }
     setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } }, 2000).unref?.();
   };
@@ -309,6 +326,11 @@ export async function runAcpPrompt({
   // (e.g. a non-ACP CLI that prints a banner and exits).
   const closed = new Promise((resolve) => {
     child.on("close", (code, signal) => {
+      // Mark the child closed BEFORE rejecting pending requests: rejectAllPending
+      // schedules the catch microtask, whose kill() must see childClosed=true so it
+      // does not claim a genuine external signal as an adapter-initiated teardown
+      // (child.signalCode is already set by Node at this point and is authoritative).
+      childClosed = true;
       // Defensive: dispatch any newline-less final frame before deciding the turn
       // failed, regardless of stdout 'end' vs process 'close' ordering.
       peer._flushTail();
@@ -342,8 +364,17 @@ export async function runAcpPrompt({
       protocolVersion: ACP_PROTOCOL_VERSION,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
     });
+    // Version pin: relay drives exactly ACP protocolVersion 1. Coerce ONLY a string
+    // form so a server that serializes the version as "1" still matches (a benign
+    // quirk — failing it would be a false-negative readiness error, the very class
+    // #223 fixes). A real mismatch (2), garbage, a missing version, or a non-string
+    // non-number type (boolean/array) all compare !== and fail SAFE (source NOT
+    // sent) rather than driving session/* against an unknown protocol. New versions
+    // are added deliberately after validating the wire format, never by loosening
+    // this check.
     const negotiatedVersion = initResult?.protocolVersion;
-    if (negotiatedVersion !== ACP_PROTOCOL_VERSION) {
+    const normalizedVersion = typeof negotiatedVersion === "string" ? Number(negotiatedVersion) : negotiatedVersion;
+    if (normalizedVersion !== ACP_PROTOCOL_VERSION) {
       clearTimer(); kill(); await closed;
       return result({
         reason: "cli_contract_mismatch",
@@ -416,9 +447,16 @@ export async function runAcpPrompt({
     if (e?.acpError?.code === ACP_AUTH_REQUIRED_CODE) {
       return result({ reason: "auth_required", error: e.acpError.message || "kimi-code ACP requires login", sourceSent: false });
     }
-    if (peer.protocolError) return result({ reason: "cli_contract_mismatch", error: peer.protocolError, sourceSent: false });
+    // A non-JSON line on stdout sets peer.protocolError — but ONLY treat it as a
+    // wrong-CLI contract mismatch (source NOT sent) when it happened BEFORE the
+    // prompt was written. A protocolError AFTER the source was sent (e.g. the CLI
+    // leaked a diagnostic to stdout post-prompt) is a real post-send failure: it
+    // must fall through to the sourceSent branch so the source is disclosed as SENT,
+    // not falsely reported as "target not started".
+    if (peer.protocolError && !sourceSent) return result({ reason: "cli_contract_mismatch", error: peer.protocolError, sourceSent: false });
     // An ACP error AFTER the prompt was sent is a real review failure (source sent);
-    // before it, the target was never reached.
-    return result({ reason: sourceSent ? "kimi_error" : "acp_protocol_error", error: e?.message ?? String(e) });
+    // before it, the target was never reached. Preserve the protocolError detail in
+    // the message when present so a post-prompt stdout leak is still diagnosable.
+    return result({ reason: sourceSent ? "kimi_error" : "acp_protocol_error", error: peer.protocolError ?? e?.message ?? String(e) });
   }
 }

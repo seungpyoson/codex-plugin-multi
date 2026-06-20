@@ -17,7 +17,6 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs");
 const MOCK = path.join(REPO_ROOT, "tests/smoke/kimi-mock.mjs");
-const MODELS_CONFIG = path.join(REPO_ROOT, "plugins/kimi/config/models.json");
 const KIMI_SESSION_ID = "22222222-3333-4444-9555-666666666666";
 const KIMI_RESUMED_SESSION_ID = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
 
@@ -197,13 +196,19 @@ function parseJson(stdout) {
   return JSON.parse(stdout);
 }
 
+// Provide a models config to the companion WITHOUT mutating the tracked repo
+// file: write it to a temp dir and hand the path to fn, which passes it through
+// to runCompanion via KIMI_MODELS_CONFIG. This avoids leaving a corrupted
+// working tree if the test is killed mid-run, and removes any cross-runner race
+// on the shared models.json.
 function withKimiModelsConfig(config, fn) {
-  const prior = readFileSync(MODELS_CONFIG, "utf8");
-  writeFileSync(MODELS_CONFIG, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  const dir = mkdtempSync(path.join(tmpdir(), "kimi-models-config-"));
+  const configPath = path.join(dir, "models.json");
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   try {
-    return fn();
+    return fn(configPath);
   } finally {
-    writeFileSync(MODELS_CONFIG, prior, "utf8");
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -1748,7 +1753,7 @@ test("kimi foreground review retries a capacity-limited primary model with confi
     rescue: [],
     native: [],
   },
-}, () => {
+}, (modelsConfigPath) => {
   const result = runCompanion([
     "run",
     "--mode",
@@ -1762,7 +1767,7 @@ test("kimi foreground review retries a capacity-limited primary model with confi
     "Review this scope.",
   ], {
     cwd,
-    env: { KIMI_MOCK_CAPACITY_MODEL: "kimi-code/primary-capacity-limited" },
+    env: { KIMI_MOCK_CAPACITY_MODEL: "kimi-code/primary-capacity-limited", KIMI_MODELS_CONFIG: modelsConfigPath },
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stderr, /primary-capacity-limited.*retrying with kimi-code\/fallback-review/);

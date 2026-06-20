@@ -12,11 +12,14 @@
 //   MOCK_ACP_PROMPT_LEN_FILE       write the received prompt byte length here (proves stdin delivery)
 //   MOCK_ACP_AUTH_REQUIRED=1       session/new returns JSON-RPC error -32000 (authRequired)
 //   MOCK_ACP_INIT_GARBAGE=1        emit a non-JSON banner line first (simulate the wrong CLI)
-//   MOCK_ACP_PROTOCOL_VERSION      protocolVersion the initialize response advertises (default 1)
+//   MOCK_ACP_PROTOCOL_VERSION      protocolVersion the initialize response advertises (numeric, default 1)
+//   MOCK_ACP_PROTOCOL_VERSION_RAW  protocolVersion emitted VERBATIM (e.g. the string "1"); overrides the numeric form
 //   MOCK_ACP_NO_MODEL=1            omit the "model" configOption (forces model_unavailable)
 //   MOCK_ACP_REQUEST_PERMISSION=1  send a session/request_permission before finishing the turn
 //   MOCK_ACP_PERMISSION_OUTCOME_FILE  write the client's selected permission outcome (JSON) here
 //   MOCK_ACP_PROMPT_DELAY_MS       delay the session/prompt response (to exercise client timeout)
+//   MOCK_ACP_HANDSHAKE_DELAY_MS    delay the initialize response (to land an external signal PRE-prompt)
+//   MOCK_ACP_POST_PROMPT_GARBAGE_STDOUT=1  after RECEIVING the prompt, emit a non-JSON stdout line and exit (source WAS sent)
 //   MOCK_ACP_SESSION_ERROR=1       session/new returns a non-auth JSON-RPC error (forces acp_protocol_error; source NOT sent)
 //   MOCK_ACP_HANG_ON_EOF=1         ignore stdin EOF so the client's graceful-close fallback kill fires (slow-close path)
 //   MOCK_ACP_NO_TRAILING_NEWLINE=1 emit the terminal session/prompt frame without a trailing newline, then EOF
@@ -79,6 +82,13 @@ async function finishPromptTurn(reqId, promptText) {
   if (assertSub && !promptText.includes(assertSub)) {
     send({ jsonrpc: "2.0", id: reqId, error: { code: -32602, message: `prompt missing required substring: ${assertSub}` } });
     return;
+  }
+  if (env.MOCK_ACP_POST_PROMPT_GARBAGE_STDOUT === "1") {
+    // The prompt (source) was already received above; now leak a NON-JSON line to
+    // stdout and exit WITHOUT a finish frame. The source WAS sent, so the client
+    // must disclose SENT — not let the post-prompt protocolError force NOT_SENT.
+    process.stdout.write("kimi: warning: diagnostic leaked to stdout\n");
+    process.exit(7);
   }
   if (env.MOCK_ACP_REQUEST_PERMISSION === "1") {
     pendingPermissionId = 9001;
@@ -154,12 +164,21 @@ function handle(msg) {
     return;
   }
   if (msg.method === "initialize") {
-    send({ jsonrpc: "2.0", id: msg.id, result: {
-      protocolVersion: Number(env.MOCK_ACP_PROTOCOL_VERSION ?? "1") || 1,
+    // RAW override lets a test emit the version verbatim (e.g. a JSON string "1")
+    // to exercise the client's tolerant Number() coercion; otherwise numeric.
+    const protocolVersion = env.MOCK_ACP_PROTOCOL_VERSION_RAW !== undefined
+      ? env.MOCK_ACP_PROTOCOL_VERSION_RAW
+      : (Number(env.MOCK_ACP_PROTOCOL_VERSION ?? "1") || 1);
+    const sendInit = () => send({ jsonrpc: "2.0", id: msg.id, result: {
+      protocolVersion,
       agentCapabilities: { loadSession: true, promptCapabilities: { image: true, audio: false, embeddedContext: true } },
       authMethods: [{ id: "login", type: "terminal", name: "Login with Kimi account" }],
       agentInfo: { name: "Kimi Code CLI", version: "0.18.0" },
     } });
+    // Delaying the handshake lets a test land an external signal while the client
+    // is still pre-prompt (source NOT yet sent).
+    const handshakeDelay = Number(env.MOCK_ACP_HANDSHAKE_DELAY_MS ?? "0") || 0;
+    if (handshakeDelay > 0) setTimeout(sendInit, handshakeDelay); else sendInit();
     return;
   }
   if (msg.method === "session/new" || msg.method === "session/load") {

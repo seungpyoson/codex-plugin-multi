@@ -100,6 +100,11 @@ const NOT_SENT_DISCLOSURE_BY_ERROR = Object.freeze({
   scope_failed: (provider) => `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`,
   spawn_failed: (provider) => `Selected source content was not sent to ${provider}; the target process was not spawned.`,
   oauth_inference_rejected: (provider) => `Selected source content was not sent to ${provider}; OAuth inference readiness was rejected before the review target was started.`,
+  // The CLI DID start for these — it spawned and reached the protocol handshake —
+  // but failed before the review prompt was written, so the generic "target process
+  // was not started" phrasing would be inaccurate.
+  model_unavailable: (provider) => `Selected source content was not sent to ${provider}; the CLI started and opened a session but did not offer the requested model, so the review prompt was never written.`,
+  acp_protocol_error: (provider) => `Selected source content was not sent to ${provider}; the CLI started but its protocol handshake failed before the review prompt was written.`,
 });
 
 const UNKNOWN_DISCLOSURE_BY_STATUS = Object.freeze({

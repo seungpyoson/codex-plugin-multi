@@ -64,7 +64,13 @@ import {
 } from "./lib/review-workload.mjs";
 
 const PLUGIN_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
-const MODELS_CONFIG_PATH = resolvePath(PLUGIN_ROOT, "config/models.json");
+// Overridable via KIMI_MODELS_CONFIG so tests (and operators) can point at an
+// alternate models config instead of mutating this tracked repo file — a killed
+// test would otherwise leave a corrupted working tree, and concurrent runners
+// could race on it. Defaults to the in-plugin config.
+const MODELS_CONFIG_PATH = process.env.KIMI_MODELS_CONFIG
+  ? resolvePath(process.env.KIMI_MODELS_CONFIG)
+  : resolvePath(PLUGIN_ROOT, "config/models.json");
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
