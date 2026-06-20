@@ -6,10 +6,12 @@ import path from "node:path";
 
 import {
   parseKimiHelpFlags,
+  parseKimiHelpCommands,
   detectKimiCapabilities,
-  missingKimiFlags,
+  missingKimiCommands,
   assertKimiContract,
   KimiContractMismatchError,
+  REQUIRED_KIMI_COMMANDS,
   KIMI_CAPABILITY_PROBE_TIMEOUT_MS,
   __resetKimiCapabilityCache,
 } from "../../plugins/kimi/scripts/lib/kimi-capabilities.mjs";
@@ -31,12 +33,16 @@ Options:
   -h, --help                    Show help.
 
 Commands:
+  acp [options]                 Run kimi-code as an Agent Client Protocol (ACP) server over stdio.
   doctor                        Validate Kimi Code configuration files.
+  upgrade                       Upgrade Kimi Code to the latest version.
+
+Documentation:        https://moonshotai.github.io/kimi-code/
 `;
 
-// A non-kimi-code CLI help screen (the older `--print` surface). Used as a
-// fixture to prove the contract guard rejects a CLI that does not advertise the
-// kimi-code prompt-mode flags relay emits.
+// A non-kimi-code CLI help screen (the older `--print` surface). It does NOT
+// advertise the `acp` command, so the contract guard must reject it — relay drives
+// kimi-code through `kimi acp`.
 const LEGACY_HELP = `Usage: kimi [options]
 
 Options:
@@ -231,89 +237,64 @@ test("detectKimiCapabilities is fail-open when --help output is unrecognizable",
   assert.equal(caps.ok, false);
 });
 
-test("missingKimiFlags returns the legacy flags kimi-code does not advertise", () => {
-  const caps = detectKimiCapabilities("kimi", {
-    runImpl: fakeRun({
-      "--help": { status: 0, stdout: KIMI_CODE_HELP, stderr: "" },
-      "--version": { status: 0, stdout: "0.18.0" },
-    }),
-  });
-  const legacyArgs = ["--print", "--final-message-only", "--output-format", "stream-json",
-    "--input-format", "text", "-m", "kimi-x"];
-  assert.deepEqual(
-    missingKimiFlags(legacyArgs, caps).sort(),
-    ["--final-message-only", "--input-format", "--print"].sort(),
-  );
+test("parseKimiHelpCommands extracts subcommands from the Commands: section only", () => {
+  const commands = parseKimiHelpCommands(KIMI_CODE_HELP);
+  assert.ok(commands.has("acp"), "the acp command relay drives must be detected");
+  assert.ok(commands.has("doctor"));
+  assert.ok(commands.has("upgrade"));
+  // Option flags, prose, and the Documentation: section must not leak as commands.
+  assert.ok(!commands.has("prompt"));
+  assert.ok(!commands.has("https"));
+  assert.equal(parseKimiHelpCommands(LEGACY_HELP).size, 0, "a CLI with no Commands: section advertises no commands");
 });
 
-test("assertKimiContract throws a typed cli_contract_mismatch naming the missing flags", () => {
+test("detectKimiCapabilities populates supportedCommands with acp", () => {
   const caps = detectKimiCapabilities("kimi", {
     runImpl: fakeRun({
       "--help": { status: 0, stdout: KIMI_CODE_HELP, stderr: "" },
-      "--version": { status: 0, stdout: "0.18.0" },
+      "--version": { status: 0, stdout: "0.18.0\n" },
     }),
   });
+  assert.equal(caps.ok, true);
+  assert.ok(caps.supportedCommands.has("acp"));
+});
+
+test("REQUIRED_KIMI_COMMANDS is the acp command relay drives", () => {
+  assert.deepEqual([...REQUIRED_KIMI_COMMANDS], ["acp"]);
+});
+
+test("missingKimiCommands is empty for a kimi-code CLI and names acp for a legacy CLI", () => {
+  const kimiCode = detectKimiCapabilities("kimi", {
+    runImpl: fakeRun({ "--help": { status: 0, stdout: KIMI_CODE_HELP, stderr: "" }, "--version": { status: 0, stdout: "0.18.0" } }),
+  });
+  assert.deepEqual(missingKimiCommands(kimiCode), []);
+  const legacy = detectKimiCapabilities("kimi", {
+    runImpl: fakeRun({ "--help": { status: 0, stdout: LEGACY_HELP, stderr: "" }, "--version": { status: 0, stdout: "1.41.0" } }),
+  });
+  assert.deepEqual(missingKimiCommands(legacy), ["acp"]);
+});
+
+test("assertKimiContract throws a typed cli_contract_mismatch naming the acp command for a legacy CLI", () => {
+  const caps = detectKimiCapabilities("kimi", {
+    runImpl: fakeRun({ "--help": { status: 0, stdout: LEGACY_HELP, stderr: "" }, "--version": { status: 0, stdout: "1.41.0" } }),
+  });
   assert.throws(
-    () => assertKimiContract(["--print", "--output-format", "stream-json"], caps),
+    () => assertKimiContract(caps),
     (e) => e instanceof KimiContractMismatchError
       && e.code === "cli_contract_mismatch"
-      && e.missingFlags.includes("--print")
+      && e.missing.includes("acp")
       && /#222/.test(e.message),
   );
 });
 
-test("assertKimiContract is a no-op when the legacy surface IS supported", () => {
+test("assertKimiContract is a no-op when the acp command IS advertised", () => {
   const caps = detectKimiCapabilities("kimi", {
-    runImpl: fakeRun({
-      "--help": { status: 0, stdout: LEGACY_HELP, stderr: "" },
-      "--version": { status: 0, stdout: "1.41.0" },
-    }),
+    runImpl: fakeRun({ "--help": { status: 0, stdout: KIMI_CODE_HELP, stderr: "" }, "--version": { status: 0, stdout: "0.18.0" } }),
   });
-  assert.doesNotThrow(() =>
-    assertKimiContract(["--print", "--output-format", "x", "--input-format", "text", "-m", "y"], caps));
+  assert.doesNotThrow(() => assertKimiContract(caps));
 });
 
 test("assertKimiContract is fail-open (no-op) when capabilities are unknown", () => {
-  assert.doesNotThrow(() => assertKimiContract(["--print"], { ok: false, supportedFlags: new Set() }));
-});
-
-test("missingKimiFlags normalizes --flag=value before membership (no false mismatch)", () => {
-  const caps = detectKimiCapabilities("kimi", {
-    runImpl: fakeRun({
-      "--help": { status: 0, stdout: KIMI_CODE_HELP, stderr: "" },
-      "--version": { status: 0, stdout: "0.18.0" },
-    }),
-  });
-  // help advertises bare `--output-format`; an attached-value token must not be
-  // reported as missing, and assertKimiContract must not throw on it.
-  assert.deepEqual(missingKimiFlags(["--output-format=stream-json", "-p", "review this"], caps), []);
-  assert.doesNotThrow(() => assertKimiContract(["-p", "review this", "--output-format=stream-json"], caps));
-  // a genuinely unsupported flag is still caught, in either syntax.
-  assert.deepEqual(missingKimiFlags(["--print=1"], caps), ["--print"]);
-});
-
-test("missingKimiFlags never scans the VALUE of a value-taking flag (dash-leading values)", () => {
-  const caps = detectKimiCapabilities("kimi", {
-    runImpl: fakeRun({
-      "--help": { status: 0, stdout: KIMI_CODE_HELP, stderr: "" },
-      "--version": { status: 0, stdout: "0.18.0" },
-    }),
-  });
-  // A prompt / model alias / format value that itself starts with "-" must be
-  // treated as the value of -p/-m/--output-format, NOT as an unsupported flag.
-  // Regression guard: this was a false cli_contract_mismatch (PR #226 review).
-  assert.deepEqual(
-    missingKimiFlags(["-p", "-v flag handling", "--output-format", "stream-json"], caps),
-    [],
-  );
-  assert.deepEqual(missingKimiFlags(["-m", "-dash-model", "-p", "hi"], caps), []);
-  assert.deepEqual(missingKimiFlags(["--output-format", "-json", "-p", "hi"], caps), []);
-  assert.deepEqual(missingKimiFlags(["--session", "--weird-id", "-p", "hi"], caps), []);
-  assert.doesNotThrow(() =>
-    assertKimiContract(["-p", "- fix this file", "--output-format", "stream-json"], caps));
-  // a genuinely unsupported flag in a flag position is still caught.
-  assert.deepEqual(
-    missingKimiFlags(["-p", "ok", "--print", "--output-format", "stream-json"], caps),
-    ["--print"],
-  );
+  assert.doesNotThrow(() => assertKimiContract({ ok: false, supportedFlags: new Set(), supportedCommands: new Set() }));
+  assert.deepEqual(missingKimiCommands({ ok: false, supportedCommands: new Set() }), []);
 });

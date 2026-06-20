@@ -72,6 +72,8 @@ const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "spawn_failed",
   "not_authed",
   "sandbox_blocked",
+  "model_unavailable",
+  "acp_protocol_error",
 ]));
 
 const CONTENT_MAY_HAVE_STARTED_ERROR_CODES = Object.freeze(new Set([

@@ -1,17 +1,19 @@
 #!/usr/bin/env node
-// Fake kimi-code 0.18.0 CLI for the companion smoke suite. It speaks the
-// migrated prompt-mode surface only: `-p <prompt> --output-format stream-json
-// [-m model] [-S/--session id]`. The prompt arrives as the `-p` argv arg (never
-// stdin), and the response is emitted as NDJSON stream-json: an assistant turn
-// plus a `role:"meta"` session.resume_hint line. There is no legacy `--print`,
-// `--input-format`, `--agent-file`, `--add-dir`, or `--max-steps-per-turn`.
+// Fake kimi-code 0.18.0 CLI for the companion smoke suite. Relay drives kimi-code
+// through its ACP (Agent Client Protocol) stdio server, so this mock dispatches:
+//   kimi --help    -> a kimi-code help screen advertising the `acp` command
+//   kimi --version -> 0.18.0
+//   kimi acp       -> a JSON-RPC 2.0 NDJSON ACP server over stdin/stdout
+// The prompt arrives over stdin in a session/prompt request (NOT as a -p argv arg),
+// so there is no OS argv-size limit. The same KIMI_MOCK_* knobs the suite already
+// uses are honored at the equivalent ACP lifecycle points.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PING_PROMPT } from "../../plugins/kimi/scripts/lib/companion-common.mjs";
 
-// kimi-code --help screen: advertises exactly the prompt-mode flag surface the
-// adapter emits, so detectKimiCapabilities reports ok:true and assertKimiContract
-// is exercised faithfully (rather than failing open on an unprobed CLI).
+// --help advertises the `acp` command so detectKimiCapabilities reports ok:true and
+// assertKimiContract (which now requires `acp`) passes — exercising the guard
+// faithfully rather than failing open on an unprobed CLI.
 const KIMI_CODE_HELP = `Usage: kimi [options] [command]
 
 Options:
@@ -19,10 +21,11 @@ Options:
   -m, --model <model>           LLM model alias to use for this invocation.
   -p, --prompt <prompt>         Run one prompt non-interactively and print the response.
   --output-format <format>      Output format for prompt mode. (choices: "text", "stream-json")
-  -S, --session [id]            Resume a session.
-  -y, --yolo                    Automatically approve all actions.
-  --plan                        Start in plan mode.
   -h, --help                    Show help.
+
+Commands:
+  acp [options]                 Run kimi-code as an Agent Client Protocol (ACP) server over stdio.
+  doctor                        Validate Kimi Code configuration files.
 `;
 
 if (process.argv.includes("--help")) {
@@ -33,35 +36,17 @@ if (process.argv.includes("--version") || process.argv.includes("-V")) {
   process.stdout.write("0.18.0\n");
   process.exit(0);
 }
-
-function parseCli(argv) {
-  const valueFlags = new Set(["-p", "--prompt", "-m", "--model", "--output-format", "-S", "--session"]);
-  const out = { flags: {}, positional: [] };
-  for (let i = 0; i < argv.length; i++) {
-    const tok = argv[i];
-    if (valueFlags.has(tok)) {
-      out.flags[tok] = argv[i + 1] ?? "";
-      i += 1;
-    } else if (tok.startsWith("-")) {
-      process.stderr.write(`kimi-mock: unknown flag ${tok}\n`);
-      process.exit(1);
-    } else {
-      out.positional.push(tok);
-    }
-  }
-  return out;
+if (process.argv[2] !== "acp") {
+  process.stderr.write(`kimi-mock: unsupported invocation: ${process.argv.slice(2).join(" ")}\n`);
+  process.exit(1);
 }
 
-const parsed = parseCli(process.argv.slice(2));
-const prompt = parsed.flags["-p"] ?? parsed.flags["--prompt"] ?? "";
-const isPingPrompt = prompt.trim() === PING_PROMPT;
-const isCompanionPreflight = isPingPrompt && process.env.KIMI_COMPANION_PREFLIGHT === "1";
-const resumeId = parsed.flags["-S"] ?? parsed.flags["--session"] ?? "";
-const sessionId = resumeId
-  ? "77777777-8888-4999-aaaa-bbbbbbbbbbbb"
-  : "22222222-3333-4444-9555-666666666666";
-const model = parsed.flags["-m"] ?? parsed.flags["--model"] ?? "unknown";
-const mockResponse = process.env.KIMI_MOCK_RESPONSE ?? [
+// ---- ACP server ----------------------------------------------------------------
+
+const env = process.env;
+const FRESH_SESSION = "22222222-3333-4444-9555-666666666666";
+const RESUME_SESSION = "77777777-8888-4999-aaaa-bbbbbbbbbbbb";
+const mockResponse = env.KIMI_MOCK_RESPONSE ?? [
   "Verdict: APPROVE",
   "Blocking findings",
   "- None. I inspected the selected source made available to the Kimi smoke fixture and found no blocking issue.",
@@ -78,176 +63,174 @@ const mockResponse = process.env.KIMI_MOCK_RESPONSE ?? [
   "Mock Kimi response.",
 ].join("\n");
 
-const expectedPromptText = process.env.KIMI_MOCK_ASSERT_PROMPT_INCLUDES;
-const invocationCountPath = process.env.KIMI_MOCK_INVOCATION_COUNT_PATH;
-const invocationCountPromptIncludes = process.env.KIMI_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES;
-if (
-  invocationCountPath &&
-  !isCompanionPreflight &&
-  (!invocationCountPromptIncludes || prompt.includes(invocationCountPromptIncludes))
-) {
-  const previous = existsSync(invocationCountPath) ? Number(readFileSync(invocationCountPath, "utf8")) : 0;
-  writeFileSync(invocationCountPath, String((Number.isFinite(previous) ? previous : 0) + 1), "utf8");
+let model = "unknown";
+let resumeId = "";
+
+function send(obj) { process.stdout.write(`${JSON.stringify(obj)}\n`); }
+function fail(stderrLine) { process.stderr.write(`${stderrLine}\n`); process.exit(1); }
+
+// CWD assertions run at startup — the companion spawns `kimi acp` with the chosen
+// cwd, so process.cwd() is the same value the legacy -p mock checked.
+if (env.KIMI_MOCK_ASSERT_CWD && process.cwd() !== env.KIMI_MOCK_ASSERT_CWD) {
+  fail(`kimi-mock: cwd must be ${env.KIMI_MOCK_ASSERT_CWD}, got ${process.cwd()}`);
 }
-if (expectedPromptText && !isCompanionPreflight && !prompt.includes(expectedPromptText)) {
-  process.stderr.write(`kimi-mock: prompt missing expected text: ${expectedPromptText}\n`);
-  process.exit(1);
+if (env.KIMI_MOCK_ASSERT_CWD_NOT && process.cwd() === env.KIMI_MOCK_ASSERT_CWD_NOT) {
+  fail(`kimi-mock: cwd must not be ${env.KIMI_MOCK_ASSERT_CWD_NOT}`);
+}
+if (env.KIMI_MOCK_ASSERT_CWD_PREFIX && !process.cwd().startsWith(env.KIMI_MOCK_ASSERT_CWD_PREFIX)) {
+  fail(`kimi-mock: cwd ${process.cwd()} does not start with ${env.KIMI_MOCK_ASSERT_CWD_PREFIX}`);
 }
 
-const excludedPromptText = process.env.KIMI_MOCK_ASSERT_PROMPT_EXCLUDES;
-if (excludedPromptText && !isCompanionPreflight && prompt.includes(excludedPromptText)) {
-  process.stderr.write(`kimi-mock: prompt included excluded text: ${excludedPromptText}\n`);
-  process.exit(1);
-}
-
-const expectedResumeId = process.env.KIMI_MOCK_ASSERT_RESUME_ID;
-if (expectedResumeId && !isCompanionPreflight && resumeId !== expectedResumeId) {
-  process.stderr.write(
-    `kimi-mock: resume id mismatch: expected ${expectedResumeId}, got ${resumeId || "<missing>"}\n`,
-  );
-  process.exit(1);
-}
-
-if (process.env.KIMI_MOCK_CAPACITY_MODEL === model) {
-  process.stderr.write(JSON.stringify({
-    error: {
-      code: 429,
-      message: `No capacity available for model ${model} on the server`,
-      status: "RESOURCE_EXHAUSTED",
-      details: [{
-        reason: "MODEL_CAPACITY_EXHAUSTED",
-        metadata: { model },
-      }],
-    },
-  }) + "\n");
-  process.exit(1);
-}
-
-if (!isCompanionPreflight && process.env.KIMI_MOCK_MUTATE_FILE) {
-  writeFileSync(process.env.KIMI_MOCK_MUTATE_FILE, "kimi mock mutation\n", "utf8");
-}
-
-// stream-json transcript: a single assistant verdict turn followed by the
-// session resume-hint meta line. parseKimiCodeStreamJson takes the last
-// assistant turn for review modes and the meta session_id verbatim.
-const assistantLine = () => JSON.stringify({ role: "assistant", content: mockResponse });
-const metaLine = () => JSON.stringify({
-  role: "meta",
-  type: "session.resume_hint",
-  session_id: sessionId,
-  command: `kimi -r ${sessionId}`,
-  content: `To resume this session: kimi -r ${sessionId}`,
-});
-function emitTranscript() {
-  process.stdout.write(`${assistantLine()}\n`);
-  process.stdout.write(`${metaLine()}\n`);
-}
-
-const assertCwdAbs = process.env.KIMI_MOCK_ASSERT_CWD;
-if (assertCwdAbs && process.cwd() !== assertCwdAbs) {
-  process.stderr.write(`kimi-mock: cwd must be ${assertCwdAbs}, got ${process.cwd()}\n`);
-  process.exit(1);
-}
-
-const assertCwdNot = process.env.KIMI_MOCK_ASSERT_CWD_NOT;
-if (assertCwdNot && process.cwd() === assertCwdNot) {
-  process.stderr.write(`kimi-mock: cwd must not be ${assertCwdNot}\n`);
-  process.exit(1);
-}
-
-const assertCwdPrefix = process.env.KIMI_MOCK_ASSERT_CWD_PREFIX;
-if (assertCwdPrefix && !process.cwd().startsWith(assertCwdPrefix)) {
-  process.stderr.write(`kimi-mock: cwd ${process.cwd()} does not start with ${assertCwdPrefix}\n`);
-  process.exit(1);
-}
-
-// Kimi's companion does not pass --session-id to the target CLI, so the
-// mock cannot derive the jobId from argv. To inject a finalization conflict
-// for #16 follow-up 1 tests, we walk KIMI_PLUGIN_DATA/state/*/jobs and
-// pick the most recently modified queued meta file (the one this run wrote
-// just before spawning us). That base name is the jobId.
 async function findActiveJobIdFromState() {
-  const dataDir = process.env.KIMI_PLUGIN_DATA;
+  const dataDir = env.KIMI_PLUGIN_DATA;
   if (!dataDir) return null;
-  const { readdirSync, statSync, existsSync } = await import("node:fs");
+  const { readdirSync, statSync, existsSync: exists } = await import("node:fs");
   const { join } = await import("node:path");
   const stateRoot = join(dataDir, "state");
-  if (!existsSync(stateRoot)) return null;
+  if (!exists(stateRoot)) return null;
   let pick = null;
   for (const ws of readdirSync(stateRoot)) {
     const jobsDir = join(stateRoot, ws, "jobs");
-    if (!existsSync(jobsDir)) continue;
+    if (!exists(jobsDir)) continue;
     for (const entry of readdirSync(jobsDir)) {
       if (!entry.endsWith(".json")) continue;
-      const full = join(jobsDir, entry);
-      const m = statSync(full).mtimeMs;
-      if (!pick || m > pick.mtime) {
-        pick = { jobsDir, jobId: entry.slice(0, -".json".length), mtime: m };
-      }
+      const m = statSync(join(jobsDir, entry)).mtimeMs;
+      if (!pick || m > pick.mtime) pick = { jobsDir, jobId: entry.slice(0, -".json".length), mtime: m };
     }
   }
   return pick;
 }
 
-if (process.env.KIMI_MOCK_SIDECAR_CONFLICT === "1") {
-  // Pre-create <jobsDir>/<jobId> as a regular FILE so the companion's
-  // writeSidecar mkdir fails with ENOTDIR (#16 follow-up 1).
-  const { writeFileSync, mkdirSync } = await import("node:fs");
-  const found = await findActiveJobIdFromState();
-  if (found) {
-    const conflictPath = resolve(found.jobsDir, found.jobId);
-    mkdirSync(found.jobsDir, { recursive: true });
-    writeFileSync(conflictPath, "sidecar-directory-conflict\n", "utf8");
+// State-conflict oracles (#16 follow-up 1) run at startup, after the companion has
+// written the queued meta and spawned us.
+async function applyStateConflicts() {
+  if (env.KIMI_MOCK_SIDECAR_CONFLICT === "1") {
+    const { writeFileSync: w, mkdirSync } = await import("node:fs");
+    const found = await findActiveJobIdFromState();
+    if (found) { mkdirSync(found.jobsDir, { recursive: true }); w(resolve(found.jobsDir, found.jobId), "sidecar-directory-conflict\n", "utf8"); }
+  }
+  if (env.KIMI_MOCK_META_CONFLICT === "1") {
+    const { unlinkSync, mkdirSync } = await import("node:fs");
+    const found = await findActiveJobIdFromState();
+    if (found) { const t = resolve(found.jobsDir, `${found.jobId}.json`); try { unlinkSync(t); } catch { /* none yet */ } mkdirSync(t, { recursive: true }); }
   }
 }
 
-if (process.env.KIMI_MOCK_META_CONFLICT === "1") {
-  // Replace <jobsDir>/<jobId>.json with a directory so the companion's
-  // writeJobFile rename fails (#16 follow-up 1 — meta-write fatal path).
-  const { unlinkSync, mkdirSync } = await import("node:fs");
-  const found = await findActiveJobIdFromState();
-  if (found) {
-    const target = resolve(found.jobsDir, `${found.jobId}.json`);
-    try { unlinkSync(target); } catch { /* nothing to remove yet */ }
-    mkdirSync(target, { recursive: true });
+let promptText = "";
+function isPreflight() { return promptText.trim() === PING_PROMPT && env.KIMI_COMPANION_PREFLIGHT === "1"; }
+
+function runPromptAssertions() {
+  const preflight = isPreflight();
+  if (env.KIMI_MOCK_INVOCATION_COUNT_PATH && !preflight &&
+      (!env.KIMI_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES || promptText.includes(env.KIMI_MOCK_INVOCATION_COUNT_PROMPT_INCLUDES))) {
+    const p = env.KIMI_MOCK_INVOCATION_COUNT_PATH;
+    const prev = existsSync(p) ? Number(readFileSync(p, "utf8")) : 0;
+    writeFileSync(p, String((Number.isFinite(prev) ? prev : 0) + 1), "utf8");
   }
+  if (env.KIMI_MOCK_ASSERT_PROMPT_INCLUDES && !preflight && !promptText.includes(env.KIMI_MOCK_ASSERT_PROMPT_INCLUDES)) {
+    fail(`kimi-mock: prompt missing expected text: ${env.KIMI_MOCK_ASSERT_PROMPT_INCLUDES}`);
+  }
+  if (env.KIMI_MOCK_ASSERT_PROMPT_EXCLUDES && !preflight && promptText.includes(env.KIMI_MOCK_ASSERT_PROMPT_EXCLUDES)) {
+    fail(`kimi-mock: prompt included excluded text: ${env.KIMI_MOCK_ASSERT_PROMPT_EXCLUDES}`);
+  }
+  if (env.KIMI_MOCK_ASSERT_RESUME_ID && !preflight && resumeId !== env.KIMI_MOCK_ASSERT_RESUME_ID) {
+    fail(`kimi-mock: resume id mismatch: expected ${env.KIMI_MOCK_ASSERT_RESUME_ID}, got ${resumeId || "<missing>"}`);
+  }
+  // Capacity exhaustion for the configured model -> a 429 the usage-limit
+  // classifier recognizes (source was sent, so this maps to usage_limited).
+  if (env.KIMI_MOCK_CAPACITY_MODEL && env.KIMI_MOCK_CAPACITY_MODEL === model) {
+    const payload = JSON.stringify({ error: { code: 429, message: `No capacity available for model ${model} on the server`, status: "RESOURCE_EXHAUSTED", details: [{ reason: "MODEL_CAPACITY_EXHAUSTED", metadata: { model } }] } });
+    process.stderr.write(`${payload}\n`);
+    return { capacityError: payload };
+  }
+  if (!preflight && env.KIMI_MOCK_MUTATE_FILE) writeFileSync(env.KIMI_MOCK_MUTATE_FILE, "kimi mock mutation\n", "utf8");
+  // Corrupt a path mid-turn (e.g. .git/index) so the companion's post-run mutation
+  // scan fails — exercising the "preserve result when mutation detection is
+  // unavailable" path.
+  if (!preflight && env.KIMI_MOCK_CORRUPT_PATH) writeFileSync(env.KIMI_MOCK_CORRUPT_PATH, "corrupt", "utf8");
+  return null;
 }
 
-if (process.env.KIMI_MOCK_STATE_LOCK_CONFLICT === "1" && !isCompanionPreflight) {
-  const { mkdirSync, writeFileSync } = await import("node:fs");
+function emitTurn(reqId) {
+  send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: resumeId ? RESUME_SESSION : FRESH_SESSION, update: { sessionUpdate: "agent_message_chunk", messageId: "msg_0", content: { type: "text", text: mockResponse } } } });
+  send({ jsonrpc: "2.0", id: reqId, result: { stopReason: "end_turn" } });
+}
+
+function configOptions() {
+  return [
+    { type: "select", id: "model", name: "Model", category: "model", currentValue: "kimi-code/kimi-for-coding",
+      options: [
+        { value: "kimi-code/kimi-for-coding", name: "K2.7 Code High Speed" },
+        { value: "kimi-code/primary-capacity-limited", name: "Primary (capacity limited)" },
+        { value: "kimi-code/fallback-review", name: "Fallback Review" },
+      ] },
+    { type: "select", id: "mode", name: "Mode", category: "mode", currentValue: "default",
+      options: [{ value: "default", name: "Default" }, { value: "plan", name: "Plan" }, { value: "auto", name: "Auto" }, { value: "yolo", name: "YOLO" }] },
+  ];
+}
+
+if (env.KIMI_MOCK_TRAP_SIGTERM === "1") {
+  // A well-behaved CLI that traps SIGTERM: finish the in-flight turn and exit 0.
+  process.on("SIGTERM", () => { if (lastPromptId != null) emitTurn(lastPromptId); process.exit(0); });
+}
+
+let lastPromptId = null;
+let buffer = "";
+process.stdin.on("data", (chunk) => {
+  buffer += chunk.toString("utf8");
+  let nl;
+  while ((nl = buffer.indexOf("\n")) !== -1) {
+    const line = buffer.slice(0, nl).trim();
+    buffer = buffer.slice(nl + 1);
+    if (!line) continue;
+    let msg; try { msg = JSON.parse(line); } catch { continue; }
+    handle(msg);
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+
+async function handle(msg) {
+  if (msg.method === "initialize") {
+    await applyStateConflicts();
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, promptCapabilities: { embeddedContext: true } }, authMethods: [{ id: "login", type: "terminal", name: "Login with Kimi account" }], agentInfo: { name: "Kimi Code CLI", version: "0.18.0" } } });
+    return;
+  }
+  if (msg.method === "session/load") {
+    resumeId = String(msg.params?.sessionId ?? "");
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: RESUME_SESSION, configOptions: configOptions() } });
+    return;
+  }
+  if (msg.method === "session/new") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: FRESH_SESSION, configOptions: configOptions() } });
+    return;
+  }
+  if (msg.method === "session/set_config_option") {
+    if (msg.params?.configId === "model" && typeof msg.params?.value === "string") model = msg.params.value;
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
+    return;
+  }
+  if (msg.method === "session/prompt") {
+    lastPromptId = msg.id;
+    promptText = (msg.params?.prompt ?? []).filter((b) => b?.type === "text").map((b) => b.text).join("");
+    if (env.KIMI_MOCK_STATE_LOCK_CONFLICT === "1") await applyStateLockConflict();
+    const cap = runPromptAssertions();
+    if (cap) { send({ jsonrpc: "2.0", id: msg.id, error: { code: -32010, message: cap.capacityError } }); return; }
+    const delayMs = isPreflight() ? 0 : Number(env.KIMI_MOCK_DELAY_MS ?? "0");
+    if (Number.isFinite(delayMs) && delayMs > 0) setTimeout(() => emitTurn(msg.id), delayMs);
+    else emitTurn(msg.id);
+    return;
+  }
+  if (msg.id != null) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `mock: unknown method ${msg.method}` } });
+}
+
+async function applyStateLockConflict() {
+  if (isPreflight()) return;
+  const { mkdirSync, writeFileSync: w } = await import("node:fs");
   const { dirname, join } = await import("node:path");
   const { hostname } = await import("node:os");
   const found = await findActiveJobIdFromState();
-  if (found) {
-    const lockDir = join(dirname(found.jobsDir), ".state.lock");
-    mkdirSync(lockDir, { recursive: true });
-    writeFileSync(join(lockDir, "owner.json"), `${JSON.stringify({
-      pid: process.ppid,
-      hostname: hostname(),
-      startedAt: new Date().toISOString(),
-      token: "kimi-mock-state-lock-conflict",
-    })}\n`, "utf8");
-  }
-}
-
-// Issue #22 sub-task 2 oracle: `KIMI_MOCK_TRAP_SIGTERM=1` makes the mock
-// handle SIGTERM cleanly — emits the transcript and exits 0, exactly like a
-// well-behaved CLI that traps signals. Without the cancel-marker fix,
-// classifyExecution would mis-report this as "completed" even when the
-// operator had asked for a cancel.
-if (process.env.KIMI_MOCK_TRAP_SIGTERM === "1") {
-  process.on("SIGTERM", () => {
-    emitTranscript();
-    process.exit(0);
-  });
-}
-
-const delayMs = isCompanionPreflight ? 0 : Number(process.env.KIMI_MOCK_DELAY_MS ?? "0");
-if (Number.isFinite(delayMs) && delayMs > 0) {
-  setTimeout(() => {
-    emitTranscript();
-    process.exit(0);
-  }, delayMs);
-} else {
-  emitTranscript();
+  if (!found) return;
+  const lockDir = join(dirname(found.jobsDir), ".state.lock");
+  mkdirSync(lockDir, { recursive: true });
+  w(join(lockDir, "owner.json"), `${JSON.stringify({ pid: process.ppid, hostname: hostname(), startedAt: new Date().toISOString(), token: "kimi-mock-state-lock-conflict" })}\n`, "utf8");
 }

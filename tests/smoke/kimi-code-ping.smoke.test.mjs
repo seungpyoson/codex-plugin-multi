@@ -1,8 +1,8 @@
 // Companion-level smoke: the `ping` subcommand against a fake kimi-code 0.18.0
-// CLI (the -p/--prompt surface). Locks the kimi-code readiness path into CI
-// without a live dependency on the installed binary (#222). The real-binary
+// CLI driven through its ACP stdio server (#222). Locks the kimi-code readiness
+// path into CI without a live dependency on the installed binary. The real-binary
 // behavior is verified manually; this guards the wiring: surface detection ->
-// -p prompt delivery -> stream-json parse -> ULID session capture -> ready.
+// `kimi acp` -> session/new session capture -> session/prompt -> ready.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -24,44 +24,55 @@ Options:
   -m, --model <model>           LLM model alias to use for this invocation.
   -p, --prompt <prompt>         Run one prompt non-interactively and print the response.
   --output-format <format>      Output format for prompt mode. (choices: "text", "stream-json")
-  -S, --session [id]            Resume a session.
   -h, --help                    Show help.
+
+Commands:
+  acp [options]                 Run kimi-code as an Agent Client Protocol (ACP) server over stdio.
 `;
 
-function writeKimiCodeMock(dir, { onPrompt } = {}) {
+function writeKimiCodeMock(dir) {
   const binary = path.join(dir, "kimi-code-mock.mjs");
   writeFileSync(binary, `#!/usr/bin/env node
 const argv = process.argv.slice(2);
+const SID = ${JSON.stringify(KIMI_CODE_SESSION_ID)};
+const FAIL = process.env.KIMI_CODE_MOCK_FAIL_DETAIL;
 if (argv.includes("--version") || argv.includes("-V")) { process.stdout.write("0.18.0\\n"); process.exit(0); }
 if (argv.includes("--help")) { process.stdout.write(${JSON.stringify(KIMI_CODE_HELP)}); process.exit(0); }
-if (argv.includes("--print")) { process.stderr.write("error: unknown option '--print'\\n"); process.exit(1); }
-const pIdx = argv.indexOf("-p");
-const prompt = pIdx >= 0 ? (argv[pIdx + 1] ?? "") : "";
-const fs = await import("node:fs");
-const stdin = fs.readFileSync(0, "utf8");
-if (!prompt) { process.stderr.write("mock: missing -p prompt arg\\n"); process.exit(1); }
-if (stdin.length > 0) { process.stderr.write("mock: prompt must not be on stdin\\n"); process.exit(1); }
-${onPrompt ?? ""}
-process.stdout.write(JSON.stringify({ role: "assistant", content: "pong" }) + "\\n");
-process.stdout.write(JSON.stringify({ role: "meta", type: "session.resume_hint", session_id: ${JSON.stringify(KIMI_CODE_SESSION_ID)}, command: "kimi -r ${KIMI_CODE_SESSION_ID}" }) + "\\n");
-process.exit(0);
+if (argv[0] !== "acp") { process.stderr.write("kimi-code-mock: unsupported invocation\\n"); process.exit(1); }
+function send(o) { process.stdout.write(JSON.stringify(o) + "\\n"); }
+let buf = "";
+process.stdin.on("data", (c) => { buf += c; let i; while ((i = buf.indexOf("\\n")) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (l) handle(JSON.parse(l)); } });
+process.stdin.on("end", () => process.exit(0));
+function handle(m) {
+  if (m.method === "initialize") { send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [], agentInfo: { name: "Kimi Code CLI", version: "0.18.0" } } }); return; }
+  if (m.method === "session/new") { send({ jsonrpc: "2.0", id: m.id, result: { sessionId: SID, configOptions: [{ type: "select", id: "model", options: [{ value: "kimi-code/kimi-for-coding" }] }] } }); return; }
+  if (m.method === "session/set_config_option") { send({ jsonrpc: "2.0", id: m.id, result: {} }); return; }
+  if (m.method === "session/prompt") {
+    if (FAIL) { process.stderr.write(FAIL + "\\n"); send({ jsonrpc: "2.0", id: m.id, error: { code: -32010, message: FAIL } }); return; }
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: SID, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "pong" } } } });
+    send({ jsonrpc: "2.0", id: m.id, result: { stopReason: "end_turn" } });
+    return;
+  }
+  if (m.id != null) send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "unknown" } });
+}
 `);
   chmodSync(binary, 0o755);
   return binary;
 }
 
-function runPing(binary) {
+function runPing(binary, env = {}) {
   const res = spawnSync("node", [companion, "ping", "--binary", binary], {
     cwd: repoRoot,
     encoding: "utf8",
     timeout: 30000,
+    env: { ...process.env, ...env },
   });
   const text = res.stdout ?? "";
   const json = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
   return { res, json };
 }
 
-test("ping: reports ready against a kimi-code CLI, capturing the ULID session id", () => {
+test("ping: reports ready against a kimi-code ACP CLI, capturing the session id", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "kimi-code-ping-ok-"));
   try {
     const { res, json } = runPing(writeKimiCodeMock(dir));
@@ -75,11 +86,12 @@ test("ping: reports ready against a kimi-code CLI, capturing the ULID session id
   }
 });
 
-test("ping: a kimi-code CLI failure is never reported ready", () => {
+test("ping: a kimi-code ACP CLI failure is never reported ready", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "kimi-code-ping-fail-"));
   try {
-    const onPrompt = `process.stderr.write("boom: the model backend is unavailable\\n"); process.exit(1);`;
-    const { res, json } = runPing(writeKimiCodeMock(dir, { onPrompt }));
+    const { res, json } = runPing(writeKimiCodeMock(dir), {
+      KIMI_CODE_MOCK_FAIL_DETAIL: "boom: the model backend is unavailable",
+    });
     assert.notEqual(res.status, 0);
     assert.equal(json.ready, false);
     assert.notEqual(json.status, "ok");

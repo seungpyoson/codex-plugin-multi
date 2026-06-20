@@ -99,6 +99,22 @@ test("honors a custom maxAttempts while staying bounded", async () => {
   assert.equal(calls.length, 3);
 });
 
+test("uses the real backoff sleep between attempts when none is injected", async () => {
+  // Exercises the default sleep path (the production backoff) with a 1ms delay so a
+  // transient first attempt clears on the re-probe without a stubbed timer.
+  const { attempt, calls } = scriptedAttempts([
+    { exitCode: 1, transient: true },
+    { exitCode: 0, transient: false },
+  ]);
+  const result = await probeWithReprobe({
+    attempt,
+    isTransientFailure: (ex) => ex.transient === true,
+    backoffMs: 1,
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(calls.length, 2);
+});
+
 test("validates its callbacks", async () => {
   await assert.rejects(
     () => probeWithReprobe({ isTransientFailure: () => false }),

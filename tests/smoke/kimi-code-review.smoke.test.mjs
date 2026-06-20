@@ -26,54 +26,26 @@ Options:
   -m, --model <model>           LLM model alias to use for this invocation.
   -p, --prompt <prompt>         Run one prompt non-interactively and print the response.
   --output-format <format>      Output format for prompt mode. (choices: "text", "stream-json")
-  -S, --session [id]            Resume a session.
   -h, --help                    Show help.
+
+Commands:
+  acp [options]                 Run kimi-code as an Agent Client Protocol (ACP) server over stdio.
 `;
 
-// A fake kimi-code CLI. The readiness preflight runs with KIMI_COMPANION_PREFLIGHT=1
-// (a fixed neutral-cwd "pong" probe) — the mock answers that simply and never
-// mutates. The real run is driven by KC_MOCK_MODE: review emits narration + a
-// tool-call turn + a final verdict turn; rescue writes FIXED.md in the working
-// tree and emits a multi-turn transcript.
+// A fake kimi-code ACP CLI. The readiness preflight runs with
+// KIMI_COMPANION_PREFLIGHT=1 (a fixed neutral-cwd "pong" probe) — answered simply,
+// never mutating. The real run is driven by KC_MOCK_MODE: review streams a narration
+// message then a verdict message (finalMessageOnly keeps the verdict); rescue writes
+// FIXED.md in the working tree and streams a multi-message transcript (kept whole).
 function writeKimiCodeMock(dir) {
   const binary = path.join(dir, "kimi-code-mock.mjs");
   writeFileSync(binary, `#!/usr/bin/env node
+import { writeFileSync as wfs } from "node:fs";
 const argv = process.argv.slice(2);
 if (argv.includes("--version") || argv.includes("-V")) { process.stdout.write("0.18.0\\n"); process.exit(0); }
 if (argv.includes("--help")) { process.stdout.write(${JSON.stringify(KIMI_CODE_HELP)}); process.exit(0); }
-if (argv.includes("--print")) { process.stderr.write("error: unknown option '--print'\\n"); process.exit(1); }
-const pIdx = argv.indexOf("-p");
-const prompt = pIdx >= 0 ? (argv[pIdx + 1] ?? "") : "";
-const fs = await import("node:fs");
-const stdin = fs.readFileSync(0, "utf8");
-if (!prompt) { process.stderr.write("mock: missing -p prompt arg\\n"); process.exit(1); }
-if (stdin.length > 0) { process.stderr.write("mock: prompt must not be on stdin\\n"); process.exit(1); }
-const meta = () => JSON.stringify({ role: "meta", type: "session.resume_hint", session_id: "session_kc-mock-0001", command: "kimi -r session_kc-mock-0001" });
-const emit = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
-
-// Readiness preflight: a fixed neutral probe. Never mutate, just answer pong.
-if (process.env.KIMI_COMPANION_PREFLIGHT === "1") {
-  emit({ role: "assistant", content: "pong" });
-  process.stdout.write(meta() + "\\n");
-  process.exit(0);
-}
-
-const mode = process.env.KC_MOCK_MODE ?? "review";
-if (mode === "rescue") {
-  // Tools-on rescue runs in the working tree; prove a real edit lands on disk.
-  fs.writeFileSync("FIXED.md", "DONE by kimi-code rescue\\n");
-  emit({ role: "assistant", content: "Let me inspect the repository before editing." });
-  emit({ role: "assistant", tool_calls: [{ id: "1", name: "Edit" }] });
-  emit({ role: "assistant", content: "I created FIXED.md containing DONE. The rescue task is complete." });
-  process.stdout.write(meta() + "\\n");
-  process.exit(0);
-}
-
-// review-family: an interim narration turn, a tool-call turn (no string content),
-// then the final verdict turn. Final-turn extraction must report only the verdict.
-emit({ role: "assistant", content: "Let me read the selected source before deciding." });
-emit({ role: "assistant", tool_calls: [{ id: "1", name: "Read" }] });
-const verdict = [
+if (argv[0] !== "acp") { process.stderr.write("kimi-code-mock: unsupported invocation\\n"); process.exit(1); }
+const VERDICT = ${JSON.stringify([
   "Verdict: APPROVE",
   "",
   "Checklist:",
@@ -88,10 +60,35 @@ const verdict = [
   "Non-blocking concerns: None.",
   "Test gaps: None.",
   "I inspected the selected source file as embedded in the prompt.",
-].join("\\n");
-emit({ role: "assistant", content: verdict });
-process.stdout.write(meta() + "\\n");
-process.exit(0);
+].join("\n"))};
+function send(o) { process.stdout.write(JSON.stringify(o) + "\\n"); }
+function msg(id, text) { send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session_kc-mock-0001", update: { sessionUpdate: "agent_message_chunk", messageId: id, content: { type: "text", text } } } }); }
+let buf = "";
+process.stdin.on("data", (c) => { buf += c; let i; while ((i = buf.indexOf("\\n")) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (l) handle(JSON.parse(l)); } });
+process.stdin.on("end", () => process.exit(0));
+function handle(m) {
+  if (m.method === "initialize") { send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [], agentInfo: { name: "Kimi Code CLI", version: "0.18.0" } } }); return; }
+  if (m.method === "session/new") { send({ jsonrpc: "2.0", id: m.id, result: { sessionId: "session_kc-mock-0001", configOptions: [{ type: "select", id: "model", options: [{ value: "kimi-code/kimi-for-coding" }] }] } }); return; }
+  if (m.method === "session/set_config_option") { send({ jsonrpc: "2.0", id: m.id, result: {} }); return; }
+  if (m.method === "session/prompt") {
+    if (process.env.KIMI_COMPANION_PREFLIGHT === "1") { msg("ping", "pong"); send({ jsonrpc: "2.0", id: m.id, result: { stopReason: "end_turn" } }); return; }
+    const mode = process.env.KC_MOCK_MODE ?? "review";
+    if (mode === "rescue") {
+      // Tools-on rescue runs in the working tree (containment "none"); prove a real edit lands.
+      wfs("FIXED.md", "DONE by kimi-code rescue\\n");
+      msg("m1", "Let me inspect the repository before editing.");
+      msg("m2", "I created FIXED.md containing DONE. The rescue task is complete.");
+    } else {
+      // review-family: a narration message then the verdict message; finalMessageOnly
+      // keeps only the verdict turn.
+      msg("m1", "Let me read the selected source before deciding.");
+      msg("m2", VERDICT);
+    }
+    send({ jsonrpc: "2.0", id: m.id, result: { stopReason: "end_turn" } });
+    return;
+  }
+  if (m.id != null) send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "unknown" } });
+}
 `);
   chmodSync(binary, 0o755);
   return binary;

@@ -535,6 +535,11 @@
       "branches": 100,
       "functions": 0
     },
+    "plugins/kimi/scripts/lib/acp-client.mjs": {
+      "lines": 86,
+      "branches": 65,
+      "functions": 82
+    },
     "plugins/kimi/scripts/lib/external-review.mjs": {
       "lines": 85.98,
       "branches": 94.29,
@@ -586,9 +591,9 @@
       "functions": 100
     },
     "plugins/kimi/scripts/lib/kimi.mjs": {
-      "lines": 53.81,
-      "branches": 78.79,
-      "functions": 77.78
+      "lines": 85,
+      "branches": 68,
+      "functions": 79
     },
     "plugins/kimi/scripts/lib/mode-profiles.mjs": {
       "lines": 12.9,

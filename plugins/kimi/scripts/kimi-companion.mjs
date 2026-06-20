@@ -1939,7 +1939,7 @@ function pingContractMismatchFields() {
   return {
     ready: false,
     summary: "Installed Kimi CLI is incompatible with relay's Kimi adapter (command-surface mismatch).",
-    next_action: "The installed Kimi CLI does not advertise the kimi-code prompt-mode flags relay requires (e.g. -p/--prompt, --output-format). Install or update to the kimi-code CLI from https://moonshotai.github.io/kimi-code/.",
+    next_action: "The installed Kimi CLI does not advertise the `acp` command relay requires (it drives kimi-code through its ACP stdio server). Install or update to the kimi-code CLI from https://moonshotai.github.io/kimi-code/.",
   };
 }
 
@@ -2075,7 +2075,7 @@ async function cmdPing(rest, { readinessProfileName = "ping" } = {}) {
     if (e instanceof KimiContractMismatchError) {
       printJson({ status: "cli_contract_mismatch", ...pingContractMismatchFields(), ...pingRouteAuthFields(),
         detail: e.message,
-        missing_flags: e.missingFlags ?? [],
+        missing_commands: e.missing ?? [],
         detected_version: e.detectedVersion ?? null });
       process.exit(2);
     }

@@ -42,52 +42,6 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
   return { ...res, dataDir };
 }
 
-function writeIndexCorruptingBinary(dir, repoPath) {
-  const binary = path.join(dir, "corrupt-index-kimi.mjs");
-  // kimi-code surface (node, to avoid shell printf escaping of the multi-line
-  // verdict): answer --help/--version, corrupt the git index, then emit a
-  // stream-json assistant verdict turn + session resume-hint meta line.
-  const help = [
-    "Usage: kimi [options]",
-    "",
-    "Options:",
-    "  -V, --version   version",
-    "  -m, --model <m>   model",
-    "  -p, --prompt <p>   prompt",
-    "  --output-format <f>   format",
-    "  -S, --session [id]   resume",
-    "  -h, --help   help",
-    "",
-  ].join("\n");
-  const verdict = [
-    "Verdict: APPROVE",
-    "Blocking findings",
-    "- None. The selected source was inspected before mutation detection failed.",
-    "Non-blocking concerns",
-    "- None for this fixture.",
-    "Test gaps",
-    "- Existing smoke coverage exercises this post-run mutation failure path, including preserving the completed result when the later mutation scan fails.",
-    "Inspection status",
-    "- Source inspection completed; the later mutation scan failed independently and is surfaced as metadata rather than a review failure.",
-    "Checklist:",
-    "- PASS selected source was inspected.",
-    "- PASS no blocker was invented.",
-    "- PASS mutation failure was surfaced.",
-  ].join("\n");
-  writeFileSync(binary, `#!/usr/bin/env node
-import { writeFileSync as wfs } from "node:fs";
-const argv = process.argv.slice(2);
-if (argv.includes("--help")) { process.stdout.write(${JSON.stringify(help)}); process.exit(0); }
-if (argv.includes("--version") || argv.includes("-V")) { process.stdout.write("0.18.0\\n"); process.exit(0); }
-wfs(${JSON.stringify(path.join(repoPath, ".git", "index"))}, "corrupt");
-process.stdout.write(JSON.stringify({ role: "assistant", content: ${JSON.stringify(verdict)} }) + "\\n");
-process.stdout.write(JSON.stringify({ role: "meta", type: "session.resume_hint", session_id: "22222222-3333-4444-9555-666666666666", command: "kimi -r 22222222-3333-4444-9555-666666666666" }) + "\\n");
-process.exit(0);
-`);
-  chmodSync(binary, 0o755);
-  return binary;
-}
-
 function withRepo(fn) {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-smoke-repo-"));
   try {
@@ -309,7 +263,7 @@ test("kimi mock rejects unknown CLI flags", () => {
   });
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /unknown flag --unknown-kimi-flag/);
+  assert.match(result.stderr, /unsupported invocation: --unknown-kimi-flag/);
 });
 
 test("kimi ping reports OAuth readiness and ignored API-key diagnostics", () => {
@@ -425,50 +379,13 @@ test("kimi ping classifies timeout as transient latency", () => {
   }
 });
 
-test("kimi doctor runs the review profile on the kimi-code surface and reports ready (#222 migration)", () => {
-  // Post-migration the review profile routes to the kimi-code -p surface, so
-  // doctor (which probes with the review profile) must succeed on kimi-code —
-  // the inverse of the pre-migration cli_contract_mismatch behavior.
+test("kimi doctor reports ready on the kimi-code ACP surface (#222 migration)", () => {
+  // Post-migration relay drives kimi-code through `kimi acp`, so doctor (which
+  // probes with the review profile) must succeed against a CLI that advertises the
+  // `acp` command — the inverse of the pre-migration cli_contract_mismatch.
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-doctor-kimi-code-"));
-  const bin = path.join(cwd, "kimi-code");
-  writeFileSync(bin, `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (args.includes("--version") || args.includes("-V")) {
-  process.stdout.write("0.18.0\\n");
-  process.exit(0);
-}
-if (args.includes("--help") || args.includes("-h")) {
-  process.stdout.write([
-    "Usage: kimi [options] [command]",
-    "",
-    "Options:",
-    "  -V, --version              output the version number",
-    "  -S, --session [id]         Resume a session.",
-    "  -m, --model <model>        LLM model alias.",
-    "  -p, --prompt <prompt>      Run one prompt non-interactively.",
-    "  --output-format <format>   Output format. (choices: text, stream-json)",
-    "  --skills-dir <dir>         Load skills from this directory.",
-    "  --plan                     Start in plan mode.",
-    "  -h, --help                 Show help.",
-    "",
-    "Commands:",
-    "  doctor                     Validate Kimi Code configuration files.",
-    "",
-  ].join("\\n"));
-  process.exit(0);
-}
-// kimi-code rejects the legacy --print surface; relay must never emit it.
-if (args.includes("--print")) { process.stderr.write("error: unknown option '--print'\\n"); process.exit(1); }
-const pIdx = args.indexOf("-p");
-const prompt = pIdx >= 0 ? (args[pIdx + 1] ?? "") : "";
-if (!prompt) { process.stderr.write("mock: missing -p prompt arg\\n"); process.exit(1); }
-process.stdout.write(JSON.stringify({ role: "assistant", content: "pong" }) + "\\n");
-process.stdout.write(JSON.stringify({ role: "meta", type: "session.resume_hint", session_id: "session_doctor-1234", command: "kimi -r session_doctor-1234" }) + "\\n");
-process.exit(0);
-`, "utf8");
-  chmodSync(bin, 0o755);
   try {
-    const result = runCompanion(["doctor", "--binary", bin], { cwd });
+    const result = runCompanion(["doctor", "--binary", MOCK], { cwd });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "ok");
@@ -1418,22 +1335,37 @@ test("kimi custom-review fails shallow missing-verdict output as review_not_comp
 test("kimi review preserves result when post-run mutation detection is unavailable", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-mut-post-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-mut-post-data-"));
-  const binDir = mkdtempSync(path.join(tmpdir(), "kimi-mut-post-bin-"));
+  // A complete review verdict whose text notes the mutation scan failed — it must
+  // survive intact even though the post-run mutation scan could not run.
+  const verdict = [
+    "Verdict: APPROVE",
+    "Blocking findings",
+    "- None. The selected source was inspected before mutation detection failed.",
+    "Non-blocking concerns",
+    "- None for this fixture.",
+    "Test gaps",
+    "- Existing smoke coverage exercises this post-run mutation failure path.",
+    "Inspection status",
+    "- Source inspection completed; the later mutation scan failed independently and is surfaced as metadata rather than a review failure.",
+    "Checklist:",
+    "- PASS selected source was inspected.",
+    "- PASS no blocker was invented.",
+    "- PASS mutation failure was surfaced.",
+  ].join("\n");
   try {
     fixtureSeedRepo(cwd);
-    const binary = writeIndexCorruptingBinary(binDir, cwd);
+    // Corrupt .git/index mid-turn so the post-run mutation scan fails (git status
+    // errors) while the review itself completes.
     const result = runCompanion([
       "run",
       "--mode",
       "review",
       "--cwd",
       cwd,
-      "--binary",
-      binary,
       "--foreground",
       "--",
       "review",
-    ], { cwd, dataDir });
+    ], { cwd, dataDir, env: { KIMI_MOCK_CORRUPT_PATH: path.join(cwd, ".git", "index"), KIMI_MOCK_RESPONSE: verdict } });
     assert.equal(result.status, 0, result.stderr);
     const record = parseJson(result.stdout);
     assert.equal(record.status, "completed");
@@ -1448,7 +1380,6 @@ test("kimi review preserves result when post-run mutation detection is unavailab
   } finally {
     rmSync(cwd, { recursive: true, force: true });
     rmSync(dataDir, { recursive: true, force: true });
-    rmSync(binDir, { recursive: true, force: true });
   }
 });
 
