@@ -13,6 +13,8 @@
 // (e.g. `--help` errors, or its output is unrecognizable) we report ok:false and
 // callers SKIP the guard, so a CLI we could not probe is never wrongly blocked.
 
+import { realpathSync, statSync } from "node:fs";
+
 import { runCommand } from "./process.mjs";
 
 // Bound the capability probe. detectKimiCapabilities runs on every spawnKimi
@@ -46,13 +48,23 @@ export function parseKimiHelpFlags(helpText) {
   return flags;
 }
 
-// Per-process cache of successful capability probes, keyed by binary path.
-// detectKimiCapabilities runs on every spawnKimi (ping, review, continue), so a
-// single review would otherwise re-probe the same binary 2-3× (×2 spawnSync
-// each). We cache only SUCCESSFUL probes: a failed/transient probe (timeout,
-// non-zero --help) must stay re-tryable, never sticky for the process lifetime.
-// Only the real (default runImpl) path is cached — an injected runImpl (tests)
-// always re-runs so fixtures stay isolated.
+// Per-process cache of successful capability probes. detectKimiCapabilities runs
+// on every spawnKimi (ping, review, continue), so a single review would otherwise
+// re-probe the same binary 2-3× (×2 spawnSync each). We cache only SUCCESSFUL
+// probes: a failed/transient probe (timeout, non-zero --help) must stay
+// re-tryable, never sticky for the process lifetime.
+//
+// The key is the executable's STAT IDENTITY (resolved real path + mtime + size),
+// NOT the binary string. Keying by string is unsafe: the binary may be a bare
+// name ("kimi") that resolves differently as env.PATH changes (two builds share
+// one entry — wrong surface reused), and an in-place upgrade keeps the same path
+// but changes the contract (stale flags reused). Stat identity defeats both: a
+// different executable has a different realpath, and an upgrade changes the
+// mtime, so either yields a fresh key and a re-probe. When the path cannot be
+// stat'd (a bare PATH name spawnSync resolves itself), we DO NOT cache — we never
+// reimplement PATH resolution, which could diverge from what spawnSync runs and
+// cache a different file's facts. Only the real (default runImpl) path is cached;
+// an injected runImpl (tests) always re-runs so fixtures stay isolated.
 const capabilityCache = new Map();
 
 // Test-only: clear the per-process capability cache.
@@ -60,14 +72,27 @@ export function __resetKimiCapabilityCache() {
   capabilityCache.clear();
 }
 
+// Stat-identity cache key for an executable path, or null when it cannot be
+// resolved/stat'd (e.g. a bare name resolved off env.PATH) — null means "do not
+// cache", never "cache under the raw string".
+function binaryCacheKey(binary) {
+  try {
+    const real = realpathSync(binary);
+    const st = statSync(real);
+    return `${real}:${st.mtimeMs}:${st.size}`;
+  } catch {
+    return null;
+  }
+}
+
 // Probe the installed Kimi CLI's supported flags via `--help`. Returns
 // { ok, supportedFlags:Set, version, detail }. ok is true ONLY when --help
 // clearly produced an options screen (exit 0 AND it lists its own --help/-h).
 export function detectKimiCapabilities(binary, { env = process.env, runImpl = runCommand } = {}) {
-  const cacheable = runImpl === runCommand;
-  if (cacheable && capabilityCache.has(binary)) return capabilityCache.get(binary);
+  const cacheKey = runImpl === runCommand ? binaryCacheKey(binary) : null;
+  if (cacheKey !== null && capabilityCache.has(cacheKey)) return capabilityCache.get(cacheKey);
   const result = probeKimiCapabilities(binary, { env, runImpl });
-  if (cacheable && result.ok) capabilityCache.set(binary, result);
+  if (cacheKey !== null && result.ok) capabilityCache.set(cacheKey, result);
   return result;
 }
 
@@ -94,16 +119,38 @@ function probeKimiCapabilities(binary, { env, runImpl }) {
   return { ok: true, supportedFlags, version, detail: null };
 }
 
-// The distinct flag tokens an argv array uses (entries starting with "-").
-// `--flag=value` is normalized to the bare `--flag`: a CLI --help screen
-// advertises bare flag names, so comparing an attached-value token verbatim
-// would wrongly report a supported flag as missing (false cli_contract_mismatch).
+// The value-taking flags relay's adapter emits (see buildKimiArgs in kimi.mjs:
+// `-p <prompt>`, `--output-format <fmt>`, `-m <model>`, `--session <id>`). Their
+// VALUE is arbitrary user/runtime text that can itself start with "-" (a prompt
+// like "-v: fix this", a dash-prefixed model alias, `--output-format -json`).
+// The contract guard must scan flag positions only, never value positions, or a
+// dash-leading value is misread as an unsupported flag and throws a false
+// cli_contract_mismatch — the exact false-negative class this guard exists to
+// kill. This set MUST mirror the value flags buildKimiArgs can emit; the unit
+// suite (kimi-capabilities.test.mjs) and contract tests pin both ends.
+const KIMI_VALUE_FLAGS = new Set([
+  "-p", "--prompt", "-m", "--model", "--output-format", "-S", "--session",
+]);
+
+// The distinct adapter-owned flag tokens an argv array uses. Parsed with flag
+// arity: a token starting with "-" is a flag, and the token following a known
+// value-taking flag is its VALUE (skipped), never inspected as a flag. The
+// `--flag=value` form carries its own value, so it is normalized to the bare
+// `--flag` and its next token is NOT skipped. Detection failure stays a no-op
+// upstream (missingKimiFlags returns [] when capabilities are unknown).
 export function argFlags(args) {
-  return [...new Set(
-    (args ?? [])
-      .filter((a) => typeof a === "string" && a.startsWith("-"))
-      .map((a) => a.split("=", 1)[0]),
-  )];
+  const flags = new Set();
+  const argv = args ?? [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (typeof token !== "string" || !token.startsWith("-")) continue;
+    const flag = token.split("=", 1)[0];
+    flags.add(flag);
+    // A bare value flag (no attached `=value`) consumes the next token as its
+    // value — skip it so a dash-leading value is never scanned as a flag.
+    if (KIMI_VALUE_FLAGS.has(flag) && !token.includes("=")) i += 1;
+  }
+  return [...flags];
 }
 
 // Flags the built argv uses that the installed CLI does not advertise. Empty

@@ -102,6 +102,35 @@ process.exit(1);
   }
 });
 
+test("detectKimiCapabilities re-probes after an in-place binary upgrade (stat-identity key)", () => {
+  __resetKimiCapabilityCache();
+  const dir = mkdtempSync(path.join(tmpdir(), "kimi-cap-upgrade-"));
+  const counter = path.join(dir, "count");
+  const bin = path.join(dir, "kimi-upgrade.mjs");
+  const writeBin = (version, pad) => writeFileSync(bin, `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+const argv = process.argv.slice(2);
+if (argv.includes("--help")) { appendFileSync(${JSON.stringify(counter)}, "h"); process.stdout.write("Options:\\n  -p, --prompt <p>\\n  --output-format <f>\\n  -h, --help\\n"); process.exit(0); }
+if (argv.includes("--version")) { process.stdout.write(${JSON.stringify(version)} + "\\n"); process.exit(0); }
+process.exit(1); // pad:${pad}
+`);
+  writeBin("0.18.0", "a");
+  chmodSync(bin, 0o755);
+  try {
+    assert.equal(detectKimiCapabilities(bin).version, "0.18.0");
+    // Rewrite the same path with a different build (new size + mtime). The
+    // stale-by-path bug would reuse 0.18.0; stat-identity keying must re-probe.
+    writeBin("0.19.0", "bb-longer-padding-to-change-size");
+    chmodSync(bin, 0o755);
+    assert.equal(detectKimiCapabilities(bin).version, "0.19.0",
+      "an in-place upgrade must invalidate the cached probe, not reuse stale flags");
+    assert.equal(readFileSync(counter, "utf8"), "hh", "the upgraded binary must be re-probed");
+  } finally {
+    __resetKimiCapabilityCache();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("detectKimiCapabilities does not cache a failed probe (stays re-tryable)", () => {
   __resetKimiCapabilityCache();
   const dir = mkdtempSync(path.join(tmpdir(), "kimi-cap-cache-fail-"));
@@ -225,4 +254,30 @@ test("missingKimiFlags normalizes --flag=value before membership (no false misma
   assert.doesNotThrow(() => assertKimiContract(["-p", "review this", "--output-format=stream-json"], caps));
   // a genuinely unsupported flag is still caught, in either syntax.
   assert.deepEqual(missingKimiFlags(["--print=1"], caps), ["--print"]);
+});
+
+test("missingKimiFlags never scans the VALUE of a value-taking flag (dash-leading values)", () => {
+  const caps = detectKimiCapabilities("kimi", {
+    runImpl: fakeRun({
+      "--help": { status: 0, stdout: KIMI_CODE_HELP, stderr: "" },
+      "--version": { status: 0, stdout: "0.18.0" },
+    }),
+  });
+  // A prompt / model alias / format value that itself starts with "-" must be
+  // treated as the value of -p/-m/--output-format, NOT as an unsupported flag.
+  // Regression guard: this was a false cli_contract_mismatch (PR #226 review).
+  assert.deepEqual(
+    missingKimiFlags(["-p", "-v flag handling", "--output-format", "stream-json"], caps),
+    [],
+  );
+  assert.deepEqual(missingKimiFlags(["-m", "-dash-model", "-p", "hi"], caps), []);
+  assert.deepEqual(missingKimiFlags(["--output-format", "-json", "-p", "hi"], caps), []);
+  assert.deepEqual(missingKimiFlags(["--session", "--weird-id", "-p", "hi"], caps), []);
+  assert.doesNotThrow(() =>
+    assertKimiContract(["-p", "- fix this file", "--output-format", "stream-json"], caps));
+  // a genuinely unsupported flag in a flag position is still caught.
+  assert.deepEqual(
+    missingKimiFlags(["-p", "ok", "--print", "--output-format", "stream-json"], caps),
+    ["--print"],
+  );
 });
