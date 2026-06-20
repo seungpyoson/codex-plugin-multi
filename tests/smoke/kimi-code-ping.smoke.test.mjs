@@ -60,6 +60,28 @@ function handle(m) {
   return binary;
 }
 
+// A legacy CLI whose --help parses cleanly but advertises NO `acp` command — the
+// realistic kimi-cli generation relay must reject with cli_contract_mismatch.
+const LEGACY_HELP = `Usage: kimi [options]
+
+Options:
+  --print                       Print mode.
+  --agent-file <path>           Agent file.
+  -h, --help                    Show help.
+`;
+
+function writeLegacyKimiMock(dir) {
+  const binary = path.join(dir, "kimi-legacy-mock.mjs");
+  writeFileSync(binary, `#!/usr/bin/env node
+const argv = process.argv.slice(2);
+if (argv.includes("--version") || argv.includes("-V")) { process.stdout.write("legacy-1.0\\n"); process.exit(0); }
+if (argv.includes("--help")) { process.stdout.write(${JSON.stringify(LEGACY_HELP)}); process.exit(0); }
+process.stderr.write("kimi-legacy-mock: unsupported invocation\\n"); process.exit(1);
+`);
+  chmodSync(binary, 0o755);
+  return binary;
+}
+
 function runPing(binary, env = {}) {
   const res = spawnSync("node", [companion, "ping", "--binary", binary], {
     cwd: repoRoot,
@@ -96,6 +118,20 @@ test("ping: a kimi-code ACP CLI failure is never reported ready", () => {
     assert.equal(json.ready, false);
     assert.notEqual(json.status, "ok");
     assert.match(json.detail ?? "", /boom: the model backend is unavailable/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ping: a legacy CLI lacking the acp command reports cli_contract_mismatch (missing ['acp']), never ready", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "kimi-code-ping-legacy-"));
+  try {
+    const { res, json } = runPing(writeLegacyKimiMock(dir));
+    assert.equal(res.status, 2, res.stderr);
+    assert.equal(json.status, "cli_contract_mismatch");
+    assert.equal(json.ready, false);
+    assert.deepEqual(json.missing_commands, ["acp"]);
+    assert.match(json.next_action ?? "", /\bacp\b/, "next_action must name the acp command");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

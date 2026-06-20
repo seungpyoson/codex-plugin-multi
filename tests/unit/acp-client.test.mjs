@@ -160,3 +160,17 @@ test("max_tokens stopReason -> review_incomplete (source sent)", async () => {
   assert.equal(r.reason, "review_incomplete");
   assert.equal(r.sourceSent, true);
 });
+
+test("a terminal frame WITHOUT a trailing newline at EOF is still flushed and dispatched", async () => {
+  const r = await run({}, { MOCK_ACP_NO_TRAILING_NEWLINE: "1", MOCK_ACP_REPLY: "VERDICT: PASS\nclean" });
+  assert.equal(r.ok, true, r.error ?? "");
+  assert.equal(r.stopReason, "end_turn");
+  assert.equal(r.result, "VERDICT: PASS\nclean", "the verdict from a newline-less final frame must not be dropped");
+});
+
+test("a server negotiating a different protocolVersion fails clean as cli_contract_mismatch, source NOT sent", async () => {
+  const r = await run({}, { MOCK_ACP_PROTOCOL_VERSION: "2" });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "cli_contract_mismatch");
+  assert.equal(r.sourceSent, false, "must abort before sending source against an unknown protocol version");
+});

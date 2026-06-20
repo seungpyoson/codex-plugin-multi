@@ -7,6 +7,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import os from "node:os";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { spawnKimi } from "../../plugins/kimi/scripts/lib/kimi.mjs";
@@ -77,6 +79,34 @@ test("spawnKimi fails clean as model_unavailable when the requested model is not
 
 test("spawnKimi requires a non-empty prompt", async () => {
   await assert.rejects(() => spawnKimi(resolveProfile("review"), { binary: FAKE_KIMI, promptText: "" }), /promptText is required/);
+});
+
+test("rescue APPROVES a tool-permission request (allow); review DENIES it (reject) — the safety boundary", async () => {
+  // The rescue-vs-review permission decision is a safety boundary: rescue edits the
+  // tree (auto-approve), review must never approve a tool call. Assert the exact
+  // option the client selects for each profile so a flip of the allow/reject branch
+  // in acp-client.mjs (or the profile->approveToolCalls mapping) fails the suite.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "kimi-perm-"));
+
+  const rescueFile = path.join(dir, "rescue-outcome.json");
+  await spawn("rescue", {}, {
+    MOCK_ACP_REQUEST_PERMISSION: "1",
+    MOCK_ACP_PERMISSION_OUTCOME_FILE: rescueFile,
+    MOCK_ACP_REPLY: "applied the fix",
+  });
+  const rescueOutcome = JSON.parse(readFileSync(rescueFile, "utf8"));
+  assert.equal(rescueOutcome?.outcome, "selected");
+  assert.equal(rescueOutcome?.optionId, "allow", "rescue must approve the tool call");
+
+  const reviewFile = path.join(dir, "review-outcome.json");
+  await spawn("review", {}, {
+    MOCK_ACP_REQUEST_PERMISSION: "1",
+    MOCK_ACP_PERMISSION_OUTCOME_FILE: reviewFile,
+    MOCK_ACP_REPLY: "VERDICT: PASS",
+  });
+  const reviewOutcome = JSON.parse(readFileSync(reviewFile, "utf8"));
+  assert.equal(reviewOutcome?.outcome, "selected");
+  assert.equal(reviewOutcome?.optionId, "reject", "review must deny the tool call, never approve");
 });
 
 test("spawnKimi re-throws a spawn failure (binary not found) with the original code", async () => {

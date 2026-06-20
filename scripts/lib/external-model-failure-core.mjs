@@ -198,6 +198,18 @@ export function classifyCommonParsedFailure(parsed) {
       error_message: parsed.error ?? reason,
     };
   }
+  // Pre-target readiness failures whose reason is itself a member of
+  // PRE_TARGET_NOT_SENT_ERROR_CODES — the source never reached the model. Surface
+  // the reason verbatim as the error_code so source-content-transmission resolves
+  // NOT_SENT, instead of falling through to the catch-all provider error code
+  // (which is classified content-received and would falsely disclose "source sent").
+  if (reason === "not_authed" || reason === "model_unavailable" || reason === "acp_protocol_error") {
+    return {
+      status: "failed",
+      error_code: reason,
+      error_message: parsed.error ?? reason,
+    };
+  }
   if (reason === "usage_limited") {
     return {
       status: "failed",

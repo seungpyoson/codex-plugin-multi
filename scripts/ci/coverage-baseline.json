@@ -46,8 +46,8 @@
       "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 91.18,
-      "branches": 86.57,
+      "lines": 89,
+      "branches": 92,
       "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/external-model-review-quality.mjs": {
@@ -161,8 +161,8 @@
       "functions": 100
     },
     "plugins/claude/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 91.18,
-      "branches": 86.57,
+      "lines": 89,
+      "branches": 92,
       "functions": 100
     },
     "plugins/claude/scripts/lib/external-model-review-quality.mjs": {
@@ -311,8 +311,8 @@
       "functions": 100
     },
     "plugins/gemini/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 91.18,
-      "branches": 86.57,
+      "lines": 89,
+      "branches": 92,
       "functions": 100
     },
     "plugins/gemini/scripts/lib/external-model-review-quality.mjs": {
@@ -436,8 +436,8 @@
       "functions": 100
     },
     "plugins/grok/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 91.18,
-      "branches": 86.57,
+      "lines": 89,
+      "branches": 92,
       "functions": 100
     },
     "plugins/grok/scripts/lib/external-model-review-quality.mjs": {
@@ -536,9 +536,9 @@
       "functions": 0
     },
     "plugins/kimi/scripts/lib/acp-client.mjs": {
-      "lines": 86,
-      "branches": 65,
-      "functions": 82
+      "lines": 90,
+      "branches": 79,
+      "functions": 93
     },
     "plugins/kimi/scripts/lib/external-review.mjs": {
       "lines": 85.98,
@@ -551,8 +551,8 @@
       "functions": 100
     },
     "plugins/kimi/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 91.18,
-      "branches": 86.57,
+      "lines": 89,
+      "branches": 92,
       "functions": 100
     },
     "plugins/kimi/scripts/lib/external-model-review-quality.mjs": {
@@ -586,13 +586,13 @@
       "functions": 85.71
     },
     "plugins/kimi/scripts/lib/kimi-capabilities.mjs": {
-      "lines": 96,
-      "branches": 78,
+      "lines": 99,
+      "branches": 94,
       "functions": 100
     },
     "plugins/kimi/scripts/lib/kimi.mjs": {
-      "lines": 85,
-      "branches": 68,
+      "lines": 87,
+      "branches": 77,
       "functions": 79
     },
     "plugins/kimi/scripts/lib/mode-profiles.mjs": {

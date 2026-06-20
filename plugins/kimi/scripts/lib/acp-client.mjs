@@ -71,6 +71,10 @@ class AcpPeer {
     this.buffer = "";
     this.protocolError = null;
     child.stdout.on("data", (chunk) => this._ingest(chunk.toString("utf8")));
+    // A well-behaved NDJSON server newline-terminates every frame, but a final frame
+    // emitted without a trailing newline at EOF would otherwise sit unparsed in the
+    // buffer and the turn would be misread as incomplete. Flush it on stream end.
+    child.stdout.on("end", () => this._flushTail());
   }
 
   _ingest(text) {
@@ -91,6 +95,22 @@ class AcpPeer {
       }
       this._dispatch(msg);
     }
+  }
+
+  // Dispatch a buffered final frame that arrived without a trailing newline before
+  // EOF. Idempotent: clears the buffer, so a second call is a no-op.
+  _flushTail() {
+    const line = this.buffer.trim();
+    this.buffer = "";
+    if (!line) return;
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      this.protocolError = `non-JSON trailing line on ACP stdout: ${line.slice(0, 200)}`;
+      return;
+    }
+    this._dispatch(msg);
   }
 
   _dispatch(msg) {
@@ -210,6 +230,11 @@ export async function runAcpPrompt({
   let sourceSent = false;
   let timedOut = false;
   let timer = null;
+  // The adapter owns the child's lifecycle and tears it down with SIGTERM on every
+  // failure/teardown path. That teardown signal is NOT an operator cancel, so it
+  // must not be reported to the companion classifier (which would otherwise read it
+  // as a cancelled run and mis-disclose a pre-prompt failure as "source sent").
+  let adapterInitiatedKill = false;
   const peer = new AcpPeer(child, {
     onNotification: (method, params) => {
       if (method !== "session/update") return;
@@ -254,13 +279,17 @@ export async function runAcpPrompt({
     sourceSent,
     pidInfo: getPidInfo(),
     exitCode: child.exitCode,
-    signal: child.signalCode,
+    // Suppress an adapter-initiated teardown SIGTERM so the companion does not
+    // misread it as an operator cancel. A genuine external signal (not our kill)
+    // still propagates.
+    signal: adapterInitiatedKill ? null : child.signalCode,
     timedOut,
     stderr,
     ...over,
   });
 
   const kill = () => {
+    adapterInitiatedKill = true;
     try { child.kill("SIGTERM"); } catch { /* gone */ }
     setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } }, 2000).unref?.();
   };
@@ -280,6 +309,9 @@ export async function runAcpPrompt({
   // (e.g. a non-ACP CLI that prints a banner and exits).
   const closed = new Promise((resolve) => {
     child.on("close", (code, signal) => {
+      // Defensive: dispatch any newline-less final frame before deciding the turn
+      // failed, regardless of stdout 'end' vs process 'close' ordering.
+      peer._flushTail();
       if (peer.pending.size > 0) {
         peer.rejectAllPending(Object.assign(new Error(`kimi acp exited (code=${code}) before completing the turn`), { acpClosed: true, exitCode: code }));
       }
@@ -303,10 +335,22 @@ export async function runAcpPrompt({
   try {
     // 1. initialize — declare no fs/terminal client capability (the agent reviews
     //    from the embedded source and, for rescue, uses its own tools in cwd).
-    await peer.request("initialize", {
+    //    initialize is a version negotiation: if the server cannot speak our
+    //    protocol version, fail loud and clean (source NOT sent) instead of driving
+    //    session/* against an unknown protocol.
+    const initResult = await peer.request("initialize", {
       protocolVersion: ACP_PROTOCOL_VERSION,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
     });
+    const negotiatedVersion = initResult?.protocolVersion;
+    if (negotiatedVersion !== ACP_PROTOCOL_VERSION) {
+      clearTimer(); kill(); await closed;
+      return result({
+        reason: "cli_contract_mismatch",
+        error: `kimi-code ACP negotiated protocolVersion ${negotiatedVersion ?? "(missing)"}, expected ${ACP_PROTOCOL_VERSION}`,
+        sourceSent: false,
+      });
+    }
 
     // 2. session/new (or session/load when resuming a prior session).
     const sessionResult = resumeId
@@ -352,6 +396,11 @@ export async function runAcpPrompt({
       sessionId,
       stopReason,
       sourceSent: true,
+      // A clean turn is defined by stopReason, not the child's exit code: if the
+      // server was slow to release stdin and the graceful-close fallback killed it,
+      // child.exitCode is null. Report 0 so the companion classifies it completed
+      // and preserves the verdict instead of discarding it.
+      exitCode: ok ? 0 : child.exitCode,
     });
   } catch (e) {
     clearTimer();
