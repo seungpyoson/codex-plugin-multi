@@ -75,11 +75,20 @@ export function __resetKimiCapabilityCache() {
 // Stat-identity cache key for an executable path, or null when it cannot be
 // resolved/stat'd (e.g. a bare name resolved off env.PATH) — null means "do not
 // cache", never "cache under the raw string".
+//
+// The key must change whenever the file's CONTENT could have changed, because a
+// stale hit bypasses the contract guard — a security boundary deciding whether
+// source is transmitted. mtime+size alone is forgeable: an in-place replacement
+// with a byte-identical size and a backdated mtime (`utimes`) reuses stale
+// capabilities and could send the prompt argv to a swapped-in legacy CLI. So we
+// also key on ctimeMs (inode-change time — updated on any write, and NOT
+// settable backwards from userland, unlike mtime) and dev+ino (a rename/replace
+// lands a new inode → new key, even across devices).
 function binaryCacheKey(binary) {
   try {
     const real = realpathSync(binary);
     const st = statSync(real);
-    return `${real}:${st.mtimeMs}:${st.size}`;
+    return `${real}:${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
   } catch {
     return null;
   }
@@ -119,14 +128,14 @@ function probeKimiCapabilities(binary, { env, runImpl }) {
   return { ok: true, supportedFlags, version, detail: null };
 }
 
-// The value-taking flags relay's adapter emits (see buildKimiArgs in kimi.mjs:
+// The value-taking flags relay's adapter emits (see buildKimiCodeArgs in kimi.mjs:
 // `-p <prompt>`, `--output-format <fmt>`, `-m <model>`, `--session <id>`). Their
 // VALUE is arbitrary user/runtime text that can itself start with "-" (a prompt
 // like "-v: fix this", a dash-prefixed model alias, `--output-format -json`).
 // The contract guard must scan flag positions only, never value positions, or a
 // dash-leading value is misread as an unsupported flag and throws a false
 // cli_contract_mismatch — the exact false-negative class this guard exists to
-// kill. This set MUST mirror the value flags buildKimiArgs can emit; the unit
+// kill. This set MUST mirror the value flags buildKimiCodeArgs can emit; the unit
 // suite (kimi-capabilities.test.mjs) and contract tests pin both ends.
 const KIMI_VALUE_FLAGS = new Set([
   "-p", "--prompt", "-m", "--model", "--output-format", "-S", "--session",

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -125,6 +125,42 @@ process.exit(1); // pad:${pad}
     assert.equal(detectKimiCapabilities(bin).version, "0.19.0",
       "an in-place upgrade must invalidate the cached probe, not reuse stale flags");
     assert.equal(readFileSync(counter, "utf8"), "hh", "the upgraded binary must be re-probed");
+  } finally {
+    __resetKimiCapabilityCache();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detectKimiCapabilities re-probes a same-size replacement with a backdated mtime (ctime defeats the forge)", () => {
+  __resetKimiCapabilityCache();
+  const dir = mkdtempSync(path.join(tmpdir(), "kimi-cap-forge-"));
+  const bin = path.join(dir, "kimi-forge.mjs");
+  // Two builds of EXACTLY equal byte length: A advertises the kimi-code -p
+  // surface, B is a legacy CLI that does NOT. A stale cache hit here would let
+  // the contract guard (a source-transmission boundary) pass build-A flags for
+  // a swapped-in build-B legacy CLI. mtime+size are forgeable; ctime is not.
+  const buildA = `#!/usr/bin/env node
+const a=process.argv.slice(2);
+if(a.includes("--help")){process.stdout.write("Options:\\n  -p, --prompt <p>\\n  --output-format <f>\\n  -h, --help\\n");process.exit(0);}
+if(a.includes("--version")){process.stdout.write("A\\n");process.exit(0);}
+process.exit(1);//PADPADPADPADPAD`;
+  const buildB = `#!/usr/bin/env node
+const a=process.argv.slice(2);
+if(a.includes("--help")){process.stdout.write("Options:\\n  --print <p>\\n  --agent-file <f>\\n  -h, --help\\n");process.exit(0);}
+if(a.includes("--version")){process.stdout.write("B\\n");process.exit(0);}
+process.exit(1);//xxYYYYYYYYYYYYYYYYYYYYY`;
+  assert.equal(Buffer.byteLength(buildA), Buffer.byteLength(buildB), "fixture builds must be equal size to exercise the forge");
+  const frozen = new Date(1700000000000);
+  try {
+    writeFileSync(bin, buildA); chmodSync(bin, 0o755); utimesSync(bin, frozen, frozen);
+    const first = detectKimiCapabilities(bin);
+    assert.equal(first.version, "A");
+    assert.ok(first.supportedFlags.has("-p"));
+    // In-place swap to the legacy build, same size, mtime forced back.
+    writeFileSync(bin, buildB); chmodSync(bin, 0o755); utimesSync(bin, frozen, frozen);
+    const second = detectKimiCapabilities(bin);
+    assert.equal(second.version, "B", "a same-size, backdated-mtime replacement must NOT reuse the stale probe");
+    assert.equal(second.supportedFlags.has("-p"), false, "the legacy replacement must be re-probed, not served build-A flags");
   } finally {
     __resetKimiCapabilityCache();
     rmSync(dir, { recursive: true, force: true });
