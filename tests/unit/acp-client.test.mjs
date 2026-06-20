@@ -168,6 +168,17 @@ test("a terminal frame WITHOUT a trailing newline at EOF is still flushed and di
   assert.equal(r.result, "VERDICT: PASS\nclean", "the verdict from a newline-less final frame must not be dropped");
 });
 
+test("the stdout 'end' flush is independently load-bearing (server ends stdout before exit; no process-close backstop)", async () => {
+  // Isolates the constructor's stdout 'end' handler from the close-handler backstop:
+  // the server ends stdout (EOF) but stays alive on stdin, so the buffered
+  // newline-less frame can ONLY be dispatched by the 'end' handler. Removing that
+  // handler makes this turn hang until timeout instead of resolving.
+  const r = await run({ timeoutMs: 8000 }, { MOCK_ACP_END_STDOUT_NO_EXIT: "1", MOCK_ACP_REPLY: "VERDICT: PASS" });
+  assert.equal(r.ok, true, r.error ?? "");
+  assert.equal(r.stopReason, "end_turn");
+  assert.equal(r.result, "VERDICT: PASS");
+});
+
 test("a server negotiating a different protocolVersion fails clean as cli_contract_mismatch, source NOT sent", async () => {
   const r = await run({}, { MOCK_ACP_PROTOCOL_VERSION: "2" });
   assert.equal(r.ok, false);

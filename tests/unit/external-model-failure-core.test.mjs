@@ -111,6 +111,8 @@ test("buildExternalModelFailureDiagnostic covers shared emitted failure codes", 
     "prompt_too_large",
     "cli_contract_mismatch",
     "resend_confirmation_required",
+    "model_unavailable",
+    "acp_protocol_error",
   ]) {
     const diagnostic = buildExternalModelFailureDiagnostic(code, "Claude Code CLI");
     assert.equal(typeof diagnostic?.error_summary, "string", code);
@@ -505,6 +507,23 @@ test("external-model failure core plugin copies cover shared classifier branches
       status: "failed",
       error_code: "parse_error",
       error_message: "no output",
+    });
+    // Pre-target readiness reasons map to their own NOT_SENT error codes (Layer B):
+    // they must NOT fall through to the content-received catch-all.
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "not_authed", error: "login required" }), {
+      status: "failed",
+      error_code: "not_authed",
+      error_message: "login required",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "model_unavailable", error: "model X not offered" }), {
+      status: "failed",
+      error_code: "model_unavailable",
+      error_message: "model X not offered",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "acp_protocol_error", error: "handshake failed" }), {
+      status: "failed",
+      error_code: "acp_protocol_error",
+      error_message: "handshake failed",
     });
     assert.equal(mod.classifyCommonParsedFailure({ reason: "provider_specific" }), null);
     assert.equal(mod.classifySignalLikeExit(null), null);

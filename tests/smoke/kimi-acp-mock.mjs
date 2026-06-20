@@ -20,6 +20,7 @@
 //   MOCK_ACP_SESSION_ERROR=1       session/new returns a non-auth JSON-RPC error (forces acp_protocol_error; source NOT sent)
 //   MOCK_ACP_HANG_ON_EOF=1         ignore stdin EOF so the client's graceful-close fallback kill fires (slow-close path)
 //   MOCK_ACP_NO_TRAILING_NEWLINE=1 emit the terminal session/prompt frame without a trailing newline, then EOF
+//   MOCK_ACP_END_STDOUT_NO_EXIT=1  emit a newline-less terminal frame and END stdout but stay alive (isolates the 'end' flush; no process-'close' backstop)
 
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -105,6 +106,14 @@ async function finishPromptTurn(reqId, promptText) {
   }
   const finishFrame = { jsonrpc: "2.0", id: reqId, result: { stopReason: env.MOCK_ACP_STOP_REASON ?? "end_turn" } };
   const finish = () => {
+    if (env.MOCK_ACP_END_STDOUT_NO_EXIT === "1") {
+      // Emit the terminal frame WITHOUT a trailing newline and END stdout but DO NOT
+      // exit (stay alive on stdin). Only the client's stdout 'end' handler can flush
+      // the buffered frame — the process-'close' backstop never fires — so this
+      // isolates the 'end'-driven flush. The mock exits later on stdin EOF.
+      process.stdout.write(JSON.stringify(finishFrame), () => process.stdout.end());
+      return;
+    }
     if (env.MOCK_ACP_NO_TRAILING_NEWLINE === "1") {
       // Emit the terminal frame WITHOUT a trailing newline, then EOF stdout — the
       // client must still flush and dispatch it.

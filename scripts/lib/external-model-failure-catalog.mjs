@@ -55,6 +55,22 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
       "Treat this review slot as not launched. The selected source was not sent. Install or update the provider CLI to the supported command surface, then retry the same review scope.",
   }),
   Object.freeze({
+    error_code: "model_unavailable",
+    category: "provider_availability",
+    error_cause: "requested_model_not_offered",
+    error_summary: "The external model review was blocked before launch because the provider did not offer the requested model.",
+    suggested_action:
+      "Treat this review slot as not launched. The selected source was not sent. No silent model substitution is performed: configure a model the provider currently offers, then retry the same review scope.",
+  }),
+  Object.freeze({
+    error_code: "acp_protocol_error",
+    category: "transport",
+    error_cause: "acp_handshake_failed_before_prompt",
+    error_summary: "The external model review was blocked before launch because the ACP stdio handshake failed before the prompt was sent.",
+    suggested_action:
+      "Treat this review slot as not launched. The selected source was not sent. Inspect the provider CLI stderr/diagnostics, confirm the installed CLI speaks the expected ACP protocol version, then retry the same review scope.",
+  }),
+  Object.freeze({
     error_code: "resend_confirmation_required",
     category: "source_packet_policy",
     error_cause: "pre_send_resend_gate",
