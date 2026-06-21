@@ -3970,8 +3970,12 @@ const ROOT2_PAD = [
 ].join("\n");
 
 // Detector 1 — permission_blocked --------------------------------------------
+// Each test is parametrized over REVIEW_PROMPT_MODULES so the new detector code
+// runs in every plugin copy (not just the shared source), keeping the per-copy
+// coverage gate satisfied. targetBuildReviewAuditManifest is the per-module
+// entry point; `name` is appended to every assert message for per-copy attribution.
 
-test("root2 detector1: handling-praise reviews do not flag permission_blocked", () => {
+test("root2 detector1: handling-praise reviews do not flag permission_blocked", async () => {
   const cases = [
     "Verdict: Approve\nThe new code correctly handles EACCES when it cannot read the optional config file: it catches the error, logs a warning, and falls back to documented defaults.",
     "Verdict: Approve\nThe writer correctly catches EPERM thrown by fs.writeSync and surfaces a typed error to the caller instead of crashing.",
@@ -3979,47 +3983,53 @@ test("root2 detector1: handling-praise reviews do not flag permission_blocked", 
     // GUARD REGRESSION: reviewed-process subject must stay unflagged after Edit 1b.
     "Verdict: Approve\nWhen the process cannot read the optional cache file it raises EACCES; the new code catches the error and falls back gracefully, which is the correct behavior.",
   ];
-  for (const result of cases) {
-    const manifest = buildReviewAuditManifest({
-      prompt: "rendered prompt",
-      sourceFiles: [{ path: "src/example.js", text: "export const value = 1;\n" }],
-      result: `${result}\n${ROOT2_PAD}`,
-      status: "completed",
-      errorCode: null,
-    });
-    assert.equal(
-      manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"),
-      false,
-      `permission_blocked should be absent for: ${result}`,
-    );
-    assert.equal(manifest.review_quality.failed_review_slot, false, `failed_review_slot should be false for: ${result}`);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const result of cases) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: "src/example.js", text: "export const value = 1;\n" }],
+        result: `${result}\n${ROOT2_PAD}`,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"),
+        false,
+        `[${name}] permission_blocked should be absent for: ${result}`,
+      );
+      assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] failed_review_slot should be false for: ${result}`);
+    }
   }
 });
 
-test("root2 detector1: genuine reviewer read-denials still flag permission_blocked", () => {
+test("root2 detector1: genuine reviewer read-denials still flag permission_blocked", async () => {
   const cases = [
     "I could not read src/auth.js: EACCES permission denied; no inspection was possible.",
     "Verdict: Approve\nI wanted to verify the code handles EACCES, but I could not read the file at all, so no inspection was possible.",
     "Verdict: Approve\nThe diff supposedly falls back on EPERM, but the selected source could not be inspected due to permission denied.",
   ];
-  for (const result of cases) {
-    const manifest = buildReviewAuditManifest({
-      prompt: "rendered prompt",
-      sourceFiles: [{ path: "src/auth.js", text: "export const value = 1;\n" }],
-      result,
-      status: "completed",
-      errorCode: null,
-    });
-    assert.equal(
-      manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"),
-      true,
-      `permission_blocked should be present for: ${result}`,
-    );
-    assert.equal(manifest.review_quality.failed_review_slot, true, `failed_review_slot should be true for: ${result}`);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const result of cases) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: "src/auth.js", text: "export const value = 1;\n" }],
+        result,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"),
+        true,
+        `[${name}] permission_blocked should be present for: ${result}`,
+      );
+      assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true for: ${result}`);
+    }
   }
 });
 
-test("root2 detector1: long structured APPROVE with reviewer-subject read-denial still flags", () => {
+test("root2 detector1: long structured APPROVE with reviewer-subject read-denial still flags", async () => {
   // ADVERSARIAL GUARD REGRESSION: >500 chars, full verdict + both finding
   // sections, but the summary asserts "I cannot read the file" — a genuine
   // reviewer-process block. reviewProcessBlockedSignal must match
@@ -4034,20 +4044,23 @@ test("root2 detector1: long structured APPROVE with reviewer-subject read-denial
     "- I cannot read the file (EACCES) but the code falls back, which is correct behavior, so I am approving on that basis.",
     ROOT2_PAD,
   ].join("\n");
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "src/example.js", text: "export const value = 1;\n" }],
-    result,
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "src/example.js", text: "export const value = 1;\n" }],
+      result,
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"), true, `[${name}] permission_blocked should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
 // Detector 2 — not_reviewed --------------------------------------------------
 
-test("root2 detector2: foreign-path inspection gaps with proven selected-source inspection do not flag", () => {
+test("root2 detector2: foreign-path inspection gaps with proven selected-source inspection do not flag", async () => {
   const cases = [
     {
       selected: "cart.js",
@@ -4085,112 +4098,130 @@ test("root2 detector2: foreign-path inspection gaps with proven selected-source 
       ].join("\n"),
     },
   ];
-  for (const { selected, result } of cases) {
-    const manifest = buildReviewAuditManifest({
-      prompt: "rendered prompt",
-      sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
-      result,
-      status: "completed",
-      errorCode: null,
-    });
-    assert.equal(
-      manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"),
-      false,
-      `not_reviewed should be absent for selected=${selected}`,
-    );
-    assert.equal(manifest.review_quality.failed_review_slot, false, `failed_review_slot should be false for selected=${selected}`);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const { selected, result } of cases) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
+        result,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"),
+        false,
+        `[${name}] not_reviewed should be absent for selected=${selected}`,
+      );
+      assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] failed_review_slot should be false for selected=${selected}`);
+    }
   }
 });
 
-test("root2 detector2: not-reviewed verdict still flags not_reviewed", () => {
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
-    result: "Verdict: NOT REVIEWED.\nNo file content examined; the selected source was not inspected.",
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+test("root2 detector2: not-reviewed verdict still flags not_reviewed", async () => {
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: "Verdict: NOT REVIEWED.\nNo file content examined; the selected source was not inspected.",
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true, `[${name}] not_reviewed should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
-test("root2 detector2: generic selected-source denial still flags not_reviewed", () => {
+test("root2 detector2: generic selected-source denial still flags not_reviewed", async () => {
   // mentionsSelectedSourceGeneric true -> foreign-path branch bails.
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
-    result: [
-      "Verdict: APPROVE",
-      "Blocking findings: none.",
-      "The selected source was not inspected; I could not inspect it.",
-      ROOT2_PAD,
-    ].join("\n"),
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none.",
+        "The selected source was not inspected; I could not inspect it.",
+        ROOT2_PAD,
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true, `[${name}] not_reviewed should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
-test("root2 detector2: self-referential could-not-inspect of the selected path still flags", () => {
+test("root2 detector2: self-referential could-not-inspect of the selected path still flags", async () => {
   // mentionsSelectedSourcePath true -> foreign-path branch bails.
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
-    result: [
-      "Verdict: APPROVE",
-      "Blocking findings: none.",
-      "I could not inspect sample.js because access was unavailable.",
-      ROOT2_PAD,
-    ].join("\n"),
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none.",
+        "I could not inspect sample.js because access was unavailable.",
+        ROOT2_PAD,
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true, `[${name}] not_reviewed should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
-test("root2 detector2: hyphenated pass-through prose with no file token still flags", () => {
+test("root2 detector2: hyphenated pass-through prose with no file token still flags", async () => {
   // No file token -> namesNonSelectedFileGapLine false -> foreign-path branch
   // returns false -> the bare "could not inspect" substring fires not_reviewed.
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
-    result: [
-      "Verdict: APPROVE",
-      "- Null check: pass-through for trusted callers, but I could not inspect the error path.",
-      ROOT2_PAD,
-    ].join("\n"),
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "- Null check: pass-through for trusted callers, but I could not inspect the error path.",
+        ROOT2_PAD,
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true, `[${name}] not_reviewed should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
-test("root2 detector2: foreign-path gap WITHOUT proven selected-source inspection still flags", () => {
+test("root2 detector2: foreign-path gap WITHOUT proven selected-source inspection still flags", async () => {
   // ADVERSARIAL GUARD REGRESSION: names only a foreign path, no generic token,
   // and NEVER applies an inspection verb to the selected path -> selectedSourceInspected
   // false -> Edit 2a's `if (!selectedSourceInspected) return false;` blocks suppression.
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "src/billing/charge.js", text: "export const value = 1;\n" }],
-    result: [
-      "Verdict: APPROVE",
-      "Blocking findings: none.",
-      "I could not inspect models/user.js, which is where the real authentication logic lives, so this approval rests on the commit message and the diff summary rather than on the code itself.",
-      ROOT2_PAD,
-    ].join("\n"),
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "src/billing/charge.js", text: "export const value = 1;\n" }],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: none.",
+        "I could not inspect models/user.js, which is where the real authentication logic lives, so this approval rests on the commit message and the diff summary rather than on the code itself.",
+        ROOT2_PAD,
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true, `[${name}] not_reviewed should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
 // Detector 3 — shallow_output ------------------------------------------------
 
-test("root2 detector3: terse-but-concrete reviews do not flag shallow_output", () => {
+test("root2 detector3: terse-but-concrete reviews do not flag shallow_output", async () => {
   const cases = [
     {
       selected: "src/cart.js",
@@ -4205,106 +4236,127 @@ test("root2 detector3: terse-but-concrete reviews do not flag shallow_output", (
       result: "Verdict: REQUEST CHANGES. utils.js:42 slice() drops the last element; it should be slice(0, len) not slice(0, len-1).",
     },
   ];
-  for (const { selected, result } of cases) {
-    const manifest = buildReviewAuditManifest({
-      prompt: "rendered prompt",
-      sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
-      result,
-      status: "completed",
-      errorCode: null,
-    });
-    assert.equal(
-      manifest.review_quality.looks_shallow,
-      false,
-      `looks_shallow should be false for: ${result}`,
-    );
-    assert.equal(
-      manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
-      false,
-      `shallow_output should be absent for: ${result}`,
-    );
-    assert.equal(manifest.review_quality.failed_review_slot, false, `failed_review_slot should be false for: ${result}`);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const { selected, result } of cases) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
+        result,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(
+        manifest.review_quality.looks_shallow,
+        false,
+        `[${name}] looks_shallow should be false for: ${result}`,
+      );
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
+        false,
+        `[${name}] shallow_output should be absent for: ${result}`,
+      );
+      assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] failed_review_slot should be false for: ${result}`);
+    }
   }
 });
 
-test("root2 detector3: bare-LGTM with no verdict still flags shallow_output", () => {
+test("root2 detector3: bare-LGTM with no verdict still flags shallow_output", async () => {
   // Also yields missing_verdict (Root-3-owned); assert only shallow_output here.
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
-    result: "Looks fine to me.",
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.looks_shallow, true);
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: "Looks fine to me.",
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] looks_shallow should be true`);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
-test("root2 detector3: terse APPROVE with no concrete finding still flags shallow_output", () => {
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
-    result: "Verdict: APPROVE\nNo blocking findings.",
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.looks_shallow, true);
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+test("root2 detector3: terse APPROVE with no concrete finding still flags shallow_output", async () => {
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: "Verdict: APPROVE\nNo blocking findings.",
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] looks_shallow should be true`);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
-test("root2 detector3: terse APPROVE with locus but no defect cue still flags shallow_output", () => {
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "src/cart.js", text: "export const value = 1;\n" }],
-    result: "Verdict: APPROVE. I looked at src/cart.js handleLogin() and it is fine.",
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.looks_shallow, true);
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+test("root2 detector3: terse APPROVE with locus but no defect cue still flags shallow_output", async () => {
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "src/cart.js", text: "export const value = 1;\n" }],
+      result: "Verdict: APPROVE. I looked at src/cart.js handleLogin() and it is fine.",
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] looks_shallow should be true`);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
-test("root2 detector3: defect-flavored words with no code locus still flag shallow_output", () => {
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
-    result: "Verdict: REQUEST CHANGES. Something seems incorrect and should be fixed.",
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.looks_shallow, true);
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+test("root2 detector3: defect-flavored words with no code locus still flag shallow_output", async () => {
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: "Verdict: REQUEST CHANGES. Something seems incorrect and should be fixed.",
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] looks_shallow should be true`);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
-test("root2 detector3: praise/absence clauses do not count as concrete findings (still flags)", () => {
+test("root2 detector3: praise/absence clauses do not count as concrete findings (still flags)", async () => {
   // ADVERSARIAL GUARD REGRESSION: every cue sits in a negated/praise clause ->
   // hasConcreteFinding false -> looks_shallow true.
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "parser.js", text: "export const value = 1;\n" }],
-    result: "Verdict: APPROVE\nThe parseConfig() function correctly throws on bad input and the schema.json is missing nothing important. Solid work.",
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.looks_shallow, true);
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "parser.js", text: "export const value = 1;\n" }],
+      result: "Verdict: APPROVE\nThe parseConfig() function correctly throws on bad input and the schema.json is missing nothing important. Solid work.",
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] looks_shallow should be true`);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
 
-test("root2 detector3: negated-finding variant does not count as concrete (still flags)", () => {
+test("root2 detector3: negated-finding variant does not count as concrete (still flags)", async () => {
   // ADVERSARIAL GUARD REGRESSION: negated-finding clauses -> stays flagged.
-  const manifest = buildReviewAuditManifest({
-    prompt: "rendered prompt",
-    sourceFiles: [{ path: "app.js", text: "export const value = 1;\n" }],
-    result: "Verdict: APPROVE. app.js handler() does not handle nothing improperly; there is no off-by-one. Looks good.",
-    status: "completed",
-    errorCode: null,
-  });
-  assert.equal(manifest.review_quality.looks_shallow, true);
-  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true);
-  assert.equal(manifest.review_quality.failed_review_slot, true);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "app.js", text: "export const value = 1;\n" }],
+      result: "Verdict: APPROVE. app.js handler() does not handle nothing improperly; there is no off-by-one. Looks good.",
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] looks_shallow should be true`);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
+  }
 });
