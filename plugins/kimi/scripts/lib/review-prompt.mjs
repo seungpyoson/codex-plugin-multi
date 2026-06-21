@@ -402,6 +402,7 @@ const PERMISSION_FAILURE_EXAMPLE_DETECTORS = Object.freeze([
   isPermissionClassifierFixtureLine,
   isPermissionTermExampleLine,
   isCodePermissionConcernLine,
+  isPermissionHandlingPraiseLine,
 ]);
 
 function isPermissionFailureExampleLine(lower) {
@@ -696,6 +697,114 @@ function isCodePermissionConcernLine(lower) {
       "deny lock creation",
       "preemptively create",
     ]);
+}
+
+// A reviewer describing reviewed code that CORRECTLY HANDLES a permission
+// error (EACCES/EPERM/"permission denied") is reviewing behavior, not reporting
+// that the review process was itself blocked. Suppress only when the line both
+// (a) praises the code's handling of the error, and (b) carries no signal that
+// the REVIEW PROCESS could not read/inspect/access the selected source. When in
+// doubt — i.e. any review-process-blocked phrase is present — do NOT suppress.
+function isPermissionHandlingPraiseLine(lower) {
+  if (!includesPermissionFailureLiteral(lower)) return false;
+  if (!codeCorrectlyHandlesPermissionError(lower)) return false;
+  return !reviewProcessBlockedSignal(lower);
+}
+
+function codeCorrectlyHandlesPermissionError(lower) {
+  return includesAny(lower, [
+    "correctly handles",
+    "correctly handle",
+    "handles eacces",
+    "handle eacces",
+    "handles eperm",
+    "handle eperm",
+    "handles the permission",
+    "handle the permission",
+    "gracefully handles",
+    "gracefully handle",
+    "handled correctly",
+    "handled gracefully",
+    "catches the error",
+    "catches the permission",
+    "catches eacces",
+    "catches eperm",
+    "catch eacces",
+    "catch eperm",
+    "is caught",
+    "are caught",
+    "falls back",
+    "fall back",
+    "graceful fallback",
+    "degrades gracefully",
+    "surfaces a typed error",
+    "surfaces an error",
+    "returns a clear",
+    "returns a typed",
+    "is the right behavior",
+    "is the correct behavior",
+    "the right behavior",
+    "correct behavior",
+  ]);
+}
+
+// Signals that the REVIEW PROCESS (the reviewer), not the reviewed code, was
+// unable to read/inspect/access the source. Mirrors the genuine-block surface
+// used by lineDeniesSelectedSourceInspection / hasConcretePermissionActionPhrase
+// so a real read-denial is never masked by incidental handling-praise wording.
+function reviewProcessBlockedSignal(lower) {
+  return includesAny(lower, [
+    "no inspection was possible",
+    "could not be inspected",
+    "were not inspected",
+    "was not inspected",
+    "not inspected",
+    "could not inspect",
+    "cannot inspect",
+    "can't inspect",
+    "unable to inspect",
+    "did not inspect",
+    "could not access",
+    "cannot access",
+    "can't access",
+    "unable to access",
+    "prevented me",
+    "prevented file access",
+    "prevented access",
+    "permission block prevented",
+    "permission blocks prevented",
+    "while reading",
+    "while inspecting",
+    "i could not",
+    "i was unable",
+    "i was blocked",
+    "review was blocked",
+    "blocked from reading",
+    "blocked from inspecting",
+    "i could not read",
+    "i cannot read",
+    "i can't read",
+    "i was unable to read",
+    "could not read the source",
+    "cannot read the source",
+    "could not read the file",
+    "cannot read the file",
+    "could not read the selected",
+    "cannot read the selected",
+    "could not read it",
+    "cannot read it",
+    "selected source",
+    "selected file",
+    "selected files",
+    "supplied source",
+    "supplied diff",
+    "supplied file",
+    "supplied files",
+    "source file",
+    "source files",
+    "target file",
+    "target files",
+  ]);
 }
 
 function isPermissionLiteralListLine(lower) {
@@ -1010,7 +1119,7 @@ function lineDeniesSelectedSourceInspection(line, selectedSource) {
   if (isSelectedSourceInspectionMechanicsDiscussionLine(lower)) return false;
   if (isNegatedSelectedSourceInspectionAnalysisLine(lower)) return false;
   if (isLocalFileScopeBoundaryLine(lower)) return false;
-  if (isOutOfScopeInspectionGapLine(lower) && !mentionsSelectedSourceGeneric(lower)) return false;
+  if (isOutOfScopeInspectionGapLine(lower, selectedSource, false) && !mentionsSelectedSourceGeneric(lower)) return false;
   if (!includesAny(lower, ["did not inspect", "not inspected", "could not inspect", "unable to inspect"])) {
     return false;
   }
@@ -1054,9 +1163,9 @@ function isSelectedSourceInspectionMechanicsDiscussionLine(lower) {
   ]);
 }
 
-function isOutOfScopeInspectionGapLine(lower) {
+function isOutOfScopeInspectionGapLine(lower, selectedSource = null, selectedSourceInspected = false) {
   if (!includesAny(lower, ["could not inspect", "unable to inspect", "not inspected", "not reviewed"])) return false;
-  return includesAny(lower, [
+  if (includesAny(lower, [
     "out of scope",
     "outside the packet",
     "outside of the packet",
@@ -1070,7 +1179,35 @@ function isOutOfScopeInspectionGapLine(lower) {
     "not part of this packet",
     "not supplied",
     "not included in the prompt",
-  ]);
+  ])) return true;
+  // Foreign-path branch: a could-not-inspect gap attributed to a concrete file
+  // that is NOT the selected source is an out-of-scope gap, not a denial that the
+  // selected source itself was reviewed. Suppress ONLY when the line names such a
+  // foreign path, does not generically deny the selected source, does not name the
+  // selected path, AND the review independently proves the selected source WAS
+  // inspected. When in doubt, fall through to false so the line stays flaggable.
+  if (mentionsSelectedSourceGeneric(lower)) return false;
+  if (mentionsSelectedSourcePath(lower, selectedSource)) return false;
+  if (!selectedSourceInspected) return false;
+  return namesNonSelectedFileGapLine(lower, selectedSource);
+}
+
+const NON_SELECTED_FILE_TOKEN_RE = /(?:^|[\s`'"(\[{,;:])((?:[a-z0-9_-]+\/)*[a-z0-9_-]+\.[a-z0-9]{1,6})(?=$|[\s`'")\]}.,;:])/g;
+function namesNonSelectedFileGapLine(lower, selectedSource) {
+  const selectedPaths = (selectedSource?.files ?? [])
+    .map((file) => String(file?.path ?? "").toLowerCase())
+    .filter(Boolean);
+  NON_SELECTED_FILE_TOKEN_RE.lastIndex = 0;
+  let match = NON_SELECTED_FILE_TOKEN_RE.exec(lower);
+  while (match !== null) {
+    const path = match[1];
+    const isSelected = selectedPaths.some((selected) => (
+      selected === path || selected.endsWith(`/${path}`) || path.endsWith(`/${selected}`)
+    ));
+    if (!isSelected) return true;
+    match = NON_SELECTED_FILE_TOKEN_RE.exec(lower);
+  }
+  return false;
 }
 
 function isPriorReviewCommentsGapLine(lower) {
@@ -1149,10 +1286,15 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
         && !isPermissionFailureExampleLine(unmarkedLower)
     );
   });
+  const selectedSourceInspected = mentionsSelectedSourceInspection(
+    normalizeReviewSearchText(text).toLowerCase(),
+    selectedSource,
+  );
   const semanticText = semanticLines
     .filter((line) => {
       const lower = unmarkReviewText(line).toLowerCase();
-      return !isOutOfScopeInspectionGapLine(lower) && !isPriorReviewCommentsGapLine(lower);
+      return !isOutOfScopeInspectionGapLine(lower, selectedSource, selectedSourceInspected)
+        && !isPriorReviewCommentsGapLine(lower);
     })
     .join("\n")
     .toLowerCase();
@@ -1262,6 +1404,31 @@ const TINY_SOURCE_MAX_FILES = 1;
 const TINY_SOURCE_MAX_BYTES = 512;
 const TINY_SOURCE_MAX_LINES = 5;
 
+// A short review is substantive (not shallow) when SOME single clause names a
+// concrete code locus AND describes a specific defect/change at it, and that
+// clause is not a negation/absence/praise assertion. Requires co-location so a
+// bare verdict ("Verdict: APPROVE", "Looks fine"), a vague claim ("something
+// seems incorrect"), or a praise/absence LGTM ("correctly throws ... missing
+// nothing") never qualifies. Defect-cue oriented: a terse APPROVE that only
+// asserts correctness stays flagged (conservative — fail toward flagging).
+const CONCRETE_FINDING_DEFECT_CUE = /\b(instead of|should (?:be|use|return|call|not)|rather than|off-by-one|null deref|use-after-free|race condition|returns? the wrong|subtracts?|adds? to|drops?|never (?:called|awaited|closed)|leaks?|swallows?|throws?|overflow|underflow|incorrect|wrong (?:order|sign|value|index)|fails to|does not (?:handle|close|await|free|release))\b/i;
+const CONCRETE_FINDING_CODE_LOCUS = [
+  /(?<![\w./-])(?:[\w./-]*\/)?[\w-]+\.[a-z][\w]{0,4}(?::\d+)?(?![\w/])/i,
+  /(?<![\w.])[A-Za-z_$][\w$]*\s*\(/,
+  /(?<![\w.])[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*/,
+];
+const CONCRETE_FINDING_NEGATION = /\b(no|not|never|nothing|none|without|n't|correct|correctly|fine|clean|missing nothing|does not appear)\b/i;
+
+function hasConcreteFinding(text) {
+  const value = String(text ?? "");
+  const clauses = value.split(/[\n.;!?]+/);
+  return clauses.some((clause) => {
+    if (!CONCRETE_FINDING_DEFECT_CUE.test(clause)) return false;
+    if (CONCRETE_FINDING_NEGATION.test(clause)) return false;
+    return CONCRETE_FINDING_CODE_LOCUS.some((pattern) => pattern.test(clause));
+  });
+}
+
 function isTinySelectedSource(selectedSource) {
   const totals = selectedSource?.totals;
   return Number.isInteger(totals?.files)
@@ -1302,9 +1469,11 @@ function qualityFlags({
     && hasBlockingSection
     && hasNonBlockingSection
     && mentionsSelectedSourceInspection(lowerText, selectedSource);
+  const conciseConcreteReview = hasVerdictFlag && hasConcreteFinding(text);
   const looksShallow = text.trim().length > 0
     && text.trim().length < 500
-    && !conciseTinyReview;
+    && !conciseTinyReview
+    && !conciseConcreteReview;
   const isFinalReviewAttempt = !["approval_request", "preflight_failed", "queued", "running"].includes(status);
   const failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
   if (isFinalReviewAttempt && status === "completed" && !hasVerdictFlag) {
