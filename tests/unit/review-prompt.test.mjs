@@ -4558,3 +4558,80 @@ test("root2 detector3: negation-bearing defect cues do not mis-flag concrete rev
     }
   }
 });
+
+// Pad past the 500-char shallow threshold so permission_blocked is evaluated independently.
+const PERM_PAD = [
+  "The structured sections below follow the reviewer contract exactly and in full.",
+  "Base and head refs were confirmed against the supplied metadata and the diff stat here.",
+  "The summary, blocking findings, and non-blocking concerns are kept distinct throughout this review.",
+  "This narrative padding exists only to exercise the non-shallow code path and exceed the threshold.",
+  "Every structured section is present and the verdict line is unambiguous and well formed in this body.",
+].join("\n");
+
+test("root2 detector1: reviewer-process blocks (contraction/paraphrase/unicode) still flag permission_blocked", async () => {
+  // Reviewer-found false-negatives (Kimi/GPT). Each carries a permission literal AND a genuine
+  // first-person read-block; handling-praise must NOT suppress it. (No-literal blocks are a
+  // separate, pre-existing raising-detector gap tracked in #238, not asserted here.)
+  const FLAG = [
+    "Verdict: APPROVE\nThe code correctly handles EACCES. I couldn't inspect the actual file due to the error.",
+    "Verdict: APPROVE\nThe code correctly handles permission denied. I wasn't able to inspect the source.",
+    "Verdict: APPROVE\nThe code correctly handles EACCES. I never saw the source.",
+    "Verdict: APPROVE\nThe code correctly handles EACCES. I only reviewed the diff summary.",
+    "Verdict: APPROVE\nThe code handles EACCES gracefully, though I couldn’t actually open the file to confirm it.",
+    "Verdict: APPROVE\nPermission denied handling falls back well, yet I lacked access to verify against the real file.",
+    "Verdict: APPROVE\nThe review attempt hit EACCES permission denied opening src/auth.js; the code correctly handles EACCES by falling back.",
+  ];
+  // Pure code-handling praise that names the artifact / observes no findings must STAY suppressed.
+  const CLEAN = [
+    "Verdict: APPROVE\nThe code correctly handles EACCES by falling back to defaults, which is the right behavior.",
+    "Verdict: APPROVE\nThe loader correctly handles EACCES when it cannot read the source file, returning a clear typed error.",
+    "Verdict: APPROVE\nI inspected the selected source and confirmed the code correctly handles EACCES on the config read.",
+    "Verdict: APPROVE\nI did not see any issues; EACCES is handled correctly by the loader and falls back cleanly.",
+  ];
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
+    for (const body of FLAG) {
+      const m = target({ prompt: "p", sourceFiles: [{ path: "src/auth.js", text: "export const value = 1;\n" }], result: `${body}\n${PERM_PAD}`, status: "completed", errorCode: null });
+      assert.equal(m.review_quality.semantic_failure_reasons.includes("permission_blocked"), true, `[${name}] permission_blocked should be present for: ${body}`);
+      assert.equal(m.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true for: ${body}`);
+    }
+    for (const body of CLEAN) {
+      const m = target({ prompt: "p", sourceFiles: [{ path: "src/config-loader.js", text: "export const value = 1;\n" }], result: `${body}\n${PERM_PAD}`, status: "completed", errorCode: null });
+      assert.equal(m.review_quality.failed_review_slot, false, `[${name}] code-handling praise must stay clean for: ${body}`);
+    }
+  }
+});
+
+test("root2 detector3: praise/confirmation reusing defect vocabulary flags shallow_output; real findings stay clean", async () => {
+  // Reviewer/sweep-found false-negatives (decidable subset): "should not <defect-noun>",
+  // "<cue> as expected/promised", LGTM. Surface-undecidable residual ("throws sensibly",
+  // hedges) is tracked in #238 for Way-2 advisory disposition, not asserted here.
+  const FLAG = [
+    "Verdict: APPROVE\nfoo() should not be a problem",
+    "Verdict: APPROVE\nparseConfig() should not cause issues",
+    "Verdict: APPROVE\ncache.get() should not regress",
+    "Verdict: APPROVE. parseConfig() throws on bad input as expected.",
+    "Verdict: APPROVE\nThe close() handler throws as promised on bad input.",
+  ];
+  // Genuine concise findings — including the negation-strip-leftover FP cases — must STAY clean.
+  const CLEAN = [
+    "Verdict: REQUEST CHANGES. socket close() is never called",
+    "Verdict: REQUEST CHANGES. acquire() does not free the slot",
+    "Verdict: REQUEST CHANGES. validateInput() should not return early",
+    "Verdict: REQUEST CHANGES. parseInt() returns the wrong index",
+    "Verdict: REQUEST_CHANGES\nindexInto() returns the wrong value because no bounds check guards the array access.",
+    "Verdict: REQUEST_CHANGES\nlookup() returns the wrong index when none of the keys match, instead of throwing.",
+    "Verdict: REQUEST_CHANGES\nthe happy path of encode() works as expected, but the empty-input branch throws and crashes.",
+  ];
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
+    for (const result of FLAG) {
+      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
+      assert.equal(m.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present for: ${result}`);
+    }
+    for (const result of CLEAN) {
+      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
+      assert.equal(m.review_quality.looks_shallow, false, `[${name}] real finding must stay clean for: ${result}`);
+    }
+  }
+});

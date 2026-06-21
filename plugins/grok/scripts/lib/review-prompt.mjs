@@ -752,7 +752,20 @@ function codeCorrectlyHandlesPermissionError(lower) {
 // unable to read/inspect/access the source. Mirrors the genuine-block surface
 // used by lineDeniesSelectedSourceInspection / hasConcretePermissionActionPhrase
 // so a real read-denial is never masked by incidental handling-praise wording.
-function reviewProcessBlockedSignal(lower) {
+// FIRST-PERSON reviewer block: "i/we" + a no-inspection cue + an inspection verb, within one
+// sentence ([^.\n], bounded for linear time). Anchored to i/we so a THIRD-PERSON description of the
+// reviewed CODE ("the loader handles EACCES when it cannot read the source file") is NOT mistaken
+// for a blocked review process. Apostrophes are normalized first so the curly contractions LLMs
+// emit ("couldn't") match the same as straight ones.
+// NOTE: the inspection verbs are deliberately INSPECTION-specific (inspect/read/open/access/examine/
+// load/verify/confirm). The perception verbs see/saw/view are EXCLUDED — "i did not see any issues" /
+// "we never saw a crash" are no-finding PRAISE, not review-process blocks. A genuine perception block
+// names the artifact ("i never saw the source"), which still matches via the "the source/file/..."
+// object alternative below.
+const REVIEW_PROCESS_FIRST_PERSON_BLOCK_RE = /\b(?:i|we)\b[^.\n]{0,30}?\b(?:could ?not|couldn'?t|can ?not|can'?t|cannot|was ?not able|wasn'?t able|were ?not able|weren'?t able|did ?not|didn'?t|never|only|unable to|lacked? access|had no access|have no access|no access to)\b[^.\n]{0,44}?\b(?:inspect(?:ed|ing)?|read(?:ing)?|open(?:ed|ing)?|access(?:ed|ing)?|examine[d]?|verif(?:y|ied|ying)|confirm(?:ed|ing)?|load(?:ed|ing)?|the diff|the (?:\w+ ){0,2}?(?:file|source|module|contents|selected))\b/;
+function reviewProcessBlockedSignal(lowerRaw) {
+  const lower = String(lowerRaw ?? "").replace(/[‘’ʼ′]/g, "'");
+  if (REVIEW_PROCESS_FIRST_PERSON_BLOCK_RE.test(lower)) return true;
   return includesAny(lower, [
     "no inspection was possible",
     "could not be inspected",
@@ -785,25 +798,36 @@ function reviewProcessBlockedSignal(lower) {
     "i cannot read",
     "i can't read",
     "i was unable to read",
-    "could not read the source",
-    "cannot read the source",
-    "could not read the file",
-    "cannot read the file",
-    "could not read the selected",
-    "cannot read the selected",
-    "could not read it",
-    "cannot read it",
-    "selected source",
-    "selected file",
-    "selected files",
-    "supplied source",
-    "supplied diff",
-    "supplied file",
-    "supplied files",
-    "source file",
-    "source files",
-    "target file",
-    "target files",
+    // NOTE: non-first-person "could/cannot read the source/file/selected" were also REMOVED for the
+    // same reason as the bare nouns — they fire on third-person code praise ("it cannot read the
+    // source file"). A first-person read-denial is caught by the regex above or "i could not read".
+    // NOTE: bare artifact nouns ("source file"/"selected source"/"target file"/...) were REMOVED:
+    // alone they fired on code-handling PRAISE that merely names the reviewed artifact ("the loader
+    // correctly handles EACCES when it cannot read the source file"), a false positive. A genuine
+    // block names the artifact with one of the explicit denial verbs above or via the first-person
+    // regex; a bare noun is not, by itself, a review-process-block signal.
+    "only reviewed the diff",
+    "only read the diff",
+    "only saw the diff",
+    "only had the diff",
+    "based only on the diff",
+    "from the diff alone",
+    "diff summary",
+    "denied opening",
+    "denied reading",
+    "denied access to",
+    "review attempt hit",
+    "review attempt failed",
+    "review attempt was blocked",
+    "approving without reading",
+    "approve without reading",
+    "approved without reading",
+    "approving without inspecting",
+    "approved without inspecting",
+    "without actually reading",
+    "without actually inspecting",
+    "without ever reading",
+    "without ever inspecting",
   ]);
 }
 
@@ -1431,23 +1455,40 @@ const CONCRETE_FINDING_CODE_LOCUS = [
   /(?<![\w.])[A-Za-z_$][\w$]{0,128}\s{0,16}\(/,
   /(?<![\w.])[A-Za-z_$][\w$]{0,128}\.[A-Za-z_$][\w$]{0,128}/,
 ];
-const CONCRETE_FINDING_NEGATION = /\b(no|not|never|nothing|none|without|n't|correct|correctly|fine|clean|missing nothing|does not appear)\b/i;
-// Several valid defect cues legitimately contain negation words ("never closed", "does not
-// handle", "should not"). Strip the cue(s) from the clause BEFORE the negation check so a cue's
-// own negation word cannot suppress a genuinely concrete finding. Genuine negations ("no
-// off-by-one", "correctly", "missing nothing") sit outside the cue and survive the strip, so a
-// praise/absence LGTM still stays flagged. Global flag removes every cue occurrence; replacing
-// with a space keeps word boundaries intact for the negation test.
-const CONCRETE_FINDING_DEFECT_CUE_GLOBAL = new RegExp(CONCRETE_FINDING_DEFECT_CUE.source, "gi");
+// A concise review is a concrete finding when a clause co-locates a defect cue with a code locus
+// and is NOT framed as confirmation/praise or a dismissal. Both suppressors are evaluated on the
+// ORIGINAL clause (no cue-strip — stripping mistook ordinary words like "no bounds check"/"clean
+// teardown" for dismissals). CONCRETE_FINDING_PRAISE = the cue describes CORRECT behavior ("throws
+// ... as expected/promised"). CONCRETE_FINDING_DISMISSAL = a negation BOUND to a defect noun ("no
+// off-by-one", "should not be a problem") or correctness-praise / LGTM — NOT a bare negation word
+// that merely appears in the finding ("never called", "none of the keys match"). Surface-ambiguous
+// praise that reuses defect vocabulary with no confirmation/dismissal marker ("throws sensibly",
+// "should not matter", a lone "throws() helpful errors" clause) is an accepted residual of keyword
+// classification and is routed to advisory disposition in #236 (Way 2), not patched by enumeration.
+const CONCRETE_FINDING_PRAISE = /\b(?:throws?|returns?|handles?|handled|behaves?|works?|working|drops?|catches?|caught|falls? back|degrades?) (?:[a-z]+ ){0,4}?as (?:expected|intended|designed|documented|planned|specified|promised|required|appropriate|advertised|warranted)\b/i;
+const CONCRETE_FINDING_DISMISSAL = /\b(?:no|not|never|without|n't|none) (?:\w+ ){0,2}?(?:issue|issues|problem|problems|bug|bugs|concern|concerns|defect|defects|off-by-one|regression|regressions|blocker|blockers)\b|\bshould not (?:be (?:a |an )?(?:problem|issue|concern|blocker|big deal)|cause (?:a |any )?(?:problem|issue|concern|trouble|harm)s?|create (?:a |any )?(?:problem|issue|concern)s?|introduce (?:a |any )?(?:problem|issue|concern|regression)s?|regress|matter|break|hurt|harm|affect (?:anything|behaviou?r|the output|the result|existing|other)|be affected|be an issue|be a concern)\b|\bmissing nothing\b|\bnothing (?:wrong|concerning|to (?:flag|note|fix|report)|of concern|problematic|improper|improperly|amiss|untoward|alarming|broken)\b|\bdoes not appear\b|\bno (?:concerns?|issues?|problems?|blockers?|objections?)\b|\b(?:looks?|seems?|is|are|all) (?:fine|clean|good|correct|solid|right|reasonable|ok|okay|sensible|acceptable)\b|\bcorrectly (?:handles?|handled|throws?|works?|working|closes?|closed|returns?|catches?|caught|falls? back)\b|\b(?:lgtm|ship it|nicely done|well done|good work|solid work|looks solid|that is acceptable|that's acceptable)\b/i;
+const CONCRETE_FINDING_CONTRAST = /\b(?:but|yet|however|whereas|though|although|instead|nevertheless|nonetheless)\b/i;
 
 function hasConcreteFinding(text) {
   const value = String(text ?? "");
   const clauses = value.split(/[\n.;!?]+/);
   return clauses.some((clause) => {
     if (!CONCRETE_FINDING_DEFECT_CUE.test(clause)) return false;
-    const withoutCue = clause.replace(CONCRETE_FINDING_DEFECT_CUE_GLOBAL, " ");
-    if (CONCRETE_FINDING_NEGATION.test(withoutCue)) return false;
-    return CONCRETE_FINDING_CODE_LOCUS.some((pattern) => pattern.test(clause));
+    if (!CONCRETE_FINDING_CODE_LOCUS.some((pattern) => pattern.test(clause))) return false;
+    // Contrast override: when the clause's praise/dismissal head is followed by an adversative
+    // whose TAIL carries its own independent defect cue and is not itself a dismissal/praise, the
+    // tail is a real finding ("works as expected, but the empty-input branch throws and crashes"),
+    // so the head marker must not suppress it.
+    const adv = clause.match(CONCRETE_FINDING_CONTRAST);
+    if (adv) {
+      const tail = clause.slice(adv.index + adv[0].length);
+      if (CONCRETE_FINDING_DEFECT_CUE.test(tail) && !CONCRETE_FINDING_DISMISSAL.test(tail) && !CONCRETE_FINDING_PRAISE.test(tail)) {
+        return true;
+      }
+    }
+    if (CONCRETE_FINDING_PRAISE.test(clause)) return false;
+    if (CONCRETE_FINDING_DISMISSAL.test(clause)) return false;
+    return true;
   });
 }
 
