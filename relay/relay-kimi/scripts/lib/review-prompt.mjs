@@ -1192,7 +1192,13 @@ function isOutOfScopeInspectionGapLine(lower, selectedSource = null, selectedSou
   return namesNonSelectedFileGapLine(lower, selectedSource);
 }
 
-const NON_SELECTED_FILE_TOKEN_RE = /(?:^|[\s`'"(\[{,;:])((?:[a-z0-9_-]+\/)*[a-z0-9_-]+\.[a-z0-9]{1,6})(?=$|[\s`'")\]}.,;:])/g;
+// Multi-dot filenames (webpack.config.js, index.test.ts) must tokenize whole, else a basename
+// denial of a dir-prefixed selected source is mis-read as a foreign file and wrongly suppressed,
+// letting a genuine not_reviewed denial bypass the gate. The optional (?:\.seg){0,8} group carries
+// the interior dotted segments before the final extension. Every quantifier is UPPER-BOUNDED
+// (segments {1,128}/{1,64}, depth {0,32}/{0,8}, ext {1,6}) so the token scan stays linear-time
+// (S5852 / ReDoS-safe) — do NOT relax these back to *,+.
+const NON_SELECTED_FILE_TOKEN_RE = /(?:^|[\s`'"(\[{,;:])((?:[a-z0-9_-]{1,128}\/){0,32}[a-z0-9_-]{1,128}(?:\.[a-z0-9_-]{1,64}){0,8}\.[a-z0-9]{1,6})(?=$|[\s`'")\]}.,;:])/g;
 function namesNonSelectedFileGapLine(lower, selectedSource) {
   const selectedPaths = (selectedSource?.files ?? [])
     .map((file) => String(file?.path ?? "").toLowerCase())
@@ -1426,13 +1432,21 @@ const CONCRETE_FINDING_CODE_LOCUS = [
   /(?<![\w.])[A-Za-z_$][\w$]{0,128}\.[A-Za-z_$][\w$]{0,128}/,
 ];
 const CONCRETE_FINDING_NEGATION = /\b(no|not|never|nothing|none|without|n't|correct|correctly|fine|clean|missing nothing|does not appear)\b/i;
+// Several valid defect cues legitimately contain negation words ("never closed", "does not
+// handle", "should not"). Strip the cue(s) from the clause BEFORE the negation check so a cue's
+// own negation word cannot suppress a genuinely concrete finding. Genuine negations ("no
+// off-by-one", "correctly", "missing nothing") sit outside the cue and survive the strip, so a
+// praise/absence LGTM still stays flagged. Global flag removes every cue occurrence; replacing
+// with a space keeps word boundaries intact for the negation test.
+const CONCRETE_FINDING_DEFECT_CUE_GLOBAL = new RegExp(CONCRETE_FINDING_DEFECT_CUE.source, "gi");
 
 function hasConcreteFinding(text) {
   const value = String(text ?? "");
   const clauses = value.split(/[\n.;!?]+/);
   return clauses.some((clause) => {
     if (!CONCRETE_FINDING_DEFECT_CUE.test(clause)) return false;
-    if (CONCRETE_FINDING_NEGATION.test(clause)) return false;
+    const withoutCue = clause.replace(CONCRETE_FINDING_DEFECT_CUE_GLOBAL, " ");
+    if (CONCRETE_FINDING_NEGATION.test(withoutCue)) return false;
     return CONCRETE_FINDING_CODE_LOCUS.some((pattern) => pattern.test(clause));
   });
 }

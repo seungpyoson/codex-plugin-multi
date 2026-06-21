@@ -4431,3 +4431,130 @@ test("root2 detector3: long-but-realistic call loci still escape the shallow fla
     }
   }
 });
+
+test("root2 detector2: multi-dot selected-source basename denial still flags not_reviewed (PR #237 comment 1)", async () => {
+  // Regression: NON_SELECTED_FILE_TOKEN_RE must tokenize multi-dot filenames whole. Otherwise a
+  // basename denial of a directory-prefixed multi-dot SELECTED source is mis-read as a foreign-file
+  // gap and wrongly suppressed, letting a genuine selected-source denial bypass not_reviewed. Both
+  // directions: the selected-source basename denial MUST flag; a genuine foreign multi-dot gap with
+  // proven selected inspection MUST stay suppressed (the safe direction is not over-corrected).
+  const FLAG = [
+    {
+      selected: "config/webpack.config.js",
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings",
+        "- None.",
+        "Non-blocking concerns",
+        "- The selected source config/webpack.config.js was fully inspected; the structure is valid.",
+        "- I could not inspect webpack.config.js override defaults, so that path is a gap.",
+        ROOT2_PAD,
+      ].join("\n"),
+    },
+    {
+      selected: "src/index.test.ts",
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings",
+        "- None.",
+        "Non-blocking concerns",
+        "- The selected source src/index.test.ts was fully inspected; the assertions are sound.",
+        "- I was unable to inspect index.test.ts fixtures, so that remains a gap.",
+        ROOT2_PAD,
+      ].join("\n"),
+    },
+  ];
+  const SUPPRESS = [
+    {
+      selected: "src/app.js",
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings",
+        "- None.",
+        "Non-blocking concerns",
+        "- The selected source src/app.js was fully inspected; the handler is correct.",
+        "- I could not inspect webpack.config.js, but the diff is internally consistent.",
+        ROOT2_PAD,
+      ].join("\n"),
+    },
+  ];
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const { selected, result } of FLAG) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
+        result,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"),
+        true,
+        `[${name}] not_reviewed should be present for multi-dot selected=${selected}`,
+      );
+      assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true for multi-dot selected=${selected}`);
+    }
+    for (const { selected, result } of SUPPRESS) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
+        result,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"),
+        false,
+        `[${name}] a genuine foreign multi-dot gap must stay suppressed for selected=${selected}`,
+      );
+    }
+  }
+});
+
+test("root2 detector3: negation-bearing defect cues do not mis-flag concrete reviews as shallow (PR #237 comment 2)", async () => {
+  // Regression: valid defect cues that contain negation words ("never called", "should not",
+  // "does not free") must not trip CONCRETE_FINDING_NEGATION when they carry a real call locus.
+  // Guard: a clause that strips to a GENUINE negation/absence must STAY flagged (no over-rescue).
+  const NOT_SHALLOW = [
+    { selected: "socket.js", result: "Verdict: REQUEST CHANGES. The socket close() is never called on the error path" },
+    { selected: "validator.js", result: "Verdict: REQUEST CHANGES. validateInput() should not return early on empty arrays" },
+    { selected: "pool.js", result: "Verdict: REQUEST CHANGES. acquire() does not free the slot when the request times out" },
+  ];
+  const STILL_SHALLOW = [
+    { selected: "socket.js", result: "Verdict: APPROVE. close() is never called but that is no real problem here" },
+    { selected: "parser.js", result: "Verdict: APPROVE\nThe parseConfig() function correctly throws on bad input and the schema is missing nothing important." },
+  ];
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const { selected, result } of NOT_SHALLOW) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
+        result,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] looks_shallow should be false for: ${result}`);
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
+        false,
+        `[${name}] shallow_output should be absent for: ${result}`,
+      );
+    }
+    for (const { selected, result } of STILL_SHALLOW) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
+        result,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
+        true,
+        `[${name}] shallow_output must STAY present (genuine negation/absence) for: ${result}`,
+      );
+    }
+  }
+});
