@@ -3675,6 +3675,67 @@ process.exit(1);
   }
 });
 
+test("doctor: a transient OAuth 401 clears on the bounded same-path re-probe and reports ready (#223)", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-transient-401-"));
+  const countPath = path.join(tmp, "infer-count.txt");
+  const binary = writeExecutable(tmp, "claude-oauth-transient-401", `#!/usr/bin/env node
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+const args = process.argv.slice(2);
+if (args[0] === "auth" && args[1] === "status") {
+  process.stdout.write(JSON.stringify({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+    subscriptionType: "max"
+  }) + "\\n");
+  process.exit(0);
+}
+const countPath = ${JSON.stringify(countPath)};
+const n = existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) : 0;
+writeFileSync(countPath, String(n + 1), "utf8");
+if (n === 0) {
+  // First inference attempt: a transient mid-OAuth-refresh 401 on the SAME auth path.
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    is_error: true,
+    api_error_status: 401,
+    result: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    session_id: "33333333-3333-4333-8333-333333333333",
+    usage: { input_tokens: 0, output_tokens: 0 }
+  }) + "\\n");
+  process.exit(1);
+}
+// Second attempt: the refresh has completed; the identical OAuth call now succeeds.
+process.stdout.write(JSON.stringify({
+  type: "result",
+  is_error: false,
+  result: "ok",
+  session_id: "33333333-3333-4333-8333-333333333333",
+  usage: { input_tokens: 1, output_tokens: 1 }
+}) + "\\n");
+process.exit(0);
+`);
+  const { stdout, status, dataDir } = runCompanion(
+    ["doctor", "--binary", binary, "--model", "claude-haiku-4-5-20251001", "--auth-mode", "subscription"],
+    { cwd: tmpdir(), env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
+  );
+  try {
+    assert.equal(status, 0, stdout);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "ok");
+    assert.equal(result.ready, true);
+    // Recovered on the SAME subscription path — not via the api-key fallback.
+    assert.equal(result.selected_auth_path, "subscription_oauth");
+    assert.equal(result.auth_fallback, undefined);
+    // The re-probe ran the inference exactly twice: transient 401, then success.
+    assert.equal(Number(readFileSync(countPath, "utf8")), 2);
+    assert.doesNotMatch(stdout, /invalid authentication credentials/i);
+  } finally {
+    cleanup(dataDir);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("doctor: OAuth inference rejection falls back to API key for source-free readiness", () => {
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-api-fallback-"));
   const binary = writeExecutable(tmp, "claude-oauth-api-fallback", `#!/usr/bin/env node
@@ -3960,15 +4021,22 @@ process.exit(1);
 
 test("doctor: OAuth status missing binary after ping reports not found", () => {
   const tmp = mkdtempSync(path.join(tmpdir(), "claude-doctor-oauth-status-enoent-"));
+  const countPath = path.join(tmp, "infer-count.txt");
   const binary = writeExecutable(tmp, "claude-oauth-status-enoent", `#!/usr/bin/env node
-const { unlinkSync } = require("node:fs");
+const { existsSync, readFileSync, writeFileSync, unlinkSync } = require("node:fs");
 const self = process.argv[1];
+const countPath = ${JSON.stringify(countPath)};
 const args = process.argv.slice(2);
 if (args[0] === "auth" && args[1] === "status") {
   process.stdout.write("unexpected auth status execution\\n");
   process.exit(0);
 }
-unlinkSync(self);
+const n = (existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) : 0) + 1;
+writeFileSync(countPath, String(n), "utf8");
+// Self-delete only after the bounded re-probe's final attempt (maxAttempts=2),
+// so the missing-binary condition is observed by the subsequent auth-status
+// check rather than by the re-probe spawn itself (#223).
+if (n >= 2) unlinkSync(self);
 process.stdout.write(JSON.stringify({
   type: "result",
   is_error: true,
@@ -4445,8 +4513,16 @@ if (args[0] === "auth" && args[1] === "status") {
   }) + "\\n");
   process.exit(0);
 }
-const count = existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) : 0;
-writeFileSync(countPath, String(count + 1), "utf8");
+// Distinguish the source-free preflight ping from an actual source-bearing
+// review by inspecting the prompt (delivered on stdin). Only real review
+// launches are counted, so the bounded preflight re-probe (#223) — which
+// reuses the ping prompt — is never mistaken for a review launch.
+let prompt = "";
+try { prompt = readFileSync(0, "utf8"); } catch {}
+if (!prompt.includes("reply with exactly: pong")) {
+  const count = existsSync(countPath) ? Number(readFileSync(countPath, "utf8")) : 0;
+  writeFileSync(countPath, String(count + 1), "utf8");
+}
 process.stdout.write(JSON.stringify({
   type: "result",
   is_error: true,
@@ -4476,7 +4552,10 @@ process.exit(1);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(record.review_metadata.audit_manifest.error_code, "oauth_inference_rejected");
     assert.equal(record.review_metadata.audit_manifest.review_quality.failed_review_slot, false);
-    assert.equal(readFileSync(countPath, "utf8"), "1", "target review must not launch after preflight rejection");
+    // The preflight (including its one bounded re-probe) uses only the source-free
+    // ping prompt; the source-bearing review must never launch after rejection.
+    const reviewLaunches = existsSync(countPath) ? readFileSync(countPath, "utf8") : "0";
+    assert.equal(reviewLaunches, "0", "source-bearing review must not launch after preflight rejection");
   } finally {
     cleanup(dataDir);
     cleanupDir(cwd);

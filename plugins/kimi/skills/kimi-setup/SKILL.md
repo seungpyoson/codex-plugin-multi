@@ -12,7 +12,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 `<plugin-root>` is `plugins/kimi` or an absolute path to that plugin directory. Use skill `relay-kimi:kimi-setup`. Command doc: `plugins/kimi/commands/kimi-setup.md`.
 `<workspace>` is the repository or bundle directory to review.
 Run `node "<plugin-root>/scripts/kimi-companion.mjs" doctor --cwd "<workspace>"`.
-If access to ~/.kimi is denied, report `sandbox_blocked` and keep raw secrets hidden.
+If access to ~/.kimi-code is denied, report `sandbox_blocked` and keep raw secrets hidden.
 Ask the operator to restart into a fresh Codex session after install or cache refresh.
 ## Secret Safety
 Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values.

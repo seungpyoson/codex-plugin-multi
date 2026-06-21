@@ -143,7 +143,7 @@ values, source bodies, prompts, or secrets.
 
 Claude, Gemini, and Kimi use first-party CLIs that read or write local OAuth,
 session, config, or log state. If setup or review returns `sandbox_blocked`
-with a `.claude`, `.gemini`, or `.kimi` path, add the provider state directory
+with a `.claude`, `.gemini`, or `.kimi-code` path, add the provider state directory
 as a writable root and start a fresh Codex session before retrying. Claude and
 Gemini usually need their full state trees because OAuth/session files can move
 across releases:
@@ -156,22 +156,22 @@ writable_roots = [
 ]
 ```
 
-For Kimi, the first-party CLI normally writes state and logs below `~/.kimi`;
-Kimi alone does not require `network_access = true`.
-If Kimi setup (`ping`) returns `sandbox_blocked` with a `.kimi` path, add a
+For Kimi, the first-party kimi-code CLI normally writes state and logs below
+`~/.kimi-code`; Kimi alone does not require `network_access = true`.
+If Kimi setup (`ping`) returns `sandbox_blocked` with a `.kimi-code` path, add a
 provider-specific writable root and start a fresh Codex session. If a review
-fails with a `.kimi` permission denial before setup catches it, use the same
+fails with a `.kimi-code` permission denial before setup catches it, use the same
 staged writable-root remediation:
 
 ```toml
 [sandbox_workspace_write]
-writable_roots = ["/Users/<you>/.kimi/logs"]
+writable_roots = ["/Users/<you>/.kimi-code/logs"]
 ```
 
 Use the narrowest root that works for your Kimi installation. Start with
-`/Users/<you>/.kimi/logs`; if the next denial names an OAuth/session file under
-`/Users/<you>/.kimi`, fall back to the full `/Users/<you>/.kimi` tree. The
-companion classifies `.kimi` permission denials as a writable-root problem so
+`/Users/<you>/.kimi-code/logs`; if the next denial names an OAuth/session file under
+`/Users/<you>/.kimi-code`, fall back to the full `/Users/<you>/.kimi-code` tree. The
+companion classifies `.kimi-code` permission denials as a writable-root problem so
 users see this action instead of a generic auth or CLI error.
 
 Gemini has a different sandbox interaction: Gemini CLI's native `-s` sandbox can
@@ -203,7 +203,7 @@ Troubleshooting signals:
 - Gemini `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
   errors on `.gemini` paths need `/Users/<you>/.gemini` in writable roots.
 - Kimi `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
-  errors on `.kimi` paths need a Kimi writable root.
+  errors on `.kimi-code` paths need a Kimi writable root.
 - Grok `tunnel_unavailable` means the subscription-backed local tunnel is not
   reachable at `GROK_WEB_BASE_URL`. Check `tunnel_start`: the plugin tries to
   bootstrap or start the non-Docker grok2api tunnel automatically. If

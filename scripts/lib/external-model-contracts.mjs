@@ -127,12 +127,11 @@ function commandToolsForWorkflow(workflow) {
 }
 
 function companionArgumentHint(provider, workflow) {
-  const maxSteps = provider.hasMaxSteps ? " [--max-steps-per-turn N]" : "";
   if (workflow === "review" || workflow === "adversarial-review") {
-    return `"[--scope-base REF] [--timeout-ms MS]${maxSteps} [focus area]"`;
+    return `"[--scope-base REF] [--timeout-ms MS] [focus area]"`;
   }
   if (workflow === "custom-review") return "\"--scope-paths <files> [--timeout-ms MS] [focus area]\"";
-  if (workflow === "rescue") return `"[--foreground|--background] [--model <id>]${maxSteps} [task]"`;
+  if (workflow === "rescue") return `"[--foreground|--background] [--model <id>] [task]"`;
   if (workflow === "setup") return "\"\"";
   if (workflow === "status") return "\"[--job <id>] [--all]\"";
   if (workflow === "result") return "\"<job-id>\"";
@@ -323,9 +322,6 @@ function companionTimeoutContract(provider) {
 function renderCompanionCommandBody(provider, workflow, commandName) {
   const title = `${provider.shortDisplay} ${titleForWorkflow(workflow)}`;
   if (workflow === "review" || workflow === "adversarial-review") {
-    const maxSteps = provider.hasMaxSteps
-      ? "Route `--max-steps-per-turn N` before `--`; `N` must be a positive integer."
-      : "";
     const runLine = companionRunCommand(provider, workflow, "--foreground --lifecycle-events markdown -- \"<focus text>\"");
     return lines(
       sharedHeader(title),
@@ -333,7 +329,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       "If present, pass `--scope-base REF` before `--`; pass the remaining focus text after `--`.",
       "Preserve raw `$ARGUMENTS` exactly except for routing documented flags.",
       companionTimeoutContract(provider),
-      maxSteps ? [maxSteps, ""] : "",
+      "",
       "Run:",
       "",
       `- \`${runLine}\``,
@@ -381,9 +377,6 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
   }
 
   if (workflow === "rescue") {
-    const maxSteps = provider.hasMaxSteps
-      ? "If the user provides a step budget, add `--max-steps-per-turn N` before `--`; `N` must be a positive integer."
-      : "";
     const backgroundLine = companionRunCommand(provider, workflow, "--background --lifecycle-events markdown -- \"$ARGUMENTS\"");
     const foregroundLine = companionRunCommand(provider, workflow, "--foreground --lifecycle-events markdown -- \"$ARGUMENTS\"");
     return lines(
@@ -398,7 +391,7 @@ function renderCompanionCommandBody(provider, workflow, commandName) {
       "",
       `- \`${foregroundLine}\``,
       "",
-      maxSteps,
+      "",
       rescueContract(),
       sandboxFirstSourceSendContract(),
       "",
@@ -491,9 +484,6 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
   const rootLine = `\`<plugin-root>\` is \`plugins/${provider.plugin}\` or an absolute path to that plugin directory.`;
   const skillRef = `${codexPluginName(provider)}:${skillName}`;
   if (workflow === "review" || workflow === "adversarial-review") {
-    const maxSteps = provider.hasMaxSteps
-      ? "If the user provides a step budget, add `--max-steps-per-turn N` before `--`; `N` must be a positive integer."
-      : "";
     return lines(
       sharedHeader(title),
       `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
@@ -502,7 +492,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       companionTimeoutContract(provider),
       "",
       `Run \`${companionRunCommand(provider, workflow, "--foreground --lifecycle-events markdown --cwd \"<workspace>\" --scope-base REF -- \"<focus>\"")}\`.`,
-      maxSteps,
+      "",
       reviewOnlyContract(),
       "custom-review uses explicit relative paths. Scope validation must complete before selected source is transmitted.",
       explicitScopeRoutingContract(),
@@ -536,9 +526,6 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
   }
 
   if (workflow === "rescue") {
-    const maxSteps = provider.hasMaxSteps
-      ? "If the user provides a step budget, add `--max-steps-per-turn N` before `--`; `N` must be a positive integer."
-      : "";
     return lines(
       sharedHeader(title),
       `${rootLine} Use skill \`${skillRef}\`. Command doc: \`${commandRel}\`.`,
@@ -547,7 +534,7 @@ function renderCompanionSkillBody(provider, workflow, skillName) {
       "",
       `Run foreground: \`${companionRunCommand(provider, "rescue", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\`.`,
       `Run background: \`${companionRunCommand(provider, "rescue", "--background --lifecycle-events markdown --cwd \"<workspace>\" -- \"<task>\"")}\`.`,
-      maxSteps,
+      "",
       rescueContract(),
       sandboxFirstSourceSendContract(),
       "",
@@ -623,9 +610,6 @@ function companionDelegationSkillDoc(target) {
     description: provider.delegationDescription,
     "user-invocable": "true",
   });
-  const maxSteps = provider.hasMaxSteps
-    ? `For ${provider.shortDisplay} review, adversarial-review, custom-review, or rescue, add \`--max-steps-per-turn N\` before \`--\` when the user provides a positive integer step budget.`
-    : "";
   const runLines = [
     "Run review:",
     `- \`${companionRunCommand(provider, "review", "--foreground --lifecycle-events markdown --cwd \"<workspace>\" --scope-base REF -- \"<review focus>\"")}\``,
@@ -667,7 +651,6 @@ function companionDelegationSkillDoc(target) {
     "Run setup:",
     `- \`${companionDoctorCommand(provider, "--cwd \"<workspace>\"")}\``,
     "",
-    ...(maxSteps ? [maxSteps, ""] : []),
     "`<workspace>` is the repository or bundle directory to review. `<focus>` is the user's review prompt or focus area.",
     companionJobIdGuidance(provider),
     "",

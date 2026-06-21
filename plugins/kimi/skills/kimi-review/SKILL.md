@@ -15,7 +15,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 Review timeout defaults to 900000 ms. Use `--timeout-ms <ms>` or `KIMI_REVIEW_TIMEOUT_MS`; the effective value is persisted in `review_metadata.audit_manifest.request.timeout_ms`.
 
 Run `node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=review --foreground --lifecycle-events markdown --cwd "<workspace>" --scope-base REF -- "<focus>"`.
-If the user provides a step budget, add `--max-steps-per-turn N` before `--`; `N` must be a positive integer.
+
 ## Review Contract
 This is a review-only contract.
 Do not fix findings, apply patches, edit files, or start rescue work from a review result.

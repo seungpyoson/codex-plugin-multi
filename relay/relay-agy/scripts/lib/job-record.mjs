@@ -264,6 +264,25 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *                     parsed diagnostic is available.
  */
 export function classifyExecution(execution) {
+  // Auth failures AGY reports AFTER the process spawned (pidInfo present) mean the
+  // selected source packet was already sent. The shared classifyCommonParsedFailure
+  // runs before the provider hook and maps not_authed (a PRE_TARGET_NOT_SENT_ERROR_CODES
+  // member) to error_code not_authed, which discloses source NOT_SENT — false once the
+  // target has spawned. Reclassify these to the agy_error catch-all (a content-received
+  // code) so source_content_transmission resolves SENT — the same outcome kimi gets by
+  // routing ACP auth-on-prompt failures off the pre-target not-sent set. Pre-spawn
+  // not_authed (no pidInfo) still flows through and discloses NOT_SENT.
+  if (
+    execution?.parsed?.ok === false
+    && execution.parsed.reason === "not_authed"
+    && execution.pidInfo
+  ) {
+    return {
+      status: "failed",
+      error_code: "agy_error",
+      error_message: execution.parsed.error ?? execution.parsed.reason,
+    };
+  }
   return classifyCompanionExecution(execution, {
     catchallCode: "agy_error",
     classifyProviderParsedFailure,

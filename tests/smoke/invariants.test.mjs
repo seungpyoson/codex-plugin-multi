@@ -90,6 +90,25 @@ function rmTempTree(p) {
   rmSync(p, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 }
 
+// A detached --background worker keeps writing to its data dir (lock release,
+// tmp/artifact cleanup) AFTER it writes the terminal JobRecord, then exits.
+// Deleting the data tree on the terminal record alone races the still-live
+// worker (ENOTEMPTY, exposed under coverage-instrumentation slowdown). Wait for
+// the worker process itself to exit — the true "safe to delete" condition —
+// before teardown. No-op when the pid is unknown or already gone.
+async function waitForPidExit(pid, timeoutMs) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0); // probe only; throws ESRCH once the worker is gone
+    } catch (e) {
+      return; // ESRCH (exited) or EPERM (cannot observe) — stop waiting
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 // #16 follow-up 9: fixtureSeedRepo scrubs inherited GIT_* env vars so a
 // stale GIT_DIR/GIT_WORK_TREE in the parent process cannot hijack fixture
 // commits into the caller checkout.
@@ -446,9 +465,11 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
      "--cwd", cwd, "--", "bg task"],
     { cwd }
   );
+  let workerPid = null;
   try {
     assert.equal(status, 0);
     const ev = JSON.parse(stdout);
+    workerPid = ev.pid;
     assert.equal(ev.event, "launched");
     assert.deepEqual(ev.external_review, {
       marker: "EXTERNAL REVIEW",
@@ -507,6 +528,9 @@ test("M6-finding-1-H1: background worker persists parsed.result on terminal JobR
     });
     assert.equal(meta.schema_version, 10);
   } finally {
+    // Let the detached worker fully exit before deleting its data dir, so
+    // teardown does not race its post-terminal-record filesystem cleanup.
+    await waitForPidExit(workerPid, 5000);
     rmTempTree(dataDir);
     rmTempTree(cwd);
   }

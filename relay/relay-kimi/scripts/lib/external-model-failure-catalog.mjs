@@ -39,6 +39,38 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
       "Treat this review slot as not launched. Narrow or shard the source packet, or record an explicit capability fact that raises the source packet budget before retrying.",
   }),
   Object.freeze({
+    error_code: "prompt_too_large",
+    category: "source_packet_policy",
+    error_cause: "pre_send_prompt_arg_budget",
+    error_summary: "The external model review was blocked before launch because the rendered prompt exceeded the CLI argument-size limit.",
+    suggested_action:
+      "Treat this review slot as not launched. Narrow or shard the source packet so the rendered prompt fits within the CLI argument-size limit, then retry. The selected source was not sent.",
+  }),
+  Object.freeze({
+    error_code: "cli_contract_mismatch",
+    category: "cli_contract",
+    error_cause: "cli_command_surface_mismatch",
+    error_summary: "The external model review was blocked before launch because the installed CLI does not support the command-surface flags the adapter emits.",
+    suggested_action:
+      "Treat this review slot as not launched. The selected source was not sent. Install or update the provider CLI to the supported command surface, then retry the same review scope.",
+  }),
+  Object.freeze({
+    error_code: "model_unavailable",
+    category: "provider_availability",
+    error_cause: "requested_model_not_offered",
+    error_summary: "The external model review was blocked before launch because the provider did not offer the requested model.",
+    suggested_action:
+      "Treat this review slot as not launched. The selected source was not sent. No silent model substitution is performed: configure a model the provider currently offers, then retry the same review scope.",
+  }),
+  Object.freeze({
+    error_code: "acp_protocol_error",
+    category: "transport",
+    error_cause: "acp_handshake_failed_before_prompt",
+    error_summary: "The external model review was blocked before launch because the ACP stdio handshake failed before the prompt was sent.",
+    suggested_action:
+      "Treat this review slot as not launched. The selected source was not sent. Inspect the provider CLI stderr/diagnostics, confirm the installed CLI speaks the expected ACP protocol version, then retry the same review scope.",
+  }),
+  Object.freeze({
     error_code: "resend_confirmation_required",
     category: "source_packet_policy",
     error_cause: "pre_send_resend_gate",
@@ -101,6 +133,14 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
     error_summary: "The external model provider reported a quota, usage-tier, billing, or credit limit.",
     suggested_action:
       "Treat this review slot as failed. Do not automatically resend selected source. Wait for usage to recover, reduce concurrency, or inspect the provider account manually. Any billing or tier change requires explicit user approval.",
+  }),
+  Object.freeze({
+    error_code: "usage_limited_preflight",
+    category: "cost_quota",
+    error_cause: "pre_send_usage_or_quota_limited",
+    error_summary: "The external model review was blocked before launch because the provider reported a quota, usage-tier, billing, or credit limit before the review prompt was sent.",
+    suggested_action:
+      "Treat this review slot as not launched. The selected source was not sent. Wait for usage to recover, reduce concurrency, or inspect the provider account manually. Any billing or tier change requires explicit user approval.",
   }),
   Object.freeze({
     error_code: "provider_workload_blocked",

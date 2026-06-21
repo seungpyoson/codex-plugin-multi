@@ -108,7 +108,12 @@ test("buildExternalModelFailureDiagnostic covers shared emitted failure codes", 
     "gemini_error",
     "kimi_error",
     "source_packet_too_large",
+    "prompt_too_large",
+    "cli_contract_mismatch",
     "resend_confirmation_required",
+    "model_unavailable",
+    "acp_protocol_error",
+    "usage_limited_preflight",
   ]) {
     const diagnostic = buildExternalModelFailureDiagnostic(code, "Claude Code CLI");
     assert.equal(typeof diagnostic?.error_summary, "string", code);
@@ -117,6 +122,22 @@ test("buildExternalModelFailureDiagnostic covers shared emitted failure codes", 
     assert.match(diagnostic.error_summary, /Claude Code CLI|provider|scope|review/i, code);
     assert.notEqual(diagnostic.suggested_action.trim(), "", code);
   }
+});
+
+test("the pre-send quota code (usage_limited_preflight) yields a not-sent operator diagnostic, distinct from post-send usage_limited", () => {
+  // Regression for the over-disclosure finding (PR #226, GPT NO-GO): a quota error
+  // that surfaces BEFORE the prompt is written gets the dedicated pre-send code, which
+  // MUST resolve to a non-empty operator diagnostic (not the `empty` fall-through) AND
+  // carry not-sent / not-launched framing so the operator is never told source was sent
+  // when it was not. The post-send sibling keeps its content-received framing.
+  const pre = buildExternalModelFailureDiagnostic("usage_limited_preflight", "Kimi Code CLI");
+  assert.ok(pre, "usage_limited_preflight must resolve to a diagnostic, never the empty fall-through");
+  assert.equal(typeof pre.suggested_action, "string");
+  assert.match(pre.error_summary, /before launch|before the review prompt|quota|usage|billing|credit/i);
+  assert.match(pre.suggested_action, /not launched|was not sent/i, "pre-send quota must disclose source NOT sent");
+
+  const post = buildExternalModelFailureDiagnostic("usage_limited", "Kimi Code CLI");
+  assert.doesNotMatch(post.suggested_action, /was not sent/i, "post-send quota must NOT claim source was not sent");
 });
 
 test("Claude OAuth inference rejection diagnostic names the supported auth command", () => {
@@ -143,12 +164,15 @@ test("shared failure diagnostics cover the T088 cross-provider fixture table", (
     "scope_failed",
     "oauth_inference_rejected",
     "usage_limited",
+    "usage_limited_preflight",
     "provider_unavailable",
     "tunnel_unavailable",
     "session_expired",
     "privacy_persistence",
     "review_not_completed",
     "source_packet_too_large",
+    "prompt_too_large",
+    "cli_contract_mismatch",
     "resend_confirmation_required",
   ];
 
@@ -262,6 +286,17 @@ test("classifyCompanionExecution centralizes review-quality and common parsed fa
       status: "failed",
       error_code: "step_limit_exceeded",
       error_message: "max steps",
+    },
+  );
+  assert.deepEqual(
+    classifyCompanionExecution(
+      { exitCode: 1, parsed: { ok: false, reason: "prompt_too_large", error: "rendered prompt exceeded ARG_MAX budget" } },
+      { catchallCode: "kimi_error" },
+    ),
+    {
+      status: "failed",
+      error_code: "prompt_too_large",
+      error_message: "rendered prompt exceeded ARG_MAX budget",
     },
   );
 });
@@ -461,6 +496,26 @@ test("external-model failure core plugin copies cover shared classifier branches
       error_code: "step_limit_exceeded",
       error_message: "max steps",
     });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "prompt_too_large", error: "rendered prompt 901000 > 900000 bytes" }), {
+      status: "failed",
+      error_code: "prompt_too_large",
+      error_message: "rendered prompt 901000 > 900000 bytes",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "prompt_too_large" }), {
+      status: "failed",
+      error_code: "prompt_too_large",
+      error_message: "prompt_too_large",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "cli_contract_mismatch", error: "installed Kimi CLI does not support --output-format" }), {
+      status: "failed",
+      error_code: "cli_contract_mismatch",
+      error_message: "installed Kimi CLI does not support --output-format",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "cli_contract_mismatch" }), {
+      status: "failed",
+      error_code: "cli_contract_mismatch",
+      error_message: "cli_contract_mismatch",
+    });
     assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "json_parse_error" }), {
       status: "failed",
       error_code: "parse_error",
@@ -470,6 +525,23 @@ test("external-model failure core plugin copies cover shared classifier branches
       status: "failed",
       error_code: "parse_error",
       error_message: "no output",
+    });
+    // Pre-target readiness reasons map to their own NOT_SENT error codes (Layer B):
+    // they must NOT fall through to the content-received catch-all.
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "not_authed", error: "login required" }), {
+      status: "failed",
+      error_code: "not_authed",
+      error_message: "login required",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "model_unavailable", error: "model X not offered" }), {
+      status: "failed",
+      error_code: "model_unavailable",
+      error_message: "model X not offered",
+    });
+    assert.deepEqual(mod.classifyCommonParsedFailure({ reason: "acp_protocol_error", error: "handshake failed" }), {
+      status: "failed",
+      error_code: "acp_protocol_error",
+      error_message: "handshake failed",
     });
     assert.equal(mod.classifyCommonParsedFailure({ reason: "provider_specific" }), null);
     assert.equal(mod.classifySignalLikeExit(null), null);

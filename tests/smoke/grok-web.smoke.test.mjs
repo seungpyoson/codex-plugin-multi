@@ -368,6 +368,7 @@ function makeFakeGrokCli({
   ignoreSourceBearingSigterm = false,
   mutateAuthOnSource = false,
   mutateAuthOnSourceFree = false,
+  sourceFreeHangMs = 0,
 } = {}) {
   const binDir = mkdtempSync(path.join(tmpdir(), "fake-grok-cli-bin-"));
   const logPath = path.join(binDir, "grok-log.jsonl");
@@ -388,6 +389,7 @@ const modelsStderr = ${JSON.stringify(modelsStderr)};
 const sourceFreeAuthStderr = ${JSON.stringify(sourceFreeAuthStderr)};
 const mutateAuthOnSource = ${JSON.stringify(mutateAuthOnSource)};
 const mutateAuthOnSourceFree = ${JSON.stringify(mutateAuthOnSourceFree)};
+const sourceFreeHangMs = ${JSON.stringify(sourceFreeHangMs)};
 const args = process.argv.slice(2);
 const apiEnvKeys = ["GROK_API_KEY", "XAI_API_KEY", "XAI_KEY"].filter((key) => Object.prototype.hasOwnProperty.call(process.env, key));
 const sensitiveEnvKeys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "GITHUB_TOKEN", "GH_TOKEN"].filter((key) => Object.prototype.hasOwnProperty.call(process.env, key));
@@ -468,6 +470,11 @@ if (failSourceBearing && prompt.includes("CLI_SOURCE_SECRET")) {
 if (sourceFreeAuthStderr && !prompt.includes("CLI_SOURCE_SECRET")) {
   process.stderr.write(sourceFreeAuthStderr);
   process.exit(1);
+}
+if (sourceFreeHangMs > 0 && !prompt.includes("CLI_SOURCE_SECRET")) {
+  // Silent stall on the source-free probe (no OAuth stderr): forces the parent
+  // to enforce its own timeout bound rather than the child exiting on its own.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, sourceFreeHangMs);
 }
 if (ignoreSourceBearingSigterm && prompt.includes("CLI_SOURCE_SECRET")) {
   process.on("SIGTERM", () => {});
@@ -1172,7 +1179,7 @@ test("custom-review fails fast on expired Grok CLI auth without starting OAuth p
   }
 });
 
-test("custom-review fails fast when Grok CLI reports logged in but persisted auth is expired", () => {
+test("custom-review defers to the live Grok CLI session over an expired cached exp, then fails closed (bounded) when the source-free probe stalls on OAuth", () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-logged-in-expired-auth-workspace-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-logged-in-expired-auth-data-"));
   const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-logged-in-expired-auth-home-"));
@@ -1204,22 +1211,122 @@ test("custom-review fails fast when Grok CLI reports logged in but persisted aut
     assert.equal(result.status, 1, result.stdout);
     const record = parseStdout(result);
     assert.equal(record.status, "failed");
-    assert.equal(record.error_code, "grok_cli_auth_expired");
+    // Precedence fix (#190, #223): a stale cached access-token exp no longer
+    // pre-empts the authoritative live `grok models` result. We proceed to the
+    // bounded, source-free refresh probe; only when THAT fails — here the CLI
+    // stalls on interactive OAuth — do we fail closed, now as grok_cli_auth_timeout
+    // rather than the old pre-judged grok_cli_auth_expired. Source is never sent.
+    assert.equal(record.error_code, "grok_cli_auth_timeout");
     assert.equal(record.error_cause, "grok_cli");
+    assert.equal(record.auth_mode, "subscription_cli");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(record.runtime_diagnostics.cli_request.logged_in, true);
     assert.equal(record.runtime_diagnostics.cli_request.model_ready, true);
     assert.equal(record.runtime_diagnostics.cli_request.auth_freshness.status, "expired");
+    assert.equal(record.runtime_diagnostics.cli_request.exit_status, 1);
+    assert.match(record.runtime_diagnostics.cli_request.stderr_head, /OSStatus error -10661/);
+    assert.equal(record.runtime_diagnostics.cli_request.source_free_prompt_cleanup, "deleted");
     assert.equal(record.runtime_diagnostics.cli_request.prompt_cleanup, null);
     assert.equal(record.runtime_diagnostics.cli_request.grok_home_cleanup, null);
-    assert.match(record.suggested_action, /grok login/i);
-    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET|OSStatus error -10661|Login timed out/);
+    assert.match(record.suggested_action, /grok login|auth/i);
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
 
+    // The source-free probe DID run (third invocation), carrying no selected source.
     const logLines = readGrokCliLog(logPath);
     assert.deepEqual(logLines.filter((line) => Array.isArray(line.args)).map((line) => line.args[0]), [
-      "--version", "models",
+      "--version", "models", "--prompt-file",
     ]);
-    assert.equal(logLines.some((line) => line.promptPath), false);
+    const promptInvocations = logLines.filter((line) => line.promptPath);
+    assert.equal(promptInvocations.length, 1);
+    assert.equal(promptInvocations[0].promptHasSource, false);
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+  }
+});
+
+test("doctor treats an expired cached exp as ready when the live Grok CLI session works", () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-recovered-doctor-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-expired-recovered-doctor-auth-home-"));
+  // No sourceFreeAuthStderr -> the source-free probe succeeds, proving the live session works.
+  const { binDir, grokPath, logPath } = makeFakeGrokCli();
+  writeExpiredGrokCliAuthFixture(authHome);
+
+  try {
+    const result = run(["doctor"], {
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const parsed = parseStdout(result);
+    // The cached exp is expired, but the live `grok models` + source-free probe
+    // prove the session works -> readiness must be true. Before #190/#223 this was
+    // a false negative (grok_cli_auth_expired, ready:false).
+    assert.equal(parsed.ready, true);
+    assert.equal(parsed.transport, "cli");
+    assert.equal(parsed.logged_in, true);
+    assert.equal(parsed.model_ready, true);
+    assert.equal(parsed.readiness_layers.cli_login.status, "ready");
+    assert.equal(parsed.readiness_layers.source_free_prompt.status, "ready");
+
+    const logLines = readGrokCliLog(logPath);
+    const promptInvocations = logLines.filter((line) => line.promptPath);
+    assert.equal(promptInvocations.length, 1);
+    assert.equal(promptInvocations[0].promptHasSource, false);
+  } finally {
+    rmTree(authHome);
+    rmTree(dataDir);
+  }
+});
+
+test("the expired-recovery source-free probe is bounded by refresh_probe_timeout_ms, not the full review timeout", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-refresh-bound-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-refresh-bound-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-refresh-bound-auth-home-"));
+  // Source-free probe silently stalls for 5s (no OAuth stderr); only the parent's
+  // own timeout can end it.
+  const { binDir, grokPath } = makeFakeGrokCli({ sourceFreeHangMs: 5000 });
+  writeFileSync(path.join(cwd, "review.js"), "export const marker = 'CLI_SOURCE_SECRET';\n");
+  writeExpiredGrokCliAuthFixture(authHome);
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--prompt", "Review selected source.",
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+        // Generous full review timeout, tiny refresh-probe bound. If the bound
+        // governs, the 5s stall is aborted at ~300ms and the run fails closed —
+        // it never reaches the success the child would have produced post-hang.
+        GROK_CLI_TIMEOUT_MS: "60000",
+        GROK_CLI_REFRESH_PROBE_TIMEOUT_MS: "300",
+      },
+    });
+
+    assert.equal(result.status, 1, result.stdout);
+    const record = parseStdout(result);
+    assert.equal(record.status, "failed");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.cli_request.logged_in, true);
+    assert.equal(record.runtime_diagnostics.cli_request.auth_freshness.status, "expired");
+    assert.doesNotMatch(JSON.stringify(record), /CLI_SOURCE_SECRET/);
   } finally {
     rmTree(authHome);
     rmTree(cwd);

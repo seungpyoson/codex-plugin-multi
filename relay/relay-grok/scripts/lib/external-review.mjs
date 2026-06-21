@@ -54,10 +54,11 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
   "review_not_completed",
 ]));
 
-const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
+export const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "approval_required",
   "approval_scope_changed",
   "cache_install",
+  "cli_contract_mismatch",
   "git_binary_rejected",
   "preflight_stale",
   "prompt_sidecar_failed",
@@ -74,6 +75,9 @@ const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "spawn_failed",
   "not_authed",
   "sandbox_blocked",
+  "model_unavailable",
+  "acp_protocol_error",
+  "usage_limited_preflight",
 ]));
 
 const CONTENT_MAY_HAVE_STARTED_ERROR_CODES = Object.freeze(new Set([
@@ -94,11 +98,18 @@ const NOT_SENT_DISCLOSURE_BY_STATUS = Object.freeze({
 const NOT_SENT_DISCLOSURE_BY_ERROR = Object.freeze({
   approval_scope_changed: (provider) => `Selected source content was not sent to ${provider}; approval scope changed before the review target was started.`,
   cache_install: (provider) => `Selected source content was not sent to ${provider}; installed cache repair is required before the review target starts.`,
+  cli_contract_mismatch: (provider) => `Selected source content was not sent to ${provider}; the installed CLI does not support the adapter's command surface, so the review target was not started.`,
   preflight_stale: (provider) => `Selected source content was not sent to ${provider}; immediate pre-send readiness proof was stale or missing.`,
   prompt_too_large: (provider) => `Selected source content was not sent to ${provider}; the rendered prompt exceeded the provider budget before the review target was started.`,
   scope_failed: (provider) => `Selected source content was not sent to ${provider}; the review scope was rejected before the target process was started.`,
   spawn_failed: (provider) => `Selected source content was not sent to ${provider}; the target process was not spawned.`,
   oauth_inference_rejected: (provider) => `Selected source content was not sent to ${provider}; OAuth inference readiness was rejected before the review target was started.`,
+  // The CLI DID start for these — it spawned and reached the protocol handshake —
+  // but failed before the review prompt was written, so the generic "target process
+  // was not started" phrasing would be inaccurate.
+  model_unavailable: (provider) => `Selected source content was not sent to ${provider}; the CLI started and opened a session but did not offer the requested model, so the review prompt was never written.`,
+  acp_protocol_error: (provider) => `Selected source content was not sent to ${provider}; the CLI started but its protocol handshake failed before the review prompt was written.`,
+  usage_limited_preflight: (provider) => `Selected source content was not sent to ${provider}; the CLI started but a quota, usage-tier, billing, or credit limit was reported before the review prompt was written.`,
 });
 
 const UNKNOWN_DISCLOSURE_BY_STATUS = Object.freeze({
