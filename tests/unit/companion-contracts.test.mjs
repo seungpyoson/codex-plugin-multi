@@ -15,6 +15,7 @@ test("companion sidecar writes use sibling tmp files, rename, and private direct
     "plugins/claude/scripts/claude-companion.mjs",
     "plugins/gemini/scripts/gemini-companion.mjs",
     "plugins/kimi/scripts/kimi-companion.mjs",
+    "plugins/agy/scripts/agy-companion.mjs",
   ]) {
     const source = readRepoFile(rel);
     const match = /function writeSidecar[\s\S]*?\n}/.exec(source);
@@ -55,12 +56,24 @@ test("prompt sidecar cleanup fails closed after a successful read", () => {
     "consumePromptSidecar cleanup uncertainty must fail closed after a successful read");
 });
 
-test("Kimi runtime-options sidecar writes use private directories", () => {
-  const source = readRepoFile("plugins/kimi/scripts/kimi-companion.mjs");
-  const match = /function writeRuntimeOptionsSidecar[\s\S]*?\n}/.exec(source);
-  assert.ok(match, "kimi companion: missing writeRuntimeOptionsSidecar helper");
-  assert.match(match[0], /mode:\s*0o700/, "runtime-options sidecar must create private job dirs");
-  assert.match(match[0], /chmodSync\(dir,\s*0o700\)/, "runtime-options sidecar must tighten existing job dirs");
+test("runtime-options sidecar writes use private directories where supported", () => {
+  for (const rel of [
+    "plugins/kimi/scripts/kimi-companion.mjs",
+    "plugins/agy/scripts/agy-companion.mjs",
+  ]) {
+    const source = readRepoFile(rel);
+    const match = /function writeRuntimeOptionsSidecar[\s\S]*?\n}/.exec(source);
+    assert.ok(match, `${rel}: missing writeRuntimeOptionsSidecar helper`);
+    assert.match(match[0], /mode:\s*0o700/, `${rel}: runtime-options sidecar must create private job dirs`);
+    assert.match(match[0], /chmodSync\(dir,\s*0o700\)/, `${rel}: runtime-options sidecar must tighten existing job dirs`);
+  }
+});
+
+test("AGY companion explicitly rejects unsupported background and continue flows", () => {
+  const source = readRepoFile("plugins/agy/scripts/agy-companion.mjs");
+  assert.match(source, /options\.background[\s\S]*fail\("bad_args"[\s\S]*--background[\s\S]*(unsupported|foreground-only)/i);
+  assert.match(source, /command === "continue"[\s\S]*fail\("bad_args"[\s\S]*(continue|resume)[\s\S]*unsupported/i);
+  assert.doesNotMatch(source, /_run-worker|spawnDetached|detached worker/i);
 });
 
 test("workers distinguish empty prompt sidecars from missing prompt sidecars", () => {

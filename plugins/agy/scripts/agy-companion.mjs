@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { resolve as resolvePath } from "node:path";
+import { basename as basenamePath, join as joinPath, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -30,13 +30,19 @@ import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { verifyPidInfo } from "./lib/identity.mjs";
 import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
+import { sourceContentTransmissionForExecution } from "./lib/external-review.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
+import {
+  latestSourcePacketPreviousAttempt,
+  sourcePacketPreviousAttemptFromJobRecord,
+} from "./lib/provider-route-policy.mjs";
 import {
   REVIEW_PROMPT_CONTRACT_VERSION,
   buildReviewAuditManifest,
   buildReviewPrompt,
   buildSelectedSourcePromptBlock,
   scopeResolutionReason,
+  selectedSourceFilesFromPrompt,
 } from "./lib/review-prompt.mjs";
 import {
   configureState,
@@ -55,6 +61,16 @@ const DEFAULT_TIMEOUT_MS = 900000;
 const READINESS_PREFLIGHT_TIMEOUT_MS = 30000;
 const READINESS_PREFLIGHT_PROMPT = "Reply with exactly: relay-agy-readiness";
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
+const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "AGY FILE";
+const AGY_SOURCE_PACKET_MAX_BYTES = 256 * 1024;
+const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
+
+const ROUTE_CAPABILITIES = Object.freeze({
+  source_packet: Object.freeze({
+    max_bytes: AGY_SOURCE_PACKET_MAX_BYTES,
+    resume_without_resend_supported: false,
+  }),
+});
 
 configureState({
   pluginDataEnv: "AGY_PLUGIN_DATA",
@@ -68,6 +84,27 @@ function commandBinary(options) {
 
 function commandCwd(options) {
   return resolvePath(typeof options.cwd === "string" && options.cwd ? options.cwd : process.cwd());
+}
+
+function promptFromOptions(positionals, options) {
+  const promptFile = options["prompt-file"];
+  if (promptFile !== undefined) {
+    if (positionals.length > 0) {
+      fail("bad_args", "pass prompt either with --prompt-file or after -- separator, not both");
+    }
+    let promptText;
+    try {
+      promptText = readFileSync(promptFile, "utf8").trim();
+    } catch (e) {
+      fail("bad_args", `could not read --prompt-file: ${e.message}`);
+    }
+    if (promptText.length === 0) fail("bad_args", "--prompt-file must contain a non-empty prompt");
+    return promptText;
+  }
+
+  const promptText = positionals.join(" ").trim();
+  if (promptText.length === 0) fail("bad_args", "prompt is required (pass after -- separator or with --prompt-file)");
+  return promptText;
 }
 
 function parseReviewTimeoutMs(cliValue, fallback = DEFAULT_TIMEOUT_MS) {
@@ -141,6 +178,12 @@ function auditSourceFiles(containmentPath) {
   }));
 }
 
+function auditSourceFilesForPrompt(prompt, containmentPath) {
+  return selectedSourceFilesFromPrompt(prompt, {
+    delimiterPrefix: REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX,
+  }) ?? auditSourceFiles(containmentPath);
+}
+
 function resolveReviewScope({ mode, requestedScope, scopeBase, scopePaths }) {
   const scope = mode === "custom-review" || requestedScope === "custom" ? "custom" : "branch-diff";
   if (scope === "custom") {
@@ -180,7 +223,7 @@ function promptFor({ userPrompt, selectedFiles, mode, cwd, scope, scopeBase, sco
   });
   const selectedSource = buildSelectedSourcePromptBlock(selectedFiles, {
     title: "Selected source",
-    delimiterPrefix: "AGY FILE",
+    delimiterPrefix: REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX,
   });
   return [contractPrompt, selectedSource].filter(Boolean).join("\n\n");
 }
@@ -199,8 +242,86 @@ function sourceFilesForRedaction(selectedFiles) {
   }));
 }
 
+function sourceFilesHaveBodies(sourceFiles) {
+  return Array.isArray(sourceFiles) && sourceFiles.some((file) => (
+    typeof file?.text === "string" && file.text.length > 0
+  ) || (
+    file?.text instanceof Uint8Array && file.text.length > 0
+  ) || (
+    typeof file?.content === "string" && file.content.length > 0
+  ) || (
+    file?.content instanceof Uint8Array && file.content.length > 0
+  ));
+}
+
+function redactionFieldsForPrompt(prompt) {
+  const sourceFilesForRedaction = auditSourceFilesForPrompt(prompt, null);
+  return sourceFilesForRedaction.length > 0
+    ? {
+      sourceRedactionRequired: sourceFilesHaveBodies(sourceFilesForRedaction),
+      sourceFilesForRedaction,
+    }
+    : {};
+}
+
 function jobsDir(cwd) {
   return resolveJobsDir(cwd);
+}
+
+function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
+  return `${resolveJobsDir(workspaceRoot)}/${jobId}/runtime-options.json`;
+}
+
+function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
+  const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch (err) {
+    if (process.platform !== "win32") throw err;
+  }
+  const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
+  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  const payload = {
+    timeout_ms: options.timeout_ms,
+  };
+  if (options.previous_source_attempt && typeof options.previous_source_attempt === "object") {
+    payload.previous_source_attempt = options.previous_source_attempt;
+  }
+  if (Array.isArray(options.review_slot_prior_attempts)) {
+    payload.review_slot_prior_attempts = options.review_slot_prior_attempts.filter(
+      (attempt) => attempt && typeof attempt === "object" && !Array.isArray(attempt),
+    );
+  }
+  if (typeof options.resend_confirmation_approved === "boolean") {
+    payload.resend_confirmation_approved = options.resend_confirmation_approved;
+  }
+  if (typeof options.resume_without_source_resend === "boolean") {
+    payload.resume_without_source_resend = options.resume_without_source_resend;
+  }
+  if (typeof options.review_slot_disposition === "string" && options.review_slot_disposition.length > 0) {
+    payload.review_slot_disposition = options.review_slot_disposition;
+  }
+  if (typeof options.review_slot_waiver_artifact === "string" && options.review_slot_waiver_artifact.length > 0) {
+    payload.review_slot_waiver_artifact = options.review_slot_waiver_artifact;
+  }
+  if (typeof options.review_slot_override_artifact === "string" && options.review_slot_override_artifact.length > 0) {
+    payload.review_slot_override_artifact = options.review_slot_override_artifact;
+  }
+  if (typeof options.source_packet_override_approved === "boolean") {
+    payload.source_packet_override_approved = options.source_packet_override_approved;
+  }
+  if (typeof options.source_packet_override_source === "string" && options.source_packet_override_source.length > 0) {
+    payload.source_packet_override_source = options.source_packet_override_source;
+  }
+  try {
+    writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
+    try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
+    renameSync(tmpFile, file);
+  } catch (e) {
+    try { unlinkSync(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
@@ -228,6 +349,58 @@ function gitStatus(args, cwd, workspaceRoot = null) {
     stdio: ["ignore", "pipe", "pipe"],
     env: gitEnv(cleanGitEnv()),
   });
+}
+
+function gitCommitForPrompt(cwd, ref, workspaceRoot = null) {
+  if (!ref) return null;
+  try {
+    return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, "rev-parse", "--verify", `${ref}^{commit}`], {
+      cwd,
+      env: gitEnv(cleanGitEnv()),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
+    return null;
+  }
+}
+
+function gitText(args, cwd, workspaceRoot = null) {
+  try {
+    return execFileSync(resolveGitBinary({ cwd, workspaceRoot }), ["-C", cwd, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: gitEnv(cleanGitEnv()),
+    }).trim() || null;
+  } catch (error) {
+    if (isGitBinaryPolicyError(error)) throw error;
+    return null;
+  }
+}
+
+function repositoryIdentity(cwd, workspaceRoot) {
+  const remote = gitText(["remote", "get-url", "origin"], cwd, workspaceRoot);
+  if (!remote) return workspaceRoot;
+  const match = /[:/]([^/:]+\/[^/]+?)(?:\.git)?$/.exec(remote);
+  return match ? match[1] : remote;
+}
+
+function reviewPromptRepositoryIdentity(cwd, workspaceRoot) {
+  const identity = repositoryIdentity(cwd, workspaceRoot);
+  if (identity && identity !== workspaceRoot) return identity;
+  return `local-workspace:${basenamePath(workspaceRoot ?? cwd ?? "workspace") || "workspace"}`;
+}
+
+function gitIdentityForInvocation(invocation) {
+  return {
+    remote: reviewPromptRepositoryIdentity(invocation.cwd, invocation.workspace_root),
+    branch: gitText(["branch", "--show-current"], invocation.cwd, invocation.workspace_root) ?? "HEAD",
+    baseRef: invocation.scope_base ?? null,
+    baseCommit: gitCommitForPrompt(invocation.cwd, invocation.scope_base, invocation.workspace_root),
+    headRef: gitText(["branch", "--show-current"], invocation.cwd, invocation.workspace_root) ?? "HEAD",
+    headCommit: gitCommitForPrompt(invocation.cwd, "HEAD", invocation.workspace_root),
+  };
 }
 
 function mutationDetectionFailure(error, context = null) {
@@ -300,7 +473,116 @@ function withMutationReviewFailure(manifest, mutations) {
   };
 }
 
-function buildInvocation({ jobId, mode, cwd, workspaceRoot, binary, model, scope, scopeBase, scopePaths, userPrompt, startedAt }) {
+function modeSendsSelectedSource(mode) {
+  return mode === "review" || mode === "adversarial-review" || mode === "custom-review";
+}
+
+function reviewSlotInvocationFields(options = {}) {
+  return Object.freeze({
+    review_slot_disposition: typeof options["review-slot-disposition"] === "string"
+      ? options["review-slot-disposition"]
+      : null,
+    review_slot_waiver_artifact: typeof options["review-slot-waiver-artifact"] === "string"
+      ? options["review-slot-waiver-artifact"]
+      : null,
+    review_slot_override_artifact: typeof options["review-slot-override-artifact"] === "string"
+      ? options["review-slot-override-artifact"]
+      : null,
+  });
+}
+
+function reviewSlotRouteFields(invocation = {}) {
+  return {
+    reviewSlot: {
+      priorAttempts: Array.isArray(invocation.review_slot_prior_attempts)
+        ? invocation.review_slot_prior_attempts
+        : [],
+      disposition: invocation.review_slot_disposition ?? "none",
+      waiverArtifact: invocation.review_slot_waiver_artifact ?? null,
+      overrideArtifact: invocation.review_slot_override_artifact ?? null,
+    },
+  };
+}
+
+function sourcePacketOverrideInvocationFields(options = {}) {
+  const approved = options["allow-large-source-packet"] === true;
+  return Object.freeze({
+    source_packet_override_approved: approved,
+    source_packet_override_source: approved ? LARGE_SOURCE_PACKET_FLAG : null,
+  });
+}
+
+function sourcePacketOverrideRouteFields(invocation = {}) {
+  return {
+    sourcePacketOverrideApproved: invocation.source_packet_override_approved === true,
+    sourcePacketOverrideSource: invocation.source_packet_override_source ?? null,
+  };
+}
+
+function reviewSlotFromRecord(record) {
+  const slot = record?.review_metadata?.audit_manifest?.review_slot
+    ?? record?.external_review?.review_slot
+    ?? null;
+  return slot && typeof slot === "object" && !Array.isArray(slot) ? slot : null;
+}
+
+function priorSlotCountsTowardRetry(slot) {
+  if (!slot?.retry_fingerprint) return false;
+  if (slot.source_state === "not_sent") return false;
+  if (slot.verdict === "approved") return false;
+  const reason = String(slot.not_counted_reason ?? "unknown");
+  if (reason === "stale_head" || reason === "source_not_sent") return false;
+  return true;
+}
+
+function collectPriorReviewSlotAttempts(workspaceRoot, currentJobId = null) {
+  let entries;
+  try {
+    entries = readdirSync(resolveJobsDir(workspaceRoot), { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const attempts = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const jobId = entry.name.slice(0, -".json".length);
+    if (currentJobId !== null && jobId === currentJobId) continue;
+    try {
+      const record = JSON.parse(readFileSync(joinPath(resolveJobsDir(workspaceRoot), entry.name), "utf8"));
+      if (record?.job_id !== jobId) continue;
+      const slot = reviewSlotFromRecord(record);
+      if (priorSlotCountsTowardRetry(slot)) {
+        const previousAttempt = sourcePacketPreviousAttemptFromJobRecord(record);
+        attempts.push(previousAttempt
+          ? { ...previousAttempt, review_slot: slot }
+          : { review_slot: slot });
+      }
+    } catch {
+      // Malformed legacy records are not trusted as retry-policy evidence.
+    }
+  }
+  return attempts;
+}
+
+function buildInvocation({
+  jobId,
+  mode,
+  cwd,
+  workspaceRoot,
+  binary,
+  model,
+  scope,
+  scopeBase,
+  scopePaths,
+  userPrompt,
+  startedAt,
+  previousSourceAttempt = null,
+  reviewSlotPriorAttempts = [],
+  resendConfirmationApproved = false,
+  reviewSlotFields = {},
+  sourcePacketOverrideFields = {},
+}) {
   return {
     job_id: jobId,
     target: "agy",
@@ -322,14 +604,30 @@ function buildInvocation({ jobId, mode, cwd, workspaceRoot, binary, model, scope
     review_prompt_provider: PROVIDER_DISPLAY,
     schema_spec: null,
     binary,
+    selected_route: "companion_cli",
+    route_step: "agy_print",
+    route_steps: null,
+    fallback_reason: null,
+    selected_auth_path: null,
+    billing_path: null,
+    source_send_approval_required: false,
+    source_send_approval_state: "not_required",
+    previous_source_attempt: previousSourceAttempt,
+    review_slot_prior_attempts: reviewSlotPriorAttempts,
+    resend_confirmation_approved: resendConfirmationApproved,
+    resume_without_source_resend: false,
+    ...reviewSlotFields,
+    ...sourcePacketOverrideFields,
     started_at: startedAt,
   };
 }
 
-function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, result, status, errorCode }) {
+function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, result, status, errorCode, pidInfo = null }) {
+  const sourceContentTransmission = sourceContentTransmissionForExecution({ status, errorCode, pidInfo });
   return buildReviewAuditManifest({
     prompt: promptText,
     sourceFiles: selectedFiles,
+    git: gitIdentityForInvocation(invocation),
     request: {
       provider: "agy",
       model: invocation.model,
@@ -351,14 +649,72 @@ function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, 
     route: {
       providerId: "agy",
       mode: invocation.mode,
-      selectedRoute: "companion_cli",
-      routeStep: "agy_print",
-      sourceSendApprovalRequired: false,
+      selectedRoute: invocation.selected_route ?? null,
+      routeStep: invocation.route_step ?? null,
+      routeSteps: invocation.route_steps ?? null,
+      fallbackReason: invocation.fallback_reason ?? null,
+      authPath: invocation.selected_auth_path ?? null,
+      billingPath: invocation.billing_path ?? null,
+      sourceBearing: modeSendsSelectedSource(invocation.mode),
+      sourceContentTransmission,
+      sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
+      sourceSendApprovalState: invocation.source_send_approval_state ?? null,
+      providerCapabilities: ROUTE_CAPABILITIES,
+      previousAttempt: invocation.previous_source_attempt ?? null,
+      resendConfirmationApproved: invocation.resend_confirmation_approved === true,
+      resumeWithoutSourceResend: invocation.resume_without_source_resend === true,
+      ...reviewSlotRouteFields(invocation),
+      ...sourcePacketOverrideRouteFields(invocation),
     },
     result,
     status,
     errorCode,
   });
+}
+
+function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
+  const selectedFiles = auditSourceFilesForPrompt(prompt, containmentPath);
+  const preflightManifest = buildAuditManifest({
+    promptText: prompt,
+    selectedFiles,
+    timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+    invocation,
+    result: "",
+    status: "preflight_failed",
+    errorCode: null,
+  });
+  const policy = preflightManifest?.source_packet_policy ?? null;
+  if (!policy || policy.source_send_allowed !== false) return null;
+  const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
+  const execution = {
+    preflight: true,
+    exitCode: null,
+    parsed: null,
+    pidInfo: null,
+    agySessionId: null,
+    stdout: "",
+    stderr: "",
+    errorMessage: `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`,
+    runtimeDiagnostics: {
+      source_packet_policy: policy,
+      packet_recovery: preflightManifest.packet_recovery ?? null,
+    },
+  };
+  execution.reviewAuditManifest = buildAuditManifest({
+    promptText: prompt,
+    selectedFiles,
+    timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+    invocation,
+    result: "",
+    status: "failed",
+    errorCode,
+    pidInfo: null,
+  });
+  execution.runtimeDiagnostics = {
+    source_packet_policy: execution.reviewAuditManifest.source_packet_policy,
+    packet_recovery: execution.reviewAuditManifest.packet_recovery ?? null,
+  };
+  return execution;
 }
 
 function persistRecord(workspaceRoot, record) {
@@ -389,6 +745,7 @@ function writeRunningRecord(invocation, pidInfo, mutations, { promptText, select
     result: "",
     status: "running",
     errorCode: null,
+    pidInfo,
   });
   const record = buildJobRecord(
     invocation,
@@ -590,13 +947,18 @@ async function run(rest) {
     valueOptions: [
       "mode", "model", "cwd", "binary", "scope", "scope-base", "scope-paths",
       "timeout-ms", "lifecycle-events",
+      "review-slot-disposition", "review-slot-waiver-artifact", "review-slot-override-artifact",
+      "prompt-file",
     ],
-    booleanOptions: ["foreground", "background"],
+    booleanOptions: ["foreground", "background", "resend-confirmation-approved", "allow-large-source-packet"],
   });
   const mode = options.mode;
   if (!["review", "adversarial-review", "custom-review"].includes(mode)) {
     printJson({ target: "agy", status: "failed", error_code: "bad_mode", source_content_transmission: "not_sent" });
     process.exit(1);
+  }
+  if (options.background) {
+    fail("bad_args", "AGY is foreground-only; --background is unsupported");
   }
   const cwd = commandCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
@@ -607,7 +969,8 @@ async function run(rest) {
   const lifecycleEvents = parseLifecycleEventsMode(options["lifecycle-events"]);
   const jobId = randomUUID();
   const startedAt = new Date().toISOString();
-  const userPrompt = positionals.join(" ").trim();
+  const userPrompt = promptFromOptions(positionals, options);
+  const reviewSlotPriorAttempts = collectPriorReviewSlotAttempts(workspaceRoot, jobId);
   const {
     scope,
     scopeBase: resolvedScopeBase,
@@ -629,10 +992,27 @@ async function run(rest) {
     scopeBase: resolvedScopeBase,
     scopePaths: resolvedScopePaths,
     userPrompt,
+    previousSourceAttempt: latestSourcePacketPreviousAttempt(reviewSlotPriorAttempts),
+    reviewSlotPriorAttempts,
+    resendConfirmationApproved: options["resend-confirmation-approved"] === true,
+    reviewSlotFields: reviewSlotInvocationFields(options),
+    sourcePacketOverrideFields: sourcePacketOverrideInvocationFields(options),
     startedAt,
   });
   const profile = profileForScope(mode, scope);
   const queuedRecord = buildJobRecord(invocation, null, []);
+  writeRuntimeOptionsSidecar(workspaceRoot, jobId, {
+    timeout_ms: timeoutMs,
+    previous_source_attempt: invocation.previous_source_attempt,
+    review_slot_prior_attempts: invocation.review_slot_prior_attempts,
+    resend_confirmation_approved: invocation.resend_confirmation_approved,
+    resume_without_source_resend: invocation.resume_without_source_resend,
+    review_slot_disposition: invocation.review_slot_disposition,
+    review_slot_waiver_artifact: invocation.review_slot_waiver_artifact,
+    review_slot_override_artifact: invocation.review_slot_override_artifact,
+    source_packet_override_approved: invocation.source_packet_override_approved,
+    source_packet_override_source: invocation.source_packet_override_source,
+  });
   persistRecord(invocation.workspace_root, queuedRecord);
   let containment = null;
   let selectedFiles = [];
@@ -689,22 +1069,6 @@ async function run(rest) {
       timeoutMs,
     });
   }
-  const readinessFailure = agyReadinessPreflight({
-    binary,
-    model: options.model ?? null,
-  });
-  if (readinessFailure) {
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, readinessFailure.code, readinessFailure.error, {
-      promptText: sidecarPrompt,
-      selectedFiles,
-      timeoutMs,
-    });
-  }
-  printLifecycleJson(
-    externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation, null)),
-    lifecycleEvents,
-  );
 
   if (consumeCancelMarker(workspaceRoot, jobId)) {
     const reviewAuditManifest = buildAuditManifest({
@@ -715,6 +1079,7 @@ async function run(rest) {
       result: "",
       status: "cancelled",
       errorCode: null,
+      pidInfo: execution.pidInfo ?? null,
     });
     const cancelledRecord = buildJobRecord(
       invocation,
@@ -734,6 +1099,42 @@ async function run(rest) {
     printLifecycleJson(cancelledRecord, lifecycleEvents);
     process.exit(0);
   }
+
+  const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, sidecarPrompt, containment.path);
+  if (sourcePacketPreflight) {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    const errorRecord = buildJobRecord(invocation, {
+      exitCode: sourcePacketPreflight.exitCode,
+      endedAt: sourcePacketPreflight.endedAt,
+      parsed: sourcePacketPreflight.parsed,
+      pidInfo: null,
+      agySessionId: null,
+      errorMessage: sourcePacketPreflight.errorMessage,
+      reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+      runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
+      ...redactionFieldsForPrompt(sidecarPrompt),
+    }, mutationContext.mutations);
+    persistRecord(invocation.workspace_root, errorRecord);
+    printLifecycleJson(errorRecord, lifecycleEvents);
+    process.exit(2);
+  }
+
+  const readinessFailure = agyReadinessPreflight({
+    binary,
+    model: options.model ?? null,
+  });
+  if (readinessFailure) {
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, readinessFailure.code, readinessFailure.error, {
+      promptText: sidecarPrompt,
+      selectedFiles,
+      timeoutMs,
+    });
+  }
+  printLifecycleJson(
+    externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation, null)),
+    lifecycleEvents,
+  );
 
   let execution;
   try {
@@ -820,6 +1221,7 @@ async function run(rest) {
     result: preliminarilyCompleted ? (parsed.result ?? "") : "",
     status: recordStatus,
     errorCode: recordErrorCode,
+    pidInfo: execution.pidInfo ?? null,
   });
   let postRunPolicyError = null;
   try {
@@ -862,6 +1264,7 @@ async function run(rest) {
       result: "",
       status: recordStatus,
       errorCode: recordErrorCode,
+      pidInfo: execution.pidInfo ?? null,
     });
     reviewAuditManifest = withMutationReviewFailure(reviewAuditManifest, mutationContext.mutations);
   }
@@ -1018,6 +1421,10 @@ async function main() {
   }
   if (command === "run") {
     await run(rest);
+    return;
+  }
+  if (command === "continue") {
+    fail("bad_args", "AGY continue/resume is unsupported; start a new foreground run instead", { target: "agy" });
     return;
   }
   if (command === "status") {

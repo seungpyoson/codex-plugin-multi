@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,7 +54,7 @@ function writeAgyCaptureMock(dir) {
     "const addDirReal = addDir ? realpathSync.native(addDir) : null;",
     "const promptIndex = args.indexOf('--print');",
     "const prompt = promptIndex >= 0 ? args[promptIndex + 1] : '';",
-    "if (process.env.AGY_CAPTURE_OUT) writeFileSync(process.env.AGY_CAPTURE_OUT, JSON.stringify({ cwd: process.cwd(), addDir, addDirReal, args }) + '\\n');",
+    "if (process.env.AGY_CAPTURE_OUT) writeFileSync(process.env.AGY_CAPTURE_OUT, JSON.stringify({ cwd: process.cwd(), addDir, addDirReal, args, prompt }) + '\\n');",
     "const file = /BEGIN AGY FILE \\d+: ([^\\n]+)/.exec(prompt)?.[1] || 'selected source';",
     "console.log('Verdict: APPROVE');",
     "console.log('Blocking findings');",
@@ -137,6 +137,101 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
     },
   });
   return { ...result, dataDir };
+}
+
+function firstWorkspaceJobsDir(dataDir) {
+  const stateRoot = path.join(dataDir, "state");
+  const workspaceDirs = readdirSync(stateRoot);
+  assert.equal(workspaceDirs.length, 1, `expected one state workspace, got ${workspaceDirs.join(",")}`);
+  return path.join(stateRoot, workspaceDirs[0], "jobs");
+}
+
+function readOnlyJobRecord(dataDir) {
+  const jobsDir = firstWorkspaceJobsDir(dataDir);
+  const records = [];
+  for (const entry of readdirSync(jobsDir)) {
+    if (!entry.endsWith(".json")) continue;
+    const metaPath = path.join(jobsDir, entry);
+    records.push({ metaPath, record: JSON.parse(readFileSync(metaPath, "utf8")) });
+  }
+  assert.equal(records.length, 1, `expected exactly one JobRecord, got ${records.length}`);
+  return records[0];
+}
+
+function writePriorSourceSentFailure(dataDir, cwd, selectedPath = "selected.txt") {
+  const jobsDir = firstWorkspaceJobsDir(dataDir);
+  const jobId = "11111111-2222-4333-8444-555555555555";
+  writeFileSync(path.join(jobsDir, `${jobId}.json`), JSON.stringify({
+    id: jobId,
+    job_id: jobId,
+    target: "agy",
+    parent_job_id: null,
+    agy_session_id: null,
+    resume_chain: [],
+    mode: "custom-review",
+    mode_profile_name: "custom-review",
+    model: null,
+    cwd,
+    workspace_root: cwd,
+    containment: "worktree",
+    scope: "custom",
+    dispose_effective: true,
+    scope_base: null,
+    scope_paths: [selectedPath],
+    prompt_head: "prior failed review",
+    review_metadata: {
+      prompt_contract_version: "2026-05-19",
+      prompt_provider: "Google Antigravity CLI",
+      scope: "custom",
+      scope_base: null,
+      scope_paths: [selectedPath],
+      raw_output: null,
+      audit_manifest: {
+        selected_source: {
+          files: [{
+            path: selectedPath,
+            bytes: 21,
+            lines: 1,
+            content_hash: { algorithm: "sha256", value: "a87ab19afe98a324e4a064637918156df9420745d2b2d2960307698bb405a000" },
+          }],
+          totals: { files: 1, bytes: 21, lines: 1 },
+        },
+        source_content_transmission: "sent",
+        review_slot: {
+          retry_fingerprint: "agy-same-packet-retry",
+          source_state: "sent",
+          verdict: "failed",
+          not_counted_reason: null,
+        },
+        review_quality: {
+          failed_review_slot: true,
+          semantic_failure_reasons: [],
+        },
+        error_code: "review_not_completed",
+      },
+    },
+    schema_spec: null,
+    binary: "agy-mock",
+    status: "failed",
+    started_at: "2026-06-01T00:00:00.000Z",
+    ended_at: "2026-06-01T00:00:01.000Z",
+    exit_code: 1,
+    error_code: "review_not_completed",
+    error_message: "prior failed after source send",
+    external_review: {
+      source_content_transmission: "sent",
+      review_slot: {
+        retry_fingerprint: "agy-same-packet-retry",
+        source_state: "sent",
+        verdict: "failed",
+        not_counted_reason: null,
+      },
+    },
+    runtime_diagnostics: null,
+    result: null,
+    mutations: [],
+    schema_version: 10,
+  }, null, 2));
 }
 
 test("agy doctor uses a mocked source-free binary and reports readiness without source transmission", () => {
@@ -285,6 +380,220 @@ test("agy custom-review uses explicit scope paths without branch-diff fallback",
     assert.equal(record.review_metadata.audit_manifest.selected_source.files.length, 1);
     assert.equal(record.review_metadata.audit_manifest.selected_source.files[0].path, "selected.txt");
     assert.doesNotMatch(stdout + stderr, /unselected source body/i);
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy custom-review rejects over-budget source packets before AGY launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-over-budget-cwd-"));
+  const binary = writeAgyCaptureMock(cwd);
+  const capturePath = path.join(cwd, "agy-capture.json");
+  const largePath = path.join(cwd, "large.txt");
+  writeFileSync(largePath, `${"x".repeat((256 * 1024) + 4096)}\n`, "utf8");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-paths", "large.txt", "--", "review large packet"],
+    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: ${stderr}\n${stdout}`);
+    assert.equal(existsSync(capturePath), false, "AGY mock must not spawn for blocked source packet");
+    const events = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(events.some((event) => event.event === "external_review_launched"), false);
+    assert.equal(events.length, 1);
+    const record = events[0];
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "source_packet_too_large");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    const policy = record.runtime_diagnostics?.source_packet_policy;
+    assert.ok(policy, "source packet policy diagnostic must be present");
+    assert.equal(policy.source_send_allowed, false);
+    assert.equal(policy.source_packet_policy_error_code, "source_packet_too_large");
+    assert.equal(policy.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.packet_recovery.reason, "source_packet_too_large");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy run reads prompt text from --prompt-file instead of treating the flag as focus", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-prompt-file-cwd-"));
+  const binary = writeAgyCaptureMock(cwd);
+  const capturePath = path.join(cwd, "agy-capture.json");
+  const promptFile = path.join(cwd, "prompt.txt");
+  writeFileSync(path.join(cwd, "selected.txt"), "selected source body\n", "utf8");
+  writeFileSync(promptFile, "AGY_PROMPT_FILE_SENTINEL\n", { mode: 0o600 });
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt", "--prompt-file", promptFile],
+    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}\n${stdout}`);
+    const capture = JSON.parse(readFileSync(capturePath, "utf8"));
+    assert.match(capture.prompt, /AGY_PROMPT_FILE_SENTINEL/);
+    assert.doesNotMatch(capture.prompt, /--prompt-file/);
+    assert.doesNotMatch(capture.prompt, new RegExp(promptFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy run rejects prompt-file mixed with positional prompt text", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-prompt-file-positional-cwd-"));
+  const binary = writeAgyMock(cwd);
+  const promptFile = path.join(cwd, "prompt.txt");
+  writeFileSync(promptFile, "file prompt\n", { mode: 0o600 });
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode", "review", "--foreground", "--binary", binary, "--cwd", cwd,
+     "--prompt-file", promptFile, "--", "positional prompt"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 1);
+    const record = JSON.parse(stdout);
+    assert.equal(record.error_code, "bad_args");
+    assert.match(record.error_message, /either with --prompt-file or after -- separator/);
+    assert.equal(record.source_content_transmission, "not_sent");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy run rejects empty or unreadable prompt-file before source transmission", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-prompt-file-bad-cwd-"));
+  const binary = writeAgyMock(cwd);
+  const emptyFile = path.join(cwd, "empty-prompt.txt");
+  const missingFile = path.join(cwd, "missing-prompt.txt");
+  writeFileSync(emptyFile, "\n", { mode: 0o600 });
+  const cases = [
+    {
+      promptFile: emptyFile,
+      pattern: /must contain a non-empty prompt/,
+    },
+    {
+      promptFile: missingFile,
+      pattern: /could not read --prompt-file/,
+    },
+  ];
+  try {
+    for (const { promptFile, pattern } of cases) {
+      const { stdout, status, dataDir } = runCompanion(
+        ["run", "--mode", "review", "--foreground", "--binary", binary, "--cwd", cwd, "--prompt-file", promptFile],
+        { cwd },
+      );
+      try {
+        assert.equal(status, 1);
+        const record = JSON.parse(stdout);
+        assert.equal(record.error_code, "bad_args");
+        assert.match(record.error_message, pattern);
+        assert.equal(record.source_content_transmission, "not_sent");
+      } finally {
+        rmTree(dataDir);
+      }
+    }
+  } finally {
+    rmTree(cwd);
+  }
+});
+
+test("agy custom-review blocks same-packet resend after a failed source-sent slot until confirmed", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-resend-cwd-"));
+  const binary = writeAgyCaptureMock(cwd);
+  const capturePath = path.join(cwd, "agy-resend-capture.json");
+  const dataDir = mkdtempSync(path.join(tmpdir(), "agy-resend-data-"));
+  writeFileSync(path.join(cwd, "selected.txt"), "selected source body\n", "utf8");
+  const first = runCompanion(
+    ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt", "--", "seed queued record"],
+    { cwd, dataDir, env: { AGY_CAPTURE_OUT: capturePath } },
+  );
+  try {
+    assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
+    writePriorSourceSentFailure(dataDir, cwd);
+    rmSync(capturePath, { force: true });
+
+    const blocked = runCompanion(
+      ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+       "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt", "--", "retry same packet"],
+      { cwd, dataDir, env: { AGY_CAPTURE_OUT: capturePath } },
+    );
+    assert.equal(blocked.status, 2, `exit ${blocked.status}: ${blocked.stderr}\n${blocked.stdout}`);
+    assert.equal(existsSync(capturePath), false, "blocked resend must not spawn AGY");
+    const blockedRecord = blocked.stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    assert.equal(blockedRecord.error_code, "resend_confirmation_required");
+    assert.equal(blockedRecord.external_review.source_content_transmission, "not_sent");
+    assert.equal(
+      blockedRecord.runtime_diagnostics.source_packet_policy.source_packet_action,
+      "resend_confirmation_required",
+    );
+
+    const confirmed = runCompanion(
+      ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+       "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt",
+       "--resend-confirmation-approved", "--", "retry same packet confirmed"],
+      { cwd, dataDir, env: { AGY_CAPTURE_OUT: capturePath } },
+    );
+    assert.equal(confirmed.status, 0, `exit ${confirmed.status}: ${confirmed.stderr}\n${confirmed.stdout}`);
+    const confirmedRecord = confirmed.stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    assert.equal(
+      confirmedRecord.review_metadata.audit_manifest.source_packet_policy.source_packet_action,
+      "send_after_resend_confirmation",
+    );
+    assert.equal(confirmedRecord.external_review.source_content_transmission, "sent");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy custom-review permits explicit large source packet override", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-over-budget-override-cwd-"));
+  const binary = writeAgyCaptureMock(cwd);
+  const capturePath = path.join(cwd, "agy-capture.json");
+  writeFileSync(path.join(cwd, "large.txt"), `${"x".repeat((256 * 1024) + 4096)}\n`, "utf8");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-paths", "large.txt",
+     "--allow-large-source-packet", "--", "review large packet with explicit override"],
+    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}\n${stdout}`);
+    assert.equal(existsSync(capturePath), true, "override should proceed to AGY launch");
+    const record = stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    assert.equal(record.status, "completed");
+    assert.equal(record.external_review.source_content_transmission, "sent");
+    const policy = record.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(policy.source_packet_action, "send_after_source_packet_override");
+    assert.equal(policy.source_packet_override_approved, true);
+    assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
+    assert.equal(policy.source_content_transmission, "may_be_sent");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy run rejects --background as unsupported foreground-only posture", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-background-cwd-"));
+  const binary = writeAgyMock(cwd);
+  const { stdout, status, dataDir } = runCompanion(
+    ["run", "--mode", "review", "--background", "--binary", binary, "--cwd", cwd, "--", "review background rejection"],
+    { cwd },
+  );
+  try {
+    assert.equal(status, 1);
+    const record = JSON.parse(stdout);
+    assert.equal(record.error_code, "bad_args");
+    assert.match(record.error_message, /--background.*unsupported|foreground-only/i);
+    assert.equal(record.source_content_transmission, "not_sent");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

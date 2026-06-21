@@ -6,6 +6,7 @@ export const PROVIDER_POLICY_PROVIDERS = Object.freeze([
   "claude",
   "gemini",
   "kimi",
+  "agy",
   "grok",
   "deepseek",
   "glm",
