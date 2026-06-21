@@ -6,14 +6,19 @@
 //
 // Imports the REAL repo modules. Read-only; writes nothing to repo source.
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "../../..");
+const agyJobRecordPath = path.join(REPO, "plugins/agy/scripts/lib/job-record.mjs");
 
-const { buildJobRecord } = await import(
-  path.join(REPO, "plugins/agy/scripts/lib/job-record.mjs")
-);
+if (!existsSync(agyJobRecordPath)) {
+  console.log("SKIPPED: requires AGY plugin (PR #218) — not present on this branch");
+  process.exit(0);
+}
+
+const { buildJobRecord } = await import(agyJobRecordPath);
 
 // Minimal valid invocation satisfying assertInvocation's required-field list.
 function makeInvocation() {

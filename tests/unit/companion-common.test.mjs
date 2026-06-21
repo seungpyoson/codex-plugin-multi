@@ -237,6 +237,39 @@ test("shared companion helpers cover small provider-agnostic behavior", () => {
   assert.match(cancelNoPidInfoSuggestedAction(), /verify process ownership/);
 });
 
+test("shared companion lifecycle markdown terminal output includes completed review findings", () => {
+  const sentinel = "ORCH1_RENDER_BOUNDARY_SENTINEL_FINDING";
+  let out = "";
+  printLifecycleJson({
+    id: "job-markdown-findings",
+    job_id: "job-markdown-findings",
+    target: "claude",
+    provider: "Claude Code",
+    mode: "review",
+    cwd: "/tmp/markdown-findings-workspace",
+    workspace_root: "/tmp/markdown-findings-workspace",
+    status: "completed",
+    result: `Verdict: REQUEST_CHANGES\n\nBlocking findings\n- ${sentinel}`,
+    external_review: {
+      marker: "EXTERNAL REVIEW",
+      provider: "Claude Code",
+      run_kind: "foreground",
+      job_id: "job-markdown-findings",
+      session_id: "session-markdown-findings",
+      parent_job_id: null,
+      mode: "review",
+      scope: "custom",
+      scope_base: "/tmp/markdown-findings-workspace",
+      scope_paths: ["src/auth.js"],
+      source_content_transmission: "sent",
+      disclosure: "Selected source content was sent to Claude Code for external review.",
+    },
+  }, "markdown", { write: (chunk) => { out += chunk; } });
+
+  assert.match(out, /^### EXTERNAL REVIEW/m);
+  assert.match(out, new RegExp(sentinel));
+});
+
 test("shared companion lifecycle jsonl terminal output is redacted projection", () => {
   let out = "";
   printLifecycleJson({

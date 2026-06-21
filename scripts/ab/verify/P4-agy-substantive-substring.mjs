@@ -15,12 +15,17 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
 const reviewPromptPath = resolve(repoRoot, "plugins/agy/scripts/lib/review-prompt.mjs");
 const agyCompanionPath = resolve(repoRoot, "plugins/agy/scripts/agy-companion.mjs");
+
+if (!existsSync(reviewPromptPath) || !existsSync(agyCompanionPath)) {
+  console.log("SKIPPED: requires AGY plugin (PR #218) — not present on this branch");
+  process.exit(0);
+}
 
 const { buildReviewAuditManifest } = await import(reviewPromptPath);
 

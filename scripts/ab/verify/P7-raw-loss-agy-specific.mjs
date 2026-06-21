@@ -12,9 +12,15 @@
 // buildJobRecord and inspect the persisted `result`. Separately, check whether each
 // provider's companion writes stdout.log/stderr.log sidecars (the recovery path).
 
-import { buildJobRecord as buildAgyRecord } from "../../../plugins/agy/scripts/lib/job-record.mjs";
 import { buildJobRecord as buildGeminiRecord } from "../../../plugins/gemini/scripts/lib/job-record.mjs";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+
+const agyJobRecordUrl = new URL("../../../plugins/agy/scripts/lib/job-record.mjs", import.meta.url);
+if (!existsSync(agyJobRecordUrl)) {
+  console.log("SKIPPED: requires AGY plugin (PR #218) — not present on this branch");
+  process.exit(0);
+}
+const { buildJobRecord: buildAgyRecord } = await import(agyJobRecordUrl);
 
 const C = (s) => `\x1b[36m${s}\x1b[0m`;
 function line() { console.log("-".repeat(72)); }

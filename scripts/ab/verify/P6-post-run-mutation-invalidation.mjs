@@ -10,7 +10,7 @@
 // recordPostRunMutations() set-difference, and runs the REAL withMutationReviewFailure()
 // source extracted verbatim from agy-companion.mjs at HEAD. It then asserts the outcome.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -18,6 +18,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..", "..");
 const agyCompanionPath = join(repoRoot, "relay", "relay-agy", "scripts", "agy-companion.mjs");
 const companionCommonPath = join(repoRoot, "relay", "relay-agy", "scripts", "lib", "companion-common.mjs");
+if (!existsSync(companionCommonPath) || !existsSync(agyCompanionPath)) {
+  console.log("SKIPPED: requires AGY plugin (PR #218) — not present on this branch");
+  process.exit(0);
+}
 
 // 1. Import the REAL gitStatusLines (no top-level side effects in companion-common).
 const { gitStatusLines } = await import(companionCommonPath);

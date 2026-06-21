@@ -11,7 +11,7 @@
 //       extracted live from the source file (not hand-copied), on the same review.
 // For control, it also runs APPROVE and REQUEST_CHANGES through both paths.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { buildReviewSlotDisposition } from "../../lib/provider-route-policy.mjs";
@@ -21,6 +21,10 @@ const repoRoot = resolve(__dirname, "../../..");
 
 // --- (B) Extract the REAL hasSubstantiveReview regex literal from companion source ---
 const companionPath = resolve(repoRoot, "plugins/agy/scripts/agy-companion.mjs");
+if (!existsSync(companionPath)) {
+  console.log("SKIPPED: requires AGY plugin (PR #218) — not present on this branch");
+  process.exit(0);
+}
 const companionSrc = readFileSync(companionPath, "utf8");
 // Grab the body of `function hasSubstantiveReview(text) { ... }`
 const fnStart = companionSrc.indexOf("function hasSubstantiveReview");

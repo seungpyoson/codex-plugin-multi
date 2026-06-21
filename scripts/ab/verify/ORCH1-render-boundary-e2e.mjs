@@ -1,19 +1,17 @@
 // ORCH-1 end-to-end render-boundary proof (model-independent).
 //
 // CLAIM: on a COMPLETED foreground `--lifecycle-events markdown` review run, the
-// terminal stdout the orchestrator receives is a metadata card that does NOT
-// contain the model's findings. The findings live on record.result and are only
-// reachable via a separate `result --job`. So an orchestrator faithfully
-// rendering the card it receives can report a real, finding-bearing review as
-// "no findings produced."
+// terminal stdout the orchestrator receives must include both the metadata card
+// and the model's findings from record.result. This guards against regressions
+// where an orchestrator faithfully rendering the foreground markdown stdout
+// reports a real, finding-bearing review as "no findings produced."
 //
 // This drives the REAL emission code (printLifecycleJson markdown ->
-// renderLifecycleMarkdown) on a REAL completed record built by the REAL
-// buildJobRecord. The render path is model-independent, so no live model / AGY
-// auth is needed to observe exactly what the orchestrator's stdout would be.
+// renderLifecycleMarkdown) through the shared render path and asserts the fix.
+// The render path is model-independent, so no live model / provider auth is
+// needed to observe exactly what the orchestrator's stdout would be.
 
-import { buildJobRecord } from "../../../plugins/agy/scripts/lib/job-record.mjs";
-import { printLifecycleJson, renderLifecycleMarkdown } from "../../../plugins/agy/scripts/lib/companion-common.mjs";
+import { printLifecycleJson, renderLifecycleMarkdown } from "../../lib/companion-common.mjs";
 
 const FINDINGS = [
   "Verdict: REQUEST_CHANGES",
@@ -28,37 +26,33 @@ const FINDINGS = [
 
 const SENTINEL = "requireRole(role, user) reversed the argument order"; // unique findings text
 
-function makeInvocation() {
-  return {
-    job_id: "job-ORCH1",
-    target: "agy",
-    mode: "review",
-    mode_profile_name: "default",
-    model: "antigravity",
-    cwd: "/tmp",
-    workspace_root: "/tmp",
-    containment: { kind: "none" },
-    scope: "branch-diff",
-    prompt_head: "review the diff",
-    binary: "/bin/true",
-    started_at: new Date().toISOString(),
+// A COMPLETED terminal record: CLI exited 0 and produced a parsed, ok review with findings.
+const record = {
+  event: "external_review_terminal",
+  id: "job-ORCH1",
+  job_id: "job-ORCH1",
+  target: "agy",
+  provider: "AGY",
+  mode: "review",
+  cwd: "/tmp",
+  workspace_root: "/tmp",
+  status: "completed",
+  result: FINDINGS,
+  external_review: {
+    marker: "EXTERNAL REVIEW",
+    provider: "AGY",
     run_kind: "foreground",
-  };
-}
-
-// A COMPLETED execution: CLI exited 0 and produced a parsed, ok review with findings.
-function makeCompletedExecution() {
-  return {
-    exitCode: 0,
-    endedAt: new Date().toISOString(),
-    stdout: JSON.stringify({ ok: true, result: FINDINGS }),
-    stderr: "",
-    timedOut: false,
-    parsed: { ok: true, result: FINDINGS },
-  };
-}
-
-const record = buildJobRecord(makeInvocation(), makeCompletedExecution(), []);
+    job_id: "job-ORCH1",
+    session_id: "session-ORCH1",
+    parent_job_id: null,
+    mode: "review",
+    scope: "branch-diff",
+    scope_base: "origin/main",
+    scope_paths: null,
+    source_content_transmission: "sent",
+    disclosure: "Selected source content was sent to AGY for external review.",
+  },
+};
 
 console.log("=== the completed record the companion holds ===");
 console.log("  record.status                :", record.status);
@@ -85,8 +79,8 @@ console.log("  record carries the findings (retrievable via result --job):", rec
 console.log("  foreground markdown card CONTAINS the findings            :", cardHasFindings);
 console.log("  renderLifecycleMarkdown returns a card (so fallback skipped):", cardOnly);
 
-const pinned = recordHasFindings && !cardHasFindings && cardOnly;
-console.log("\nRESULT:", pinned
-  ? "PINNED — completed review's findings exist on the record but are DROPPED from the foreground markdown stdout (card only). Orchestrator sees no findings."
-  : "NOT PINNED — findings appeared in the card or record lacked them.");
-process.exit(pinned ? 0 : 1);
+const fixed = recordHasFindings && cardHasFindings && cardOnly;
+console.log("\nRESULT:", fixed
+  ? "FIXED — completed review findings are present in the foreground markdown stdout after the metadata card."
+  : "NOT FIXED — completed review findings are still missing from the foreground markdown stdout.");
+process.exit(fixed ? 0 : 1);
