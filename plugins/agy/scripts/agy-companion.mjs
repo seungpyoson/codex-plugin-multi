@@ -580,6 +580,7 @@ function buildInvocation({
   previousSourceAttempt = null,
   reviewSlotPriorAttempts = [],
   resendConfirmationApproved = false,
+  timeoutMs,
   reviewSlotFields = {},
   sourcePacketOverrideFields = {},
 }) {
@@ -616,6 +617,7 @@ function buildInvocation({
     review_slot_prior_attempts: reviewSlotPriorAttempts,
     resend_confirmation_approved: resendConfirmationApproved,
     resume_without_source_resend: false,
+    timeout_ms: timeoutMs,
     ...reviewSlotFields,
     ...sourcePacketOverrideFields,
     started_at: startedAt,
@@ -695,10 +697,7 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
     stdout: "",
     stderr: "",
     errorMessage: `${errorCode}: ${policy.suggested_action ?? "source packet policy blocked selected source send"}`,
-    runtimeDiagnostics: {
-      source_packet_policy: policy,
-      packet_recovery: preflightManifest.packet_recovery ?? null,
-    },
+    runtimeDiagnostics: sourcePacketRuntimeDiagnosticsForManifest(preflightManifest),
   };
   execution.reviewAuditManifest = buildAuditManifest({
     promptText: prompt,
@@ -710,11 +709,22 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
     errorCode,
     pidInfo: null,
   });
-  execution.runtimeDiagnostics = {
-    source_packet_policy: execution.reviewAuditManifest.source_packet_policy,
-    packet_recovery: execution.reviewAuditManifest.packet_recovery ?? null,
-  };
+  execution.runtimeDiagnostics = sourcePacketRuntimeDiagnosticsForManifest(
+    execution.reviewAuditManifest,
+    execution.runtimeDiagnostics,
+  );
   return execution;
+}
+
+function sourcePacketRuntimeDiagnosticsForManifest(manifest, base = null) {
+  const diagnostics = base && typeof base === "object" ? { ...base } : {};
+  if (manifest?.source_packet_policy && typeof manifest.source_packet_policy === "object") {
+    diagnostics.source_packet_policy = manifest.source_packet_policy;
+  }
+  if (manifest?.packet_recovery && typeof manifest.packet_recovery === "object") {
+    diagnostics.packet_recovery = manifest.packet_recovery;
+  }
+  return Object.keys(diagnostics).length > 0 ? diagnostics : null;
 }
 
 function persistRecord(workspaceRoot, record) {
@@ -995,6 +1005,7 @@ async function run(rest) {
     previousSourceAttempt: latestSourcePacketPreviousAttempt(reviewSlotPriorAttempts),
     reviewSlotPriorAttempts,
     resendConfirmationApproved: options["resend-confirmation-approved"] === true,
+    timeoutMs,
     reviewSlotFields: reviewSlotInvocationFields(options),
     sourcePacketOverrideFields: sourcePacketOverrideInvocationFields(options),
     startedAt,
@@ -1079,7 +1090,7 @@ async function run(rest) {
       result: "",
       status: "cancelled",
       errorCode: null,
-      pidInfo: execution.pidInfo ?? null,
+      pidInfo: null,
     });
     const cancelledRecord = buildJobRecord(
       invocation,
@@ -1272,6 +1283,10 @@ async function run(rest) {
     ...execution,
     parsed,
     reviewAuditManifest,
+    runtimeDiagnostics: sourcePacketRuntimeDiagnosticsForManifest(
+      reviewAuditManifest,
+      execution.runtimeDiagnostics ?? null,
+    ),
     sourceFilesForRedaction: sourceFilesForRedaction(selectedFiles),
     sourceRedactionRequired: true,
   }, mutationContext.mutations);

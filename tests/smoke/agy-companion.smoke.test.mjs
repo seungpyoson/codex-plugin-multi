@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
@@ -62,6 +63,24 @@ function writeAgyCaptureMock(dir) {
     "console.log('- Scope inspected: I reviewed the supplied selected source packet for ' + file + ', including the diff context, file path, and review prompt scope. I checked for source-routing leaks, behavioral regressions, missing tests, and security-sensitive changes. The reviewed evidence was the selected AGY source packet rather than an unrestricted workspace walk.');",
     "console.log('Non-blocking concerns');",
     "console.log('- None. The selected source file ' + file + ' was reviewed for this scope.');",
+    "console.log('- Residual risk: no additional concern was found after checking the selected source packet against the requested mode, scope base, and expected external-review contract.');",
+    "",
+  ].join("\n"));
+}
+
+function writeAgySpawnCountingMock(dir) {
+  return writeExecutable(dir, "agy-spawn-counting-mock", [
+    "#!/usr/bin/env node",
+    "const { appendFileSync } = require('node:fs');",
+    "const args = process.argv.slice(2);",
+    "if (process.env.AGY_SPAWN_COUNT_OUT) appendFileSync(process.env.AGY_SPAWN_COUNT_OUT, JSON.stringify({ args }) + '\\n');",
+    "if (args[0] === 'models') { console.log('verified-local-model'); process.exit(0); }",
+    "console.log('Verdict: APPROVE');",
+    "console.log('Blocking findings');",
+    "console.log('- None. I inspected the selected source and found no blocking issues.');",
+    "console.log('- Scope inspected: I reviewed the supplied selected source packet, including the diff context, file path, and review prompt scope. I checked for source-routing leaks, behavioral regressions, missing tests, and security-sensitive changes.');",
+    "console.log('Non-blocking concerns');",
+    "console.log('- None. The selected source file was reviewed for this scope.');",
     "console.log('- Residual risk: no additional concern was found after checking the selected source packet against the requested mode, scope base, and expected external-review contract.');",
     "",
   ].join("\n"));
@@ -137,6 +156,32 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
     },
   });
   return { ...result, dataDir };
+}
+
+async function waitForOnlyJobRecord(dataDir, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      return readOnlyJobRecord(dataDir);
+    } catch (error) {
+      lastError = error;
+      await sleep(25);
+    }
+  }
+  throw lastError ?? new Error(`timed out waiting for AGY JobRecord under ${dataDir}`);
+}
+
+async function waitForChildClose(closePromise, child, timeoutMs = 5000) {
+  const result = await Promise.race([
+    closePromise,
+    sleep(timeoutMs).then(() => ({ timedOut: true })),
+  ]);
+  if (result?.timedOut) {
+    child.kill("SIGKILL");
+    throw new Error(`timed out waiting for AGY companion child pid ${child.pid}`);
+  }
+  return result;
 }
 
 function firstWorkspaceJobsDir(dataDir) {
@@ -394,7 +439,8 @@ test("agy custom-review rejects over-budget source packets before AGY launch", (
   writeFileSync(largePath, `${"x".repeat((256 * 1024) + 4096)}\n`, "utf8");
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
-     "--binary", binary, "--cwd", cwd, "--scope-paths", "large.txt", "--", "review large packet"],
+     "--binary", binary, "--cwd", cwd, "--scope-paths", "large.txt", "--timeout-ms", "12345",
+     "--", "review large packet"],
     { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
   );
   try {
@@ -412,8 +458,50 @@ test("agy custom-review rejects over-budget source packets before AGY launch", (
     assert.equal(policy.source_send_allowed, false);
     assert.equal(policy.source_packet_policy_error_code, "source_packet_too_large");
     assert.equal(policy.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 12345);
     assert.equal(record.review_metadata.audit_manifest.source_content_transmission, "not_sent");
     assert.equal(record.review_metadata.audit_manifest.packet_recovery.reason, "source_packet_too_large");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy custom-review keeps resume_without_source_resend disabled and continue fail-closed", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-no-resume-resend-cwd-"));
+  const binary = writeAgyCaptureMock(cwd);
+  const capturePath = path.join(cwd, "agy-capture.json");
+  writeFileSync(path.join(cwd, "selected.txt"), "selected source body\n", "utf8");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt",
+     "--resume-without-source-resend", "--", "review with agy no-resend divergence"],
+    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+  );
+  try {
+    assert.equal(status, 0, `exit ${status}: ${stderr}\n${stdout}`);
+    assert.equal(existsSync(capturePath), true, "normal AGY run should still reach the target");
+    const record = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).at(-1);
+    assert.equal(record.status, "completed");
+    const policy = record.review_metadata.audit_manifest.source_packet_policy;
+    assert.equal(policy.resume_without_source_resend, false);
+    assert.notEqual(policy.source_packet_action, "resume_without_source_resend");
+
+    const rejectedContinue = runCompanion(
+      ["continue", "--job", record.job_id, "--cwd", cwd, "--resume-without-source-resend", "--", "continue without source"],
+      { cwd, dataDir },
+    );
+    assert.equal(rejectedContinue.status, 1);
+    const rejected = JSON.parse(rejectedContinue.stdout);
+    assert.equal(rejected.error_code, "bad_args");
+    assert.match(rejected.error_message, /continue|resume|unsupported/i);
+    assert.equal(rejected.source_content_transmission, "not_sent");
+
+    const persisted = readOnlyJobRecord(dataDir).record;
+    assert.equal(
+      persisted.review_metadata.audit_manifest.source_packet_policy.resume_without_source_resend,
+      false,
+    );
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -826,6 +914,112 @@ test("agy timeout returns terminal timeout without retry", () => {
     assert.equal(record.external_review.source_content_transmission, "sent");
     assert.doesNotMatch(stdout + stderr, /foo\\n|\+foo|selected source body/i);
   } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy queued cancel marker exits before target spawn", async () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-pre-spawn-cancel-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "agy-pre-spawn-cancel-data-"));
+  const binary = writeAgySpawnCountingMock(cwd);
+  const countPath = path.join(cwd, "agy-spawn-count.txt");
+  const fifoPath = path.join(cwd, "slow-selected.pipe");
+  const mkfifo = spawnSync("mkfifo", [fifoPath], { encoding: "utf8" });
+  assert.equal(mkfifo.status, 0, mkfifo.stderr);
+
+  let stdout = "";
+  let stderr = "";
+  let closed = false;
+  let unblocked = false;
+  const child = spawn("node", [
+    COMPANION,
+    "run",
+    "--mode",
+    "custom-review",
+    "--foreground",
+    "--lifecycle-events",
+    "jsonl",
+    "--binary",
+    binary,
+    "--cwd",
+    cwd,
+    "--scope-paths",
+    "slow-selected.pipe",
+    "--",
+    "review queued cancel marker",
+  ], {
+    cwd,
+    env: {
+      ...process.env,
+      AGY_PLUGIN_DATA: dataDir,
+      AGY_SPAWN_COUNT_OUT: countPath,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const closePromise = new Promise((resolve) => {
+    child.on("close", (status, signal) => {
+      closed = true;
+      resolve({ status, signal });
+    });
+  });
+
+  try {
+    const { metaPath, record: queuedRecord } = await waitForOnlyJobRecord(dataDir);
+    assert.equal(queuedRecord.status, "queued");
+    assert.equal(queuedRecord.pid_info, null);
+
+    const cancelRes = spawnSync("node", [
+      COMPANION,
+      "cancel",
+      "--job",
+      queuedRecord.job_id,
+      "--cwd",
+      cwd,
+    ], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, AGY_PLUGIN_DATA: dataDir },
+    });
+    assert.equal(cancelRes.status, 0, cancelRes.stderr);
+    assert.deepEqual(JSON.parse(cancelRes.stdout), {
+      ok: true,
+      status: "cancel_pending",
+      job_status: "queued",
+      job_id: queuedRecord.job_id,
+    });
+
+    const writer = spawnSync("sh", [
+      "-c",
+      "printf 'selected source body\\n' > \"$1\"",
+      "sh",
+      fifoPath,
+    ], { encoding: "utf8", timeout: 5000 });
+    unblocked = true;
+    assert.equal(writer.status, 0, writer.stderr || writer.error?.message);
+
+    const childResult = await waitForChildClose(closePromise, child);
+    assert.equal(childResult.status, 0, `exit ${childResult.status} signal ${childResult.signal}: ${stderr}\n${stdout}`);
+    assert.equal(existsSync(countPath), false, "pre-spawn cancel must not invoke AGY readiness or review target");
+    const events = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].status, "cancelled");
+
+    const finalMeta = JSON.parse(readFileSync(metaPath, "utf8"));
+    assert.equal(finalMeta.status, "cancelled");
+    assert.equal(finalMeta.pid_info, null);
+  } finally {
+    if (!unblocked && existsSync(fifoPath)) {
+      spawnSync("sh", ["-c", "printf 'cleanup\\n' > \"$1\"", "sh", fifoPath], { timeout: 1000 });
+    }
+    if (!closed) {
+      child.kill("SIGKILL");
+      await waitForChildClose(closePromise, child, 1000).catch(() => {});
+    }
     rmTree(dataDir);
     rmTree(cwd);
   }

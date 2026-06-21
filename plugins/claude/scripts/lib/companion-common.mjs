@@ -254,15 +254,29 @@ function reviewMetadataProjection(obj) {
     "rendered_prompt_hash",
     "selected_source",
     "scope_resolution",
+    "request",
     "selected_route",
     "fallback_reason",
     "approval_scope",
+    "source_content_transmission",
     "source_send_approval_required",
     "source_send_approval_state",
+    "source_packet_policy",
+    "packet_recovery",
   ]) {
     if (manifest[key] !== undefined) projection[key] = manifest[key];
   }
   return Object.keys(projection).length > 0 ? { audit_manifest: projection } : null;
+}
+
+function runtimeDiagnosticsProjection(obj) {
+  const diagnostics = obj?.runtime_diagnostics;
+  if (!diagnostics || typeof diagnostics !== "object") return null;
+  const projection = {};
+  for (const key of ["source_packet_policy", "packet_recovery"]) {
+    if (diagnostics[key] !== undefined) projection[key] = diagnostics[key];
+  }
+  return Object.keys(projection).length > 0 ? projection : null;
 }
 
 function terminalLifecycleProjection(obj) {
@@ -301,6 +315,8 @@ function terminalLifecycleProjection(obj) {
   }
   const reviewMetadata = reviewMetadataProjection(obj);
   if (reviewMetadata) projection.review_metadata = reviewMetadata;
+  const runtimeDiagnostics = runtimeDiagnosticsProjection(obj);
+  if (runtimeDiagnostics) projection.runtime_diagnostics = runtimeDiagnostics;
   return projection;
 }
 

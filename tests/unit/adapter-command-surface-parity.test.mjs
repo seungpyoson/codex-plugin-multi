@@ -10,21 +10,32 @@ function readRepoFile(rel) {
   return readFileSync(path.join(REPO_ROOT, rel), "utf8");
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function functionBlock(source, name) {
-  const start = source.indexOf(`function ${name}`);
-  const asyncStart = source.indexOf(`async function ${name}`);
-  const index = start === -1 ? asyncStart : (asyncStart === -1 ? start : Math.min(start, asyncStart));
-  assert.notEqual(index, -1, `missing function ${name}`);
-  const next = source.indexOf("\nfunction ", index + 1);
-  const nextAsync = source.indexOf("\nasync function ", index + 1);
-  const candidates = [next, nextAsync].filter((value) => value !== -1);
-  const end = candidates.length > 0 ? Math.min(...candidates) : source.length;
+  const pattern = new RegExp(`(^|\\n)(?:async\\s+)?function\\s+${escapeRegExp(name)}\\s*\\(`);
+  const match = pattern.exec(source);
+  assert.ok(match, `missing function ${name}`);
+  const index = match.index + (match[1] === "\n" ? 1 : 0);
+  const nextFunctionPattern = /\n(?:async\s+)?function\s+[$A-Z_a-z][$\w]*\s*\(/g;
+  nextFunctionPattern.lastIndex = index + 1;
+  const next = nextFunctionPattern.exec(source);
+  const end = next ? next.index : source.length;
   return source.slice(index, end);
+}
+
+function commandPolicyBlock(source, name) {
+  const block = functionBlock(source, name);
+  return /\bcommonRunOptions\s*\(/.test(block)
+    ? `${block}\n${functionBlock(source, "commonRunOptions")}`
+    : block;
 }
 
 function assertContainsAll(haystack, needles, label) {
   for (const needle of needles) {
-    assert.match(haystack, new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `${label}: missing ${needle}`);
+    assert.match(haystack, new RegExp(escapeRegExp(needle)), `${label}: missing ${needle}`);
   }
 }
 
@@ -103,7 +114,7 @@ test("companion adapters wire source-packet route fields and command policy flag
     assert.match(source, /latestSourcePacketPreviousAttempt/, `${adapter.provider}: missing prior source attempt collection`);
     assert.match(source, /review_slot_prior_attempts/, `${adapter.provider}: missing review slot prior attempts`);
 
-    const runBlock = functionBlock(source, adapter.runFunction);
+    const runBlock = commandPolicyBlock(source, adapter.runFunction);
     assertContainsAll(runBlock, RUN_POLICY_FLAGS, `${adapter.provider} run`);
     if (adapter.supportsPromptFile) {
       assertContainsAll(runBlock, ["prompt-file"], `${adapter.provider} run`);
@@ -116,7 +127,7 @@ test("companion adapters wire source-packet route fields and command policy flag
     }
 
     if (adapter.supportsContinue) {
-      const continueBlock = functionBlock(source, adapter.continueFunction);
+      const continueBlock = commandPolicyBlock(source, adapter.continueFunction);
       assertContainsAll(continueBlock, CONTINUE_POLICY_FLAGS, `${adapter.provider} continue`);
     } else {
       assert.match(source, /command === "continue"[\s\S]*fail\("bad_args"/, `${adapter.provider}: unsupported continue must be explicit`);
