@@ -70,6 +70,11 @@
       "branches": 0,
       "functions": 0
     },
+    "plugins/api-reviewers/scripts/lib/process-identity.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
     "plugins/api-reviewers/scripts/lib/git-env.mjs": {
       "lines": 100,
       "branches": 100,
@@ -221,6 +226,11 @@
       "functions": 0
     },
     "plugins/claude/scripts/lib/review-workload.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/claude/scripts/lib/process-identity.mjs": {
       "lines": 0,
       "branches": 0,
       "functions": 0
@@ -380,6 +390,11 @@
       "branches": 0,
       "functions": 0
     },
+    "plugins/gemini/scripts/lib/process-identity.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
     "plugins/gemini/scripts/lib/time.mjs": {
       "lines": 100,
       "branches": 100,
@@ -476,6 +491,11 @@
       "functions": 0
     },
     "plugins/grok/scripts/lib/review-workload.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/grok/scripts/lib/process-identity.mjs": {
       "lines": 0,
       "branches": 0,
       "functions": 0
@@ -621,6 +641,11 @@
       "functions": 0
     },
     "plugins/kimi/scripts/lib/review-workload.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/kimi/scripts/lib/process-identity.mjs": {
       "lines": 0,
       "branches": 0,
       "functions": 0
