@@ -207,7 +207,8 @@ test("provider-specific external model contracts keep mechanical safety clauses"
   assert.match(docs, /grok2api/);
   assert.match(docs, /UV_CACHE_DIR/);
   assert.match(docs, /tunnel_start\.error_code/);
-  assert.match(docs, /--max-steps-per-turn N[\s\S]*`N` must be a positive integer/);
+  // kimi-code 0.18.0 has no --max-steps-per-turn flag; the kimi contract no
+  // longer advertises it (hasMaxSteps removed), so no provider renders that hint.
   assert.match(docs, /--auth-mode subscription/);
   assert.match(docs, /Do not print raw OAuth tokens, API-key values, session cookies, tunnel API keys, bearer tokens, or raw secret values/);
 

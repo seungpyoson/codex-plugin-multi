@@ -6,6 +6,12 @@ const DEFAULT_GROK2API_ADMIN_KEY = "grok2api";
 const DEFAULT_WEB_MODEL = "grok-4.20-fast";
 const DEFAULT_CLI_MODEL = "grok-build";
 const DEFAULT_TIMEOUT_MS = 900000;
+// Short bound for the source-free readiness probe we run when persisted auth
+// shows an expired cached access-token exp but the live `grok models` confirmed
+// a working session. It must stay far below the full review timeout (900s) so a
+// session that nonetheless stalls on interactive OAuth fails fast rather than
+// reintroducing the multi-minute hang #187 eliminated (see #190, #223).
+const DEFAULT_REFRESH_PROBE_TIMEOUT_MS = 30000;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 2000;
 const DEFAULT_CHAT_DOCTOR_TIMEOUT_MS = 10000;
 const DEFAULT_TUNNEL_START_TIMEOUT_MS = 8000;
@@ -80,11 +86,13 @@ function cliConfig(options = {}, env = process.env) {
     base_url: null,
     model: env.GROK_CLI_MODEL || DEFAULT_CLI_MODEL,
     timeout_ms: parsePositiveIntegerEnv(env, "GROK_CLI_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
+    refresh_probe_timeout_ms: parsePositiveIntegerEnv(env, "GROK_CLI_REFRESH_PROBE_TIMEOUT_MS", DEFAULT_REFRESH_PROBE_TIMEOUT_MS),
     max_prompt_chars: parsePositiveIntegerEnv(env, "GROK_CLI_MAX_PROMPT_CHARS", DEFAULT_MAX_PROMPT_CHARS, "character count"),
     max_turns: parsePositiveIntegerEnv(env, "GROK_CLI_MAX_TURNS", DEFAULT_CLI_MAX_TURNS, "turn count"),
     prompt_budget_env: "GROK_CLI_MAX_PROMPT_CHARS",
     default_model_env: "GROK_CLI_MODEL",
     timeout_env: "GROK_CLI_TIMEOUT_MS",
+    refresh_probe_timeout_env: "GROK_CLI_REFRESH_PROBE_TIMEOUT_MS",
     legacy: false,
     credential_ref: null,
     credential_value: null,
@@ -95,6 +103,7 @@ function cliConfig(options = {}, env = process.env) {
 function cliFallbackConfig(options = {}, env = process.env) {
   return cliConfig(options, envWithoutKeys(env, [
     "GROK_CLI_TIMEOUT_MS",
+    "GROK_CLI_REFRESH_PROBE_TIMEOUT_MS",
     "GROK_CLI_MAX_PROMPT_CHARS",
     "GROK_CLI_MAX_TURNS",
   ]));

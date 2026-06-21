@@ -1,6 +1,7 @@
 import { externalModelFailureClass } from "./external-model-failure-catalog.mjs";
 import { reviewQualityFailureState } from "./external-model-review-quality.mjs";
 import { PROVIDER_WORKLOAD_BLOCKED_CODE } from "./review-workload.mjs";
+import { PRE_TARGET_NOT_SENT_ERROR_CODES } from "./external-review.mjs";
 
 const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
@@ -181,6 +182,38 @@ export function classifyCommonParsedFailure(parsed) {
     return {
       status: "failed",
       error_code: "step_limit_exceeded",
+      error_message: parsed.error ?? reason,
+    };
+  }
+  if (reason === "prompt_too_large") {
+    return {
+      status: "failed",
+      error_code: "prompt_too_large",
+      error_message: parsed.error ?? reason,
+    };
+  }
+  if (reason === "cli_contract_mismatch") {
+    return {
+      status: "failed",
+      error_code: "cli_contract_mismatch",
+      error_message: parsed.error ?? reason,
+    };
+  }
+  // Pre-target readiness failures whose reason is itself a member of
+  // PRE_TARGET_NOT_SENT_ERROR_CODES — the source never reached the model. Surface
+  // the reason verbatim as the error_code so source-content-transmission resolves
+  // NOT_SENT, instead of falling through to the catch-all provider error code
+  // (which is classified content-received and would falsely disclose "source sent").
+  // Bound to the canonical set, NOT an enumerated subset: a newly added pre-target
+  // reason (e.g. usage_limited_preflight) must not silently fall through to the
+  // error-message text scanner / catch-all and be re-classified content-received —
+  // the over-disclosure class. (cli_contract_mismatch and prompt_too_large are
+  // members too but are handled by their dedicated branches above; this is their
+  // shared fallback for every other member.)
+  if (PRE_TARGET_NOT_SENT_ERROR_CODES.has(reason)) {
+    return {
+      status: "failed",
+      error_code: reason,
       error_message: parsed.error ?? reason,
     };
   }

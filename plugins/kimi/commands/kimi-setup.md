@@ -11,7 +11,7 @@ allowed-tools: Bash(node:*)
 EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Run `node "<plugin-root>/scripts/kimi-companion.mjs" doctor`.
-If access to ~/.kimi is denied, report `sandbox_blocked` and ask for a one-off escalation rather than weakening the default sandbox.
+If access to ~/.kimi-code is denied, report `sandbox_blocked` and ask for a one-off escalation rather than weakening the default sandbox.
 After installation or cache refresh, start a fresh Codex session so plugin skills are discoverable.
 Do not claim unimplemented target version-floor checks.
 ## Secret Safety

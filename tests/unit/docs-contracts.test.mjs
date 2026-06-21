@@ -763,8 +763,8 @@ test("README documents Codex sandbox setup and provider-specific failure modes",
   assert.match(readme, /writable_roots/);
   assert.match(readme, /\/Users\/<you>\/\.claude/);
   assert.match(readme, /\/Users\/<you>\/\.gemini/);
-  assert.match(readme, /\/Users\/<you>\/\.kimi\/logs/);
-  assert.match(readme, /\/Users\/<you>\/\.kimi/);
+  assert.match(readme, /\/Users\/<you>\/\.kimi-code\/logs/);
+  assert.match(readme, /\/Users\/<you>\/\.kimi-code/);
   assert.match(readme, /sandbox_blocked[\s\S]*\.claude/);
   assert.match(readme, /sandbox_blocked[\s\S]*\.gemini/);
   assert.match(readme, /one-off escalation/i);
@@ -772,7 +772,7 @@ test("README documents Codex sandbox setup and provider-specific failure modes",
   assert.match(readme, /danger-full-access|dangerously-bypass-approvals-and-sandbox/i);
   assert.match(readme, /do not make[\s\S]*default/i);
   assert.match(readme, /Gemini CLI.*native.*sandbox|native.*Gemini.*sandbox/i);
-  assert.match(readme, /Kimi.*\.kimi/i);
+  assert.match(readme, /Kimi.*\.kimi-code/i);
   assert.match(readme, /Direct API reviewers|DeepSeek.*GLM/i);
   assert.match(readme, /selected source content[\s\S]*sent/i);
 });

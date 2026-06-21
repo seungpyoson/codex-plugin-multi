@@ -306,9 +306,9 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
     return {
       error_summary: `${target.displayName} Code CLI is blocked by Codex sandbox access to Kimi state.`,
       error_cause:
-        "The companion ran a same-process readiness preflight before sending selected source, and Kimi could not read or write its ~/.kimi state/log files from this Codex sandbox.",
+        "The companion ran a same-process readiness preflight before sending selected source, and Kimi could not read or write its ~/.kimi-code state/log files from this Codex sandbox.",
       suggested_action:
-        "Add ~/.kimi/logs to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, keep KIMI_SHARE_DIR unset, start a fresh Codex session, and rerun /kimi-setup. If the next denial is another ~/.kimi auth/config path, use ~/.kimi as the writable root.",
+        "Add ~/.kimi-code/logs to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, leave KIMI_CODE_HOME at its default, start a fresh Codex session, and rerun /kimi-setup. If the next denial is another ~/.kimi-code auth/config path, use ~/.kimi-code as the writable root.",
       disclosure_note: null,
     };
   }

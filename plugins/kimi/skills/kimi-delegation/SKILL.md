@@ -35,8 +35,6 @@ Cancel a background job:
 Run setup:
 - `node "<plugin-root>/scripts/kimi-companion.mjs" doctor --cwd "<workspace>"`
 
-For Kimi review, adversarial-review, custom-review, or rescue, add `--max-steps-per-turn N` before `--` when the user provides a positive integer step budget.
-
 `<workspace>` is the repository or bundle directory to review. `<focus>` is the user's review prompt or focus area.
 `<job-id>` is the identifier returned by a background launch or listed by the status workflow.
 

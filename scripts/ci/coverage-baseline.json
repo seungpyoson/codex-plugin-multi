@@ -36,7 +36,7 @@
       "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/external-review.mjs": {
-      "lines": 85.98,
+      "lines": 84.8,
       "branches": 94.29,
       "functions": 100
     },
@@ -46,8 +46,8 @@
       "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 91.18,
-      "branches": 86.57,
+      "lines": 89,
+      "branches": 92,
       "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/external-model-review-quality.mjs": {
@@ -140,13 +140,18 @@
       "branches": 73.68,
       "functions": 92.86
     },
+    "plugins/claude/scripts/lib/companion-readiness-probe.mjs": {
+      "lines": 95,
+      "branches": 88,
+      "functions": 100
+    },
     "plugins/claude/scripts/lib/containment.mjs": {
       "lines": 96.55,
       "branches": 88.89,
       "functions": 100
     },
     "plugins/claude/scripts/lib/external-review.mjs": {
-      "lines": 85.98,
+      "lines": 84.8,
       "branches": 94.29,
       "functions": 100
     },
@@ -156,8 +161,8 @@
       "functions": 100
     },
     "plugins/claude/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 91.18,
-      "branches": 86.57,
+      "lines": 89,
+      "branches": 92,
       "functions": 100
     },
     "plugins/claude/scripts/lib/external-model-review-quality.mjs": {
@@ -296,7 +301,7 @@
       "functions": 100
     },
     "plugins/gemini/scripts/lib/external-review.mjs": {
-      "lines": 85.98,
+      "lines": 84.8,
       "branches": 94.29,
       "functions": 100
     },
@@ -306,8 +311,8 @@
       "functions": 100
     },
     "plugins/gemini/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 91.18,
-      "branches": 86.57,
+      "lines": 89,
+      "branches": 92,
       "functions": 100
     },
     "plugins/gemini/scripts/lib/external-model-review-quality.mjs": {
@@ -421,7 +426,7 @@
       "functions": 100
     },
     "plugins/grok/scripts/lib/external-review.mjs": {
-      "lines": 85.98,
+      "lines": 84.8,
       "branches": 94.29,
       "functions": 100
     },
@@ -431,8 +436,8 @@
       "functions": 100
     },
     "plugins/grok/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 91.18,
-      "branches": 86.57,
+      "lines": 89,
+      "branches": 92,
       "functions": 100
     },
     "plugins/grok/scripts/lib/external-model-review-quality.mjs": {
@@ -530,8 +535,13 @@
       "branches": 100,
       "functions": 0
     },
+    "plugins/kimi/scripts/lib/acp-client.mjs": {
+      "lines": 90,
+      "branches": 79,
+      "functions": 93
+    },
     "plugins/kimi/scripts/lib/external-review.mjs": {
-      "lines": 85.98,
+      "lines": 84.8,
       "branches": 94.29,
       "functions": 100
     },
@@ -541,8 +551,8 @@
       "functions": 100
     },
     "plugins/kimi/scripts/lib/external-model-failure-core.mjs": {
-      "lines": 91.18,
-      "branches": 86.57,
+      "lines": 89,
+      "branches": 92,
       "functions": 100
     },
     "plugins/kimi/scripts/lib/external-model-review-quality.mjs": {
@@ -575,10 +585,15 @@
       "branches": 66.67,
       "functions": 85.71
     },
+    "plugins/kimi/scripts/lib/kimi-capabilities.mjs": {
+      "lines": 99,
+      "branches": 94,
+      "functions": 100
+    },
     "plugins/kimi/scripts/lib/kimi.mjs": {
-      "lines": 53.81,
-      "branches": 78.79,
-      "functions": 77.78
+      "lines": 87,
+      "branches": 77,
+      "functions": 79
     },
     "plugins/kimi/scripts/lib/mode-profiles.mjs": {
       "lines": 12.9,

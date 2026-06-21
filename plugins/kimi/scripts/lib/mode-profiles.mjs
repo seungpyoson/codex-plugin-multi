@@ -9,12 +9,6 @@
 // deep-frozen. The table is read by value identity, not by deep-copy — if a
 // downstream caller needs a scratch copy, it should clone explicitly.
 
-// Kimi-native tool ids permitted by prompt-contained review modes.
-// Kimi Code 1.43 repeatedly stalled or step-exhausted source-bearing review
-// when the adapter granted workspace file tools. The shared selected-source
-// prompt is already authoritative, so review/ping runs launch a no-tool agent.
-const REVIEW_ALLOWED_TOOLS = Object.freeze([]);
-
 /**
  * MODE_PROFILES — verbatim copy of the spec §21.2 canonical table.
  *
@@ -23,7 +17,6 @@ const REVIEW_ALLOWED_TOOLS = Object.freeze([]);
  *   model_tier       — "review_quality" | "rescue" | "native" (§8)
  *   permission_mode  — "plan" | "acceptEdits" (§4.5)
  *   strip_context    — emit `--setting-sources ""`? (§4.6)
- *   allowed_tools    — Kimi-native tool allowlist for review modes.
  *   containment      — "none" | "worktree" (§21.4) — OWNED BY T7.2; this task
  *                      fixes the field's presence, not its use in companion.
  *   scope            — "working-tree" | "staged" | "branch-diff" | "head" |
@@ -33,8 +26,6 @@ const REVIEW_ALLOWED_TOOLS = Object.freeze([]);
  *                      this false because source is embedded in the prompt.
  *   schema_allowed   — is `--json-schema` meaningful for this mode? When
  *                      false, jsonSchema runtime input is silently dropped.
- *   max_steps_per_turn — Kimi CLI step budget. Larger review scopes need a
- *                      higher default than ping/rescue probes.
  */
 export const MODE_PROFILES = Object.freeze({
   review: Object.freeze({
@@ -42,39 +33,33 @@ export const MODE_PROFILES = Object.freeze({
     model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
-    allowed_tools: REVIEW_ALLOWED_TOOLS,
     containment: "worktree",
     scope: "working-tree",
     dispose_default: true,
     add_dir: false,
     schema_allowed: true,
-    max_steps_per_turn: 16,
   }),
   "adversarial-review": Object.freeze({
     name: "adversarial-review",
     model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
-    allowed_tools: REVIEW_ALLOWED_TOOLS,
     containment: "worktree",
     scope: "branch-diff",
     dispose_default: true,
     add_dir: false,
     schema_allowed: true,
-    max_steps_per_turn: 32,
   }),
   "custom-review": Object.freeze({
     name: "custom-review",
     model_tier: "review_quality",
     permission_mode: "plan",
     strip_context: true,
-    allowed_tools: REVIEW_ALLOWED_TOOLS,
     containment: "worktree",
     scope: "custom",
     dispose_default: true,
     add_dir: false,
     schema_allowed: true,
-    max_steps_per_turn: 32,
   }),
   rescue: Object.freeze({
     name: "rescue",
@@ -86,20 +71,17 @@ export const MODE_PROFILES = Object.freeze({
     dispose_default: false,
     add_dir: true,
     schema_allowed: false,
-    max_steps_per_turn: 8,
   }),
   ping: Object.freeze({
     name: "ping",
     model_tier: "native",
     permission_mode: "plan",
     strip_context: true,
-    allowed_tools: REVIEW_ALLOWED_TOOLS,
     containment: "none",
     scope: "head",
     dispose_default: false,
     add_dir: false, // ping is a bare OAuth probe — no directory is granted
     schema_allowed: false,
-    max_steps_per_turn: 8,
   }),
 });
 

@@ -15,7 +15,7 @@ EXTERNAL_MODEL_CONTRACT_VERSION=1
 
 Run foreground: `node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=rescue --foreground --lifecycle-events markdown --cwd "<workspace>" -- "<task>"`.
 Run background: `node "<plugin-root>/scripts/kimi-companion.mjs" run --mode=rescue --background --lifecycle-events markdown --cwd "<workspace>" -- "<task>"`.
-If the user provides a step budget, add `--max-steps-per-turn N` before `--`; `N` must be a positive integer.
+
 ## Rescue Contract
 This is a rescue contract, not a review contract.
 Rescue may investigate, edit files, and run verification when the user asks for implementation work.

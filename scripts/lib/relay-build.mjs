@@ -399,14 +399,6 @@ export function renderClaudeCommandDoc(codexDoc) {
       "Route `--scope-paths <files>` before `--prompt-file` and write the remaining prompt text to the private prompt file referenced by `RELAY_PROMPT_FILE`.",
     )
     .replaceAll(
-      "Route `--max-steps-per-turn N` before `--`; `N` must be a positive integer.",
-      "Route `--max-steps-per-turn N` as a CLI flag before `--prompt-file`; `N` must be a positive integer.",
-    )
-    .replaceAll(
-      "If the user provides a step budget, add `--max-steps-per-turn N` before `--`; `N` must be a positive integer.",
-      "If the user provides a step budget, add `--max-steps-per-turn N` as a CLI flag before `--prompt-file`; `N` must be a positive integer.",
-    )
-    .replaceAll(
       "Use the global installed entrypoint `node \"${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs\"`.",
       "Use the relay-local entrypoint `node \"${CLAUDE_PLUGIN_ROOT}/scripts/api-reviewer.mjs\"`.",
     )
