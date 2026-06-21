@@ -11,6 +11,7 @@
 //   MOCK_ACP_ASSERT_PROMPT_INCLUDES  fail the prompt turn unless the text contains this
 //   MOCK_ACP_PROMPT_LEN_FILE       write the received prompt byte length here (proves stdin delivery)
 //   MOCK_ACP_AUTH_REQUIRED=1       session/new returns JSON-RPC error -32000 (authRequired)
+//   MOCK_ACP_PROMPT_AUTH_REQUIRED=1  session/PROMPT returns -32000 AFTER the prompt is received (token expiry mid-session; source WAS sent)
 //   MOCK_ACP_INIT_GARBAGE=1        emit a non-JSON banner line first (simulate the wrong CLI)
 //   MOCK_ACP_PROTOCOL_VERSION      protocolVersion the initialize response advertises (numeric, default 1)
 //   MOCK_ACP_PROTOCOL_VERSION_RAW  protocolVersion emitted VERBATIM (e.g. the string "1"); overrides the numeric form
@@ -77,6 +78,15 @@ function configOptions() {
 async function finishPromptTurn(reqId, promptText) {
   if (env.MOCK_ACP_PROMPT_LEN_FILE) {
     try { writeFileSync(env.MOCK_ACP_PROMPT_LEN_FILE, String(Buffer.byteLength(promptText, "utf8"))); } catch { /* best effort */ }
+  }
+  if (env.MOCK_ACP_PROMPT_AUTH_REQUIRED === "1") {
+    // The prompt (source) was already received and its byte length recorded above;
+    // now reject session/prompt with the in-protocol authRequired code (-32000),
+    // modelling token expiry / per-operation auth that lands AFTER the source was
+    // sent. The client MUST disclose SENT — not reuse the pre-prompt not_authed
+    // NOT_SENT path, which would falsely claim the transmitted source was not sent.
+    send({ jsonrpc: "2.0", id: reqId, error: { code: -32000, message: "authRequired: token expired mid-session" } });
+    return;
   }
   const assertSub = env.MOCK_ACP_ASSERT_PROMPT_INCLUDES;
   if (assertSub && !promptText.includes(assertSub)) {

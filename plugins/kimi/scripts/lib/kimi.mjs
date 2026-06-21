@@ -7,6 +7,7 @@
 import { runAcpPrompt } from "./acp-client.mjs";
 import { usageLimitMessage } from "./usage-limit.mjs";
 import { detectKimiCapabilities, assertKimiContract } from "./kimi-capabilities.mjs";
+import { PRE_TARGET_NOT_SENT_ERROR_CODES } from "./external-review.mjs";
 
 function assertProfile(profile) {
   if (!profile || typeof profile !== "object") {
@@ -74,9 +75,26 @@ function acpResultToParsed(acp) {
   if (usageLimited) {
     return { ok: false, reason: "usage_limited", error: usageLimited, sessionId: acp.sessionId, raw: acp.rawTranscript };
   }
-  const reason = ACP_REASON_TO_CODE[acp.reason] ?? acp.reason ?? "kimi_error";
+  const mappedReason = ACP_REASON_TO_CODE[acp.reason] ?? acp.reason ?? "kimi_error";
+  // Disclosure invariant — closes the under-disclosure CLASS at one chokepoint.
+  // Once the adapter has written the prompt (acp.sourceSent === true, the adapter's
+  // single source of truth), the user's source HAS been transmitted, so the failure
+  // code MUST classify as content-received. A code that downstream buckets as
+  // pre-target/source-NOT-sent here would disclose transmitted source as NOT_SENT —
+  // the dangerous direction (e.g. a -32000 authRequired returned by session/prompt
+  // maps auth_required -> not_authed, a member of PRE_TARGET_NOT_SENT_ERROR_CODES).
+  // Coerce ANY such post-send code to the generic content-received code rather than
+  // patching each branch; pre-prompt failures (sourceSent === false) pass through
+  // unchanged and still disclose NOT_SENT. The raw detail is preserved in error.
+  const reason = acp.sourceSent === true && PRE_TARGET_NOT_SENT_ERROR_CODES.has(mappedReason)
+    ? "kimi_error"
+    : mappedReason;
   return { ok: false, reason, error: acp.error, sessionId: acp.sessionId, raw: acp.rawTranscript };
 }
+
+// Exported for focused bridge tests: proves the post-send pre-target coercion holds
+// for the whole CLASS of pre-target reasons, not just the auth_required instance.
+export { acpResultToParsed };
 
 // Run one kimi-code turn (ping / review / rescue) over ACP and return the legacy
 // spawn contract the companion consumes:

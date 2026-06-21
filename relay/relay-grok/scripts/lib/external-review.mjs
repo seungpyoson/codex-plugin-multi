@@ -52,7 +52,7 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
   "review_not_completed",
 ]));
 
-const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
+export const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "approval_required",
   "approval_scope_changed",
   "cache_install",

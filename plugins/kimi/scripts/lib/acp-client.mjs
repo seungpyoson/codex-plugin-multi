@@ -283,7 +283,6 @@ export async function runAcpPrompt({
     rawTranscript: messageOrder.map((k) => messages.get(k)).join("\n"),
     sessionId: null,
     stopReason: null,
-    sourceSent,
     pidInfo: getPidInfo(),
     exitCode: child.exitCode,
     // Report the terminating signal ONLY for a genuine external kill that lands
@@ -299,6 +298,16 @@ export async function runAcpPrompt({
     timedOut,
     stderr,
     ...over,
+    // sourceSent is the adapter's SINGLE SOURCE OF TRUTH for whether the prompt (the
+    // user's selected source) was written to the child. It is derived ONLY from the
+    // closure flag set at the session/prompt write, and placed AFTER ...over so no
+    // caller can lower it. A branch that reported sourceSent:false after the write
+    // (e.g. a -32000 authRequired returned by session/prompt) would disclose
+    // transmitted source as NOT_SENT — the dangerous under-disclosure direction.
+    // Downstream disclosure keys off the reason, not this flag; the bridge
+    // (acpResultToParsed) reads this truthful flag to coerce a post-send pre-target
+    // reason into a content-received code, closing the class at one chokepoint.
+    sourceSent,
   });
 
   const kill = () => {
@@ -379,7 +388,6 @@ export async function runAcpPrompt({
       return result({
         reason: "cli_contract_mismatch",
         error: `kimi-code ACP negotiated protocolVersion ${negotiatedVersion ?? "(missing)"}, expected ${ACP_PROTOCOL_VERSION}`,
-        sourceSent: false,
       });
     }
 
@@ -396,7 +404,7 @@ export async function runAcpPrompt({
       const value = resolveModelValue(configOptions, model);
       if (value == null) {
         clearTimer(); kill(); await closed;
-        return result({ reason: "model_unavailable", error: `kimi-code ACP did not offer model "${model}"`, sessionId, sourceSent: false });
+        return result({ reason: "model_unavailable", error: `kimi-code ACP did not offer model "${model}"`, sessionId });
       }
       await peer.request("session/set_config_option", { sessionId, configId: "model", value });
     }
@@ -426,7 +434,6 @@ export async function runAcpPrompt({
       result: text,
       sessionId,
       stopReason,
-      sourceSent: true,
       // A clean turn is defined by stopReason, not the child's exit code: if the
       // server was slow to release stdin and the graceful-close fallback killed it,
       // child.exitCode is null. Report 0 so the companion classifies it completed
@@ -442,10 +449,15 @@ export async function runAcpPrompt({
       // The binary could not be executed (missing / not executable). Mark it so
       // spawnKimi can re-throw with the original code, preserving the legacy
       // ENOENT->not_found readiness contract.
-      return result({ reason: "spawn_failed", error: e.message, sourceSent: false, spawnFailed: true, spawnErrorCode: e.code ?? null });
+      return result({ reason: "spawn_failed", error: e.message, spawnFailed: true, spawnErrorCode: e.code ?? null });
     }
     if (e?.acpError?.code === ACP_AUTH_REQUIRED_CODE) {
-      return result({ reason: "auth_required", error: e.acpError.message || "kimi-code ACP requires login", sourceSent: false });
+      // Raw adapter fact: an in-protocol authRequired. sourceSent is whatever the
+      // closure recorded — false for a pre-prompt auth (session/new), true for a
+      // -32000 returned by session/prompt (token expiry mid-session). The bridge
+      // coerces the post-send case to a content-received code; here we must NOT lie
+      // about sourceSent, so no override is passed (result() owns the truthful flag).
+      return result({ reason: "auth_required", error: e.acpError.message || "kimi-code ACP requires login" });
     }
     // A non-JSON line on stdout sets peer.protocolError — but ONLY treat it as a
     // wrong-CLI contract mismatch (source NOT sent) when it happened BEFORE the
@@ -453,7 +465,7 @@ export async function runAcpPrompt({
     // leaked a diagnostic to stdout post-prompt) is a real post-send failure: it
     // must fall through to the sourceSent branch so the source is disclosed as SENT,
     // not falsely reported as "target not started".
-    if (peer.protocolError && !sourceSent) return result({ reason: "cli_contract_mismatch", error: peer.protocolError, sourceSent: false });
+    if (peer.protocolError && !sourceSent) return result({ reason: "cli_contract_mismatch", error: peer.protocolError });
     // An ACP error AFTER the prompt was sent is a real review failure (source sent);
     // before it, the target was never reached. Preserve the protocolError detail in
     // the message when present so a post-prompt stdout leak is still diagnosable.

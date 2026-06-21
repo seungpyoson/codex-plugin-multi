@@ -14,6 +14,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 import { spawnKimi } from "../../plugins/kimi/scripts/lib/kimi.mjs";
 import { __resetKimiCapabilityCache } from "../../plugins/kimi/scripts/lib/kimi-capabilities.mjs";
@@ -150,6 +152,28 @@ test("post-prompt non-JSON stdout (source already sent) discloses SENT, never NO
   assert.equal(r.transmission, SOURCE_CONTENT_TRANSMISSION.SENT, `source WAS delivered; expected SENT, disclosure was "${r.disclosure}"`);
   assert.match(r.disclosure, /was sent/, "disclosure must state the source was sent");
   assert.doesNotMatch(r.disclosure, /was not sent|not started/i, "must not claim the source was not sent or the target not started");
+});
+
+test("post-prompt authRequired (-32000 after source sent) discloses SENT, never NOT_SENT", async () => {
+  // BLOCKER class (the DANGEROUS under-disclosure direction): a -32000 authRequired
+  // returned by session/PROMPT lands AFTER the prompt (source) was written. The
+  // pre-prompt auth path correctly discloses NOT_SENT (not_authed), but routing this
+  // post-send failure through that same path would tell the operator their
+  // transmitted source was "not sent". Ground-truth the delivery with the prompt
+  // length file: the mock records >0 bytes received before erroring.
+  const dir = mkdtempSync(path.join(tmpdir(), "acp-postauth-"));
+  const lenFile = path.join(dir, "len.txt");
+  try {
+    const r = await classifyRun("review", {}, { MOCK_ACP_PROMPT_AUTH_REQUIRED: "1", MOCK_ACP_PROMPT_LEN_FILE: lenFile });
+    const received = Number(readFileSync(lenFile, "utf8"));
+    assert.ok(received > 0, `ground truth: the mock received ${received} prompt bytes (source WAS delivered)`);
+    assert.equal(r.execution.parsed.reason, "kimi_error", "a post-send pre-target reason must be coerced to a content-received code at the bridge");
+    assert.equal(r.transmission, SOURCE_CONTENT_TRANSMISSION.SENT, `source WAS delivered; expected SENT, disclosure was "${r.disclosure}"`);
+    assert.match(r.disclosure, /was sent/, "disclosure must state the source was sent");
+    assert.doesNotMatch(r.disclosure, /was not sent|not started|auth readiness failed/i, "must not claim the source was not sent");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a clean turn whose server is slow to release stdin is still completed with its verdict preserved", async () => {

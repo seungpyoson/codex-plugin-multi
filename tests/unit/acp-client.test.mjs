@@ -77,6 +77,27 @@ test("auth_required: session/new -32000 -> reason auth_required, source NOT sent
   assert.equal(r.sourceSent, false);
 });
 
+test("auth_required AFTER source sent (session/prompt -32000) -> reason auth_required, sourceSent TRUE", async () => {
+  // A -32000 authRequired returned by session/PROMPT (token expiry mid-session,
+  // per-operation auth) lands AFTER the prompt was written, so the source WAS sent.
+  // The adapter must report the truthful sourceSent:true; a hardcoded false here is
+  // the dangerous under-disclosure direction. The adapter keeps the raw reason
+  // (auth_required) — the bridge (acpResultToParsed) is what coerces a post-send
+  // pre-target reason to a content-received code. See kimi-bridge / kimi-acp-disclosure.
+  const dir = mkdtempSync(path.join(tmpdir(), "acp-postauth-leaf-"));
+  const lenFile = path.join(dir, "len.txt");
+  try {
+    const r = await run({}, { MOCK_ACP_PROMPT_AUTH_REQUIRED: "1", MOCK_ACP_PROMPT_LEN_FILE: lenFile });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, "auth_required");
+    assert.equal(r.sourceSent, true, "the prompt was already written; source WAS sent");
+    const received = Number(readFileSync(lenFile, "utf8"));
+    assert.ok(received > 0, `ground truth: the mock received ${received} prompt bytes before the auth error`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("wrong CLI (non-JSON banner on stdout) -> cli_contract_mismatch, source NOT sent", async () => {
   const r = await run({}, { MOCK_ACP_INIT_GARBAGE: "1" });
   assert.equal(r.ok, false);
