@@ -176,6 +176,34 @@ test("post-prompt authRequired (-32000 after source sent) discloses SENT, never 
   }
 });
 
+test("pre-prompt quota/usage-limit error (source NOT sent) discloses NOT_SENT, never sent", async () => {
+  // BLOCKER class (the OVER-disclosure direction): a quota/billing limit can be
+  // reported on the error channel BEFORE the prompt is written (e.g. session/new
+  // rejected for usage limit). usage_limited is a content-received (SENT) code by
+  // design — it assumes the quota was hit BY the review request — but that holds
+  // only once the source was sent. A PRE-send quota error means the source never
+  // left the machine, so disclosing SENT over-discloses a not-sent source. This is
+  // the sibling exit the CRITICAL #4 fix left ungated (usage_limited is the one
+  // content-received code derived from TEXT scanning, not lifecycle). Ground-truth:
+  // the mock never reaches session/prompt, so the prompt-length file is never
+  // written. (Distinct from the deferred #228 pre-prompt TIMEOUT over-disclosure:
+  // usage_limited is an unintended classification bug, not a deliberate choice.)
+  const dir = mkdtempSync(path.join(tmpdir(), "acp-prequota-"));
+  const lenFile = path.join(dir, "len.txt");
+  try {
+    const r = await classifyRun("review", {}, {
+      MOCK_ACP_SESSION_ERROR: "1",
+      MOCK_ACP_SESSION_ERROR_MESSAGE: "insufficient_quota: usage limit reached for this billing cycle",
+      MOCK_ACP_PROMPT_LEN_FILE: lenFile,
+    });
+    assert.throws(() => readFileSync(lenFile, "utf8"), "ground truth: the mock must NOT have received any prompt bytes (source NOT sent)");
+    assert.equal(r.execution.parsed.reason, "usage_limited_preflight", "a pre-send quota error must map to the pre-target (NOT_SENT) code, not usage_limited (content-received)");
+    assertNotSent(r, "pre-prompt quota error");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a clean turn whose server is slow to release stdin is still completed with its verdict preserved", async () => {
   const r = await classifyRun("review", {}, { MOCK_ACP_HANG_ON_EOF: "1", MOCK_ACP_REPLY: "VERDICT: PASS\nclean" });
   assert.equal(r.status, "completed", `expected completed, got ${r.status} (verdict must not be discarded as a cancel)`);

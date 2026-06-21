@@ -113,6 +113,7 @@ test("buildExternalModelFailureDiagnostic covers shared emitted failure codes", 
     "resend_confirmation_required",
     "model_unavailable",
     "acp_protocol_error",
+    "usage_limited_preflight",
   ]) {
     const diagnostic = buildExternalModelFailureDiagnostic(code, "Claude Code CLI");
     assert.equal(typeof diagnostic?.error_summary, "string", code);
@@ -121,6 +122,22 @@ test("buildExternalModelFailureDiagnostic covers shared emitted failure codes", 
     assert.match(diagnostic.error_summary, /Claude Code CLI|provider|scope|review/i, code);
     assert.notEqual(diagnostic.suggested_action.trim(), "", code);
   }
+});
+
+test("the pre-send quota code (usage_limited_preflight) yields a not-sent operator diagnostic, distinct from post-send usage_limited", () => {
+  // Regression for the over-disclosure finding (PR #226, GPT NO-GO): a quota error
+  // that surfaces BEFORE the prompt is written gets the dedicated pre-send code, which
+  // MUST resolve to a non-empty operator diagnostic (not the `empty` fall-through) AND
+  // carry not-sent / not-launched framing so the operator is never told source was sent
+  // when it was not. The post-send sibling keeps its content-received framing.
+  const pre = buildExternalModelFailureDiagnostic("usage_limited_preflight", "Kimi Code CLI");
+  assert.ok(pre, "usage_limited_preflight must resolve to a diagnostic, never the empty fall-through");
+  assert.equal(typeof pre.suggested_action, "string");
+  assert.match(pre.error_summary, /before launch|before the review prompt|quota|usage|billing|credit/i);
+  assert.match(pre.suggested_action, /not launched|was not sent/i, "pre-send quota must disclose source NOT sent");
+
+  const post = buildExternalModelFailureDiagnostic("usage_limited", "Kimi Code CLI");
+  assert.doesNotMatch(post.suggested_action, /was not sent/i, "post-send quota must NOT claim source was not sent");
 });
 
 test("Claude OAuth inference rejection diagnostic names the supported auth command", () => {
@@ -147,6 +164,7 @@ test("shared failure diagnostics cover the T088 cross-provider fixture table", (
     "scope_failed",
     "oauth_inference_rejected",
     "usage_limited",
+    "usage_limited_preflight",
     "provider_unavailable",
     "tunnel_unavailable",
     "session_expired",

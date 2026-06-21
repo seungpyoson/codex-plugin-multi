@@ -68,12 +68,22 @@ function acpResultToParsed(acp) {
       raw: acp.rawTranscript,
     };
   }
-  // A quota/billing failure surfaces in the ACP error or stderr — preserve the
-  // legacy usage_limited classification (scanned only on the error/stderr channels,
-  // never successful review text).
+  // A quota/billing failure surfaces in the ACP error or stderr (scanned only on the
+  // error/stderr channels, never successful review text). usage_limited is a
+  // content-received (SENT) code: it assumes the quota was hit BY the review request,
+  // which holds ONLY once the prompt was written. Gate it on acp.sourceSent (the
+  // adapter's single source of truth) exactly like the lifecycle-code coercion below
+  // — usage_limited is just the one content-received code derived from TEXT scanning
+  // rather than the lifecycle, so the same disclosure invariant must apply. A quota
+  // error that surfaced BEFORE the prompt write (e.g. session/new rejected for usage
+  // limit, source NOT sent) maps to the pre-target usage_limited_preflight (NOT_SENT)
+  // so relay does not over-disclose not-sent source as SENT. (timeout is also a
+  // content-received code reachable pre-send, but that is the deliberately deferred
+  // #228 cross-provider behavior, not a text-scan classification bug.)
   const usageLimited = usageLimitMessage(acp.error ?? "", acp.stderr ?? "");
   if (usageLimited) {
-    return { ok: false, reason: "usage_limited", error: usageLimited, sessionId: acp.sessionId, raw: acp.rawTranscript };
+    const reason = acp.sourceSent === true ? "usage_limited" : "usage_limited_preflight";
+    return { ok: false, reason, error: usageLimited, sessionId: acp.sessionId, raw: acp.rawTranscript };
   }
   const mappedReason = ACP_REASON_TO_CODE[acp.reason] ?? acp.reason ?? "kimi_error";
   // Disclosure invariant — closes the under-disclosure CLASS at one chokepoint.

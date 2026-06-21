@@ -22,6 +22,7 @@
 //   MOCK_ACP_HANDSHAKE_DELAY_MS    delay the initialize response (to land an external signal PRE-prompt)
 //   MOCK_ACP_POST_PROMPT_GARBAGE_STDOUT=1  after RECEIVING the prompt, emit a non-JSON stdout line and exit (source WAS sent)
 //   MOCK_ACP_SESSION_ERROR=1       session/new returns a non-auth JSON-RPC error (forces acp_protocol_error; source NOT sent)
+//   MOCK_ACP_SESSION_ERROR_MESSAGE the message for the MOCK_ACP_SESSION_ERROR rejection (default "internal: session unavailable"; set quota text to model a PRE-prompt usage-limit error)
 //   MOCK_ACP_HANG_ON_EOF=1         ignore stdin EOF so the client's graceful-close fallback kill fires (slow-close path)
 //   MOCK_ACP_NO_TRAILING_NEWLINE=1 emit the terminal session/prompt frame without a trailing newline, then EOF
 //   MOCK_ACP_END_STDOUT_NO_EXIT=1  emit a newline-less terminal frame and END stdout but stay alive (isolates the 'end' flush; no process-'close' backstop)
@@ -197,7 +198,7 @@ function handle(msg) {
       return;
     }
     if (env.MOCK_ACP_SESSION_ERROR === "1") {
-      send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "internal: session unavailable" } });
+      send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: env.MOCK_ACP_SESSION_ERROR_MESSAGE ?? "internal: session unavailable" } });
       return;
     }
     const sessionId = msg.method === "session/load" ? (msg.params?.sessionId ?? "session_mock") : "session_mock";

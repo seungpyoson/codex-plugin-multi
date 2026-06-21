@@ -74,6 +74,7 @@ export const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "sandbox_blocked",
   "model_unavailable",
   "acp_protocol_error",
+  "usage_limited_preflight",
 ]));
 
 const CONTENT_MAY_HAVE_STARTED_ERROR_CODES = Object.freeze(new Set([
@@ -105,6 +106,7 @@ const NOT_SENT_DISCLOSURE_BY_ERROR = Object.freeze({
   // was not started" phrasing would be inaccurate.
   model_unavailable: (provider) => `Selected source content was not sent to ${provider}; the CLI started and opened a session but did not offer the requested model, so the review prompt was never written.`,
   acp_protocol_error: (provider) => `Selected source content was not sent to ${provider}; the CLI started but its protocol handshake failed before the review prompt was written.`,
+  usage_limited_preflight: (provider) => `Selected source content was not sent to ${provider}; the CLI started but a quota, usage-tier, billing, or credit limit was reported before the review prompt was written.`,
 });
 
 const UNKNOWN_DISCLOSURE_BY_STATUS = Object.freeze({

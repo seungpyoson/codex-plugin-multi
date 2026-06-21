@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { acpResultToParsed } from "../../plugins/kimi/scripts/lib/kimi.mjs";
-import { PRE_TARGET_NOT_SENT_ERROR_CODES } from "../../plugins/kimi/scripts/lib/external-review.mjs";
+import { PRE_TARGET_NOT_SENT_ERROR_CODES, targetProcessReceivedContent } from "../../plugins/kimi/scripts/lib/external-review.mjs";
 
 const baseFail = (over) => ({
   ok: false,
@@ -57,6 +57,29 @@ test("the guard set is exactly the canonical PRE_TARGET_NOT_SENT_ERROR_CODES (si
     const parsed = acpResultToParsed(baseFail({ reason: code, sourceSent: true }));
     assert.equal(parsed.reason, "kimi_error", `post-send ${code} must coerce to kimi_error`);
   }
+});
+
+test("a quota/usage-limit error is gated on sourceSent (the text-scanned content-received code)", () => {
+  // usage_limited is the ONE content-received code derived from scanning the error
+  // text, not the lifecycle — so it must obey the same disclosure invariant as the
+  // lifecycle codes. Post-send: the quota was hit BY the review request, so it keeps
+  // the content-received usage_limited code (-> SENT). Pre-send: a quota error before
+  // the prompt write means the source never left the machine, so it maps to the
+  // pre-target usage_limited_preflight code (-> NOT_SENT) instead of over-disclosing.
+  const quota = "insufficient_quota: usage limit reached for this billing cycle";
+
+  const post = acpResultToParsed(baseFail({ reason: "kimi_error", error: quota, sourceSent: true }));
+  assert.equal(post.reason, "usage_limited", "post-send quota keeps the content-received usage_limited code");
+  assert.equal(targetProcessReceivedContent(post.reason), true, "post-send quota must bucket as content-received (SENT)");
+
+  const pre = acpResultToParsed(baseFail({ reason: "acp_protocol_error", error: quota, sourceSent: false }));
+  assert.equal(pre.reason, "usage_limited_preflight", "pre-send quota maps to the pre-target code, NOT usage_limited");
+  assert.equal(PRE_TARGET_NOT_SENT_ERROR_CODES.has(pre.reason), true, "pre-send quota must bucket as pre-target (NOT_SENT)");
+  assert.equal(targetProcessReceivedContent(pre.reason), false, "pre-send quota must NOT bucket as content-received");
+
+  // The quota detail surfaces as the sanitized safe message in both directions (no
+  // raw billing text leaks); the direction is what differs.
+  assert.match(pre.error, /quota|usage|billing|credit/i, "the quota message must be preserved for the operator");
 });
 
 test("a clean (ok) result is untouched", () => {

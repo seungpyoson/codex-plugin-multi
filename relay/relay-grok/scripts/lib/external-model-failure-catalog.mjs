@@ -135,6 +135,14 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
       "Treat this review slot as failed. Do not automatically resend selected source. Wait for usage to recover, reduce concurrency, or inspect the provider account manually. Any billing or tier change requires explicit user approval.",
   }),
   Object.freeze({
+    error_code: "usage_limited_preflight",
+    category: "cost_quota",
+    error_cause: "pre_send_usage_or_quota_limited",
+    error_summary: "The external model review was blocked before launch because the provider reported a quota, usage-tier, billing, or credit limit before the review prompt was sent.",
+    suggested_action:
+      "Treat this review slot as not launched. The selected source was not sent. Wait for usage to recover, reduce concurrency, or inspect the provider account manually. Any billing or tier change requires explicit user approval.",
+  }),
+  Object.freeze({
     error_code: "provider_workload_blocked",
     category: "workload_admission",
     error_cause: "same_provider_source_bearing_job_active",
