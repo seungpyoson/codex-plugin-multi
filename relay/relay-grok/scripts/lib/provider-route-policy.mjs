@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { hasSubstantiveInvalidVerdictReason } from "./external-model-review-quality.mjs";
 
@@ -134,6 +137,36 @@ export const PROVIDER_POLICY_DOMAINS = Object.freeze([
   }),
 ]);
 
+function freezeConcurrencyFacts(table) {
+  for (const routes of Object.values(table)) {
+    for (const fact of Object.values(routes)) Object.freeze(fact);
+    Object.freeze(routes);
+  }
+  return Object.freeze(table);
+}
+
+export const CONCURRENCY_FACTS = freezeConcurrencyFacts({
+  claude: {
+    subscription: { category: "shared_state", limit: 1 },
+  },
+  gemini: {
+    subscription: { category: "shared_state", limit: 1 },
+  },
+  kimi: {
+    subscription: { category: "shared_state", limit: 1 },
+  },
+  grok: {
+    subscription: { category: "shared_state", limit: 1 },
+    subscription_web: { category: "shared_state", limit: 1 },
+  },
+  deepseek: {
+    direct_api: { category: "stateless", limit: 1, limit_env: "RELAY_DEEPSEEK_CONCURRENCY_LIMIT" },
+  },
+  glm: {
+    direct_api: { category: "stateless", limit: 1, limit_env: "RELAY_GLM_CONCURRENCY_LIMIT" },
+  },
+});
+
 const ROUTE_MODES = new Set(["subscription", "api", "direct_api", "openrouter"]);
 const APPROVAL_SCOPES = new Set(["session", "once"]);
 const DEFAULT_SOURCE_PACKET_BUDGET_BYTES = 512 * 1024;
@@ -201,6 +234,106 @@ const API_FALLBACK_REASONS = new Set([
   "subscription_unavailable",
   "usage_limited",
 ]);
+
+function positiveInteger(value) {
+  return Number.isSafeInteger(value) && value >= 1;
+}
+
+function positiveIntegerEnv(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  if (!/^[1-9]\d*$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return positiveInteger(parsed) ? parsed : null;
+}
+
+function requiredNonEmptyString(value, name) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`concurrency admission ${name} is required`);
+  }
+  return value;
+}
+
+function defaultProviderWorkloadLockRoot(env = process.env) {
+  const xdgStateHome = typeof env?.XDG_STATE_HOME === "string" && env.XDG_STATE_HOME.trim() !== ""
+    ? env.XDG_STATE_HOME
+    : null;
+  return join(xdgStateHome || join(homedir(), ".local/state"), "relay", "locks", "v2");
+}
+
+function providerWorkloadLockRoot(category, env = process.env) {
+  const override = typeof env?.RELAY_PROVIDER_WORKLOAD_LOCK_DIR === "string"
+    && env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR.trim() !== ""
+    ? env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
+    : null;
+  if (override && (category === "stateless" || env?.RELAY_WORKLOAD_TEST_MODE)) return override;
+  return defaultProviderWorkloadLockRoot(env);
+}
+
+function sharedStateConcurrencyKey(sharedStateIdentity) {
+  if (typeof sharedStateIdentity !== "string" || sharedStateIdentity.trim() === "") {
+    throw new Error("shared_state identity is required for concurrency admission");
+  }
+
+  let stats;
+  try {
+    stats = statSync(sharedStateIdentity);
+  } catch (error) {
+    const reason = error?.message ? `: ${error.message}` : "";
+    throw new Error(`shared_state identity cannot be resolved${reason}`);
+  }
+
+  if (!stats.isDirectory()) {
+    throw new Error("shared_state identity must resolve to a directory");
+  }
+
+  return createHash("sha256").update(`${stats.dev}:${stats.ino}`).digest("hex");
+}
+
+export function resolveConcurrencyAdmission({
+  category,
+  declaredLimit = null,
+  limit = null,
+  limitEnv = null,
+  limit_env: limitEnvSnake = null,
+  sharedStateIdentity = null,
+  provider = null,
+  route = null,
+  env = process.env,
+} = {}) {
+  const resolvedDeclaredLimit = declaredLimit ?? limit;
+  const resolvedLimitEnv = limitEnv ?? limitEnvSnake;
+
+  if (category === "shared_state") {
+    if (!positiveInteger(resolvedDeclaredLimit)) {
+      throw new Error("shared_state concurrency limit must be a positive integer");
+    }
+    if (resolvedDeclaredLimit > 1) {
+      throw new Error("shared_state concurrency limit greater than 1 is unrepresentable");
+    }
+    return Object.freeze({
+      concurrencyKey: sharedStateConcurrencyKey(sharedStateIdentity),
+      limit: 1,
+      lockRoot: providerWorkloadLockRoot(category, env),
+    });
+  }
+
+  if (category === "stateless") {
+    if (!positiveInteger(resolvedDeclaredLimit)) {
+      throw new Error("stateless concurrency limit must be a positive integer");
+    }
+    const providerKey = requiredNonEmptyString(provider, "provider");
+    const routeKey = requiredNonEmptyString(route, "route");
+    const envCap = resolvedLimitEnv ? positiveIntegerEnv(env?.[resolvedLimitEnv]) : null;
+    return Object.freeze({
+      concurrencyKey: `${providerKey}.${routeKey}`,
+      limit: Math.min(resolvedDeclaredLimit, envCap ?? resolvedDeclaredLimit),
+      lockRoot: providerWorkloadLockRoot(category, env),
+    });
+  }
+
+  throw new Error(`concurrency admission category is required and must be shared_state or stateless; got ${JSON.stringify(category)}`);
+}
 
 export function buildProviderPolicyContract() {
   return {

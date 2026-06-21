@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,6 +23,7 @@ import {
   sourcePacketPreviousAttemptForContinuation,
   sourcePacketPreviousAttemptFromJobRecord,
   latestSourcePacketPreviousAttempt,
+  resolveConcurrencyAdmission,
 } from "../../scripts/lib/provider-route-policy.mjs";
 import * as providerRoutePolicy from "../../scripts/lib/provider-route-policy.mjs";
 import { REVIEW_PROMPT_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
@@ -1965,6 +1967,136 @@ test("provider route policy normalizes provider-neutral approval scopes", () => 
     () => normalizeApprovalScope("auto"),
     /approval scope must be session or once; got "auto"/,
   );
+});
+
+test("shared_state concurrency admission forces limit 1 and rejects higher declared limits", (t) => {
+  const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-"));
+  t.after(() => rmSync(sharedStateDir, { recursive: true, force: true }));
+
+  const admission = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "kimi",
+    route: "subscription",
+  });
+
+  assert.equal(admission.limit, 1);
+  assert.throws(
+    () => resolveConcurrencyAdmission({
+      category: "shared_state",
+      declaredLimit: 2,
+      sharedStateIdentity: sharedStateDir,
+      provider: "kimi",
+      route: "subscription",
+    }),
+    /shared_state/,
+  );
+});
+
+test("stateless concurrency admission uses cap-only env limit", () => {
+  const lowered = resolveConcurrencyAdmission({
+    category: "stateless",
+    declaredLimit: 4,
+    limitEnv: "RELAY_TEST_LIMIT",
+    provider: "deepseek",
+    route: "api",
+    env: { RELAY_TEST_LIMIT: "2" },
+  });
+  assert.equal(lowered.limit, 2);
+
+  const capped = resolveConcurrencyAdmission({
+    category: "stateless",
+    declaredLimit: 4,
+    limitEnv: "RELAY_TEST_LIMIT",
+    provider: "deepseek",
+    route: "api",
+    env: { RELAY_TEST_LIMIT: "99" },
+  });
+  assert.equal(capped.limit, 4);
+});
+
+test("concurrency admission fails closed on malformed category and unresolved shared_state identity", () => {
+  assert.throws(
+    () => resolveConcurrencyAdmission({ category: "bogus", provider: "x", route: "api" }),
+    /category/,
+  );
+  assert.throws(
+    () => resolveConcurrencyAdmission({
+      category: "shared_state",
+      declaredLimit: 1,
+      sharedStateIdentity: null,
+      provider: "kimi",
+      route: "subscription",
+    }),
+    /identity/,
+  );
+  assert.throws(
+    () => resolveConcurrencyAdmission({
+      category: "shared_state",
+      declaredLimit: 1,
+      sharedStateIdentity: path.join(tmpdir(), "relay-policy-missing-shared-state"),
+      provider: "kimi",
+      route: "subscription",
+    }),
+    /identity/,
+  );
+});
+
+test("shared_state concurrency admission ignores lock root override outside test mode", (t) => {
+  const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-"));
+  t.after(() => rmSync(sharedStateDir, { recursive: true, force: true }));
+
+  const admission = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "kimi",
+    route: "subscription",
+    env: {
+      XDG_STATE_HOME: path.join(tmpdir(), "relay-policy-state"),
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: "/decoy",
+    },
+  });
+
+  assert.ok(!admission.lockRoot.startsWith("/decoy"));
+  assert.equal(admission.lockRoot, path.join(tmpdir(), "relay-policy-state", "relay", "locks", "v2"));
+});
+
+test("stateless concurrency admission honors lock root override", () => {
+  const admission = resolveConcurrencyAdmission({
+    category: "stateless",
+    declaredLimit: 4,
+    provider: "deepseek",
+    route: "api",
+    env: { RELAY_PROVIDER_WORKLOAD_LOCK_DIR: "/relay-test-locks" },
+  });
+
+  assert.equal(admission.lockRoot, "/relay-test-locks");
+});
+
+test("two shared_state concurrency admissions for the same dir produce the same key", (t) => {
+  const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-"));
+  t.after(() => rmSync(sharedStateDir, { recursive: true, force: true }));
+
+  const a = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "alias-a",
+    route: "subscription",
+  });
+  const b = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "alias-b",
+    route: "subscription",
+  });
+
+  assert.equal(a.concurrencyKey, b.concurrencyKey);
+  assert.ok(!a.concurrencyKey.startsWith("alias-a."));
+  assert.ok(!b.concurrencyKey.startsWith("alias-b."));
 });
 
 test("kimi source-bearing route facts are derived from mode classification", () => {
