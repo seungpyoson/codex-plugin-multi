@@ -155,3 +155,50 @@ test("spawnAgy: timeout is terminal and does not retry the source-bearing prompt
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("spawnAgy: clears SIGKILL fallback when timeout child exits after SIGTERM", async () => {
+  const { spawnAgy } = await loadAgy();
+  const dir = mkdtempSync(path.join(tmpdir(), "agy-timeout-cleanup-unit-"));
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const fallbackTimers = [];
+  const clearedFallbackTimers = new Set();
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    const handle = realSetTimeout(callback, delay, ...args);
+    if (delay === 2000) fallbackTimers.push(handle);
+    return handle;
+  };
+  globalThis.clearTimeout = (handle) => {
+    if (fallbackTimers.includes(handle)) clearedFallbackTimers.add(handle);
+    return realClearTimeout(handle);
+  };
+
+  try {
+    const signalPath = path.join(dir, "signals.txt");
+    const binary = writeExecutable(dir, "agy-term-trap", [
+      "#!/bin/sh",
+      `printf 'ready\\n' > ${JSON.stringify(signalPath)}`,
+      `trap 'printf "term\\n" >> ${JSON.stringify(signalPath)}; exit 0' TERM`,
+      "while :; do sleep 1 & wait $!; done",
+      "",
+    ].join("\n"));
+
+    const execution = await spawnAgy(REVIEW_PROFILE, {
+      binary,
+      cwd: dir,
+      env: process.env,
+      promptText: "source-bearing prompt",
+      timeoutMs: 500,
+    });
+
+    assert.equal(execution.timedOut, true);
+    assert.equal(readFileSync(signalPath, "utf8"), "ready\nterm\n");
+    assert.equal(fallbackTimers.length, 1);
+    assert.equal(clearedFallbackTimers.has(fallbackTimers[0]), true);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+    for (const handle of fallbackTimers) realClearTimeout(handle);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -19,6 +19,13 @@ test("parseArgs: long value option via --key=value", () => {
   assert.equal(options.model, "claude-opus-4-7");
 });
 
+test("parseArgs: inline value keeps equals after the first separator", () => {
+  const { options } = parseArgs(["--env=FOO=bar=baz"], {
+    valueOptions: ["env"],
+  });
+  assert.equal(options.env, "FOO=bar=baz");
+});
+
 test("parseArgs: boolean flag defaults to true when present", () => {
   const { options } = parseArgs(["--isolated"], { booleanOptions: ["isolated"] });
   assert.equal(options.isolated, true);

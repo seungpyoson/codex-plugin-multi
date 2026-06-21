@@ -109,6 +109,16 @@ test("privacy redactor applies generic credential and account-token patterns", (
   assert.match(out, /\[REDACTED\]/);
 });
 
+test("privacy redactor captures full cookie values containing equals", () => {
+  const redact = buildPrivacyRedactor({
+    env: { APP_COOKIE: "session=YWJjZA==; Domain=example.test; Path=/" },
+  });
+
+  const out = redact.text("provider echoed bare cookie value YWJjZA==");
+
+  assert.equal(out, "provider echoed bare cookie value [REDACTED]");
+});
+
 test("privacy redactor preserves non-payment provider tokens while redacting payment-shaped ids", () => {
   const redact = buildPrivacyRedactor();
   const out = redact.text([

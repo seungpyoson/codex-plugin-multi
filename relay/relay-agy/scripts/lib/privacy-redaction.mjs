@@ -204,8 +204,11 @@ function configuredSecrets(env, configuredSecretNames = []) {
     if (value.includes(";")) {
       for (const part of value.split(";").map((item) => item.trim()).filter(Boolean)) {
         values.push(part);
-        const [, cookieValue] = part.split("=");
-        if (cookieValue) values.push(cookieValue.trim());
+        const eqIndex = part.indexOf("=");
+        if (eqIndex !== -1) {
+          const cookieValue = part.slice(eqIndex + 1).trim();
+          if (cookieValue) values.push(cookieValue);
+        }
       }
     }
   }

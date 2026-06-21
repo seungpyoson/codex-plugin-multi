@@ -131,9 +131,12 @@ export async function spawnAgy(profile, runtimeInputs = {}) {
     let timedOut = false;
     let settled = false;
     let timer = null;
+    let killFallbackTimer = null;
     const clearTimer = () => {
       if (timer) clearTimeout(timer);
       timer = null;
+      if (killFallbackTimer) clearTimeout(killFallbackTimer);
+      killFallbackTimer = null;
     };
     const finishReject = (error) => {
       if (settled) return;
@@ -152,7 +155,8 @@ export async function spawnAgy(profile, runtimeInputs = {}) {
       timer = setTimeout(() => {
         timedOut = true;
         try { child.kill("SIGTERM"); } catch { /* already gone */ }
-        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 2000).unref();
+        killFallbackTimer = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 2000);
+        killFallbackTimer.unref();
       }, timeoutMs);
     }
 
