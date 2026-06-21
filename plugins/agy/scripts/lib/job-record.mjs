@@ -22,6 +22,7 @@
 //   on claude-result-handling/SKILL.md mentioning each field).
 
 import {
+  PRE_TARGET_NOT_SENT_ERROR_CODES,
   SOURCE_CONTENT_TRANSMISSION,
   buildExternalReview,
   sourceContentTransmissionForExecution,
@@ -264,17 +265,22 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *                     parsed diagnostic is available.
  */
 export function classifyExecution(execution) {
-  // Auth failures AGY reports AFTER the process spawned (pidInfo present) mean the
+  // Any failure AGY reports AFTER the process spawned (pidInfo present) means the
   // selected source packet was already sent. The shared classifyCommonParsedFailure
-  // runs before the provider hook and maps not_authed (a PRE_TARGET_NOT_SENT_ERROR_CODES
-  // member) to error_code not_authed, which discloses source NOT_SENT — false once the
-  // target has spawned. Reclassify these to the agy_error catch-all (a content-received
-  // code) so source_content_transmission resolves SENT — the same outcome kimi gets by
-  // routing ACP auth-on-prompt failures off the pre-target not-sent set. Pre-spawn
-  // not_authed (no pidInfo) still flows through and discloses NOT_SENT.
+  // runs before the provider hook and maps every PRE_TARGET_NOT_SENT_ERROR_CODES member
+  // (not_authed, git_binary_rejected, spawn_failed, …) to that same error_code, which
+  // discloses source NOT_SENT — false once the target has spawned. Reclassify ALL of
+  // these post-spawn cases to the agy_error catch-all (a content-received code) so
+  // source_content_transmission resolves SENT — the same outcome kimi gets by routing
+  // ACP auth-on-prompt failures off the pre-target not-sent set. Keying on the whole
+  // pre-target set, not the single not_authed code, makes the invariant structural —
+  // target spawned ⇒ SENT — rather than correct only because every other pre-target
+  // code happens to exit before spawn today (a future post-spawn producer of any
+  // pre-target code would otherwise silently under-disclose). Pre-spawn failures
+  // (no pidInfo) still flow through and disclose NOT_SENT.
   if (
     execution?.parsed?.ok === false
-    && execution.parsed.reason === "not_authed"
+    && PRE_TARGET_NOT_SENT_ERROR_CODES.has(execution.parsed.reason)
     && execution.pidInfo
   ) {
     return {

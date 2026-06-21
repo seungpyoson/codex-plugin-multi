@@ -174,12 +174,23 @@ test("spawnAgy: clears SIGKILL fallback when timeout child exits after SIGTERM",
   };
 
   try {
-    const signalPath = path.join(dir, "signals.txt");
+    // A Node child that registers its SIGTERM handler synchronously as its first statement,
+    // before any I/O. The previous /bin/sh child installed its trap AFTER a printf, so a
+    // SIGTERM landing before the `trap` line was reached killed it on the default disposition
+    // (no graceful exit) — a real race the 500ms budget only masked on a fast host (a 0ms
+    // window mismatched 40/40). The handler is installed once the Node interpreter reaches
+    // its first statement (~hundreds of ms cold start at worst); the 1000ms timeout budget
+    // clears that by a wide margin (and stays distinct from the 2000ms SIGKILL-fallback delay
+    // that the fallbackTimers assertion below keys on). Critically the residual is a LOUD
+    // failure mode, never a
+    // false pass: graceful exit is asserted parent-side via exitCode===0 && signal===null,
+    // which neither a SIGKILL fallback (signal "SIGKILL") nor a default-disposition SIGTERM
+    // kill (signal "SIGTERM") can ever satisfy — an over-budget cold start fails the test
+    // visibly rather than passing it wrongly. No timing-dependent file side-channel remains.
     const binary = writeExecutable(dir, "agy-term-trap", [
-      "#!/bin/sh",
-      `printf 'ready\\n' > ${JSON.stringify(signalPath)}`,
-      `trap 'printf "term\\n" >> ${JSON.stringify(signalPath)}; exit 0' TERM`,
-      "while :; do sleep 1 & wait $!; done",
+      `#!${process.execPath}`,
+      `process.on("SIGTERM", () => { process.exit(0); });`,
+      `setInterval(() => {}, 1000);`,
       "",
     ].join("\n"));
 
@@ -188,11 +199,15 @@ test("spawnAgy: clears SIGKILL fallback when timeout child exits after SIGTERM",
       cwd: dir,
       env: process.env,
       promptText: "source-bearing prompt",
-      timeoutMs: 500,
+      timeoutMs: 1000,
     });
 
     assert.equal(execution.timedOut, true);
-    assert.equal(readFileSync(signalPath, "utf8"), "ready\nterm\n");
+    // exitCode 0 + signal null proves the child caught SIGTERM and exited gracefully BEFORE
+    // the 2000ms SIGKILL fallback fired (a SIGKILL would surface as signal "SIGKILL",
+    // exitCode null). Deterministic — no dependence on signal-vs-handler-install timing.
+    assert.equal(execution.exitCode, 0);
+    assert.equal(execution.signal, null);
     assert.equal(fallbackTimers.length, 1);
     assert.equal(clearedFallbackTimers.has(fallbackTimers[0]), true);
   } finally {

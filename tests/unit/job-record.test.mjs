@@ -2854,6 +2854,37 @@ test("buildJobRecord: AGY post-spawn auth parse does not claim source was not se
   assert.equal(rec.external_review.source_content_transmission, "sent");
 });
 
+test("buildJobRecord: AGY post-spawn pre-target failures all disclose SENT (structural invariant)", () => {
+  // Twin of the pre-spawn (pidInfo:null -> NOT_SENT) loop above: once the target has
+  // spawned (pidInfo present) the source packet was already sent, so EVERY
+  // pre-target-not-sent code — not just not_authed — must reclassify to the agy_error
+  // catch-all and disclose SENT. This locks the widened classifyExecution guard so a
+  // future post-spawn producer of any pre-target code cannot silently under-disclose.
+  const invocation = makeInvocation({
+    target: "agy",
+    binary: "agy",
+    model: null,
+    review_prompt_provider: "Google Antigravity CLI",
+  });
+  for (const [reason, message] of [
+    ["prompt_sidecar_failed", "failed to consume prompt sidecar"],
+    ["git_binary_rejected", "RELAY_GIT_BINARY must not point inside the current workspace."],
+    ["spawn_failed", "AGY readiness check failed before source transmission: spawn agy ENOENT"],
+    ["preflight_stale", "AGY readiness check failed before source transmission"],
+  ]) {
+    const rec = buildAgyJobRecord(invocation, {
+      exitCode: 1,
+      parsed: { ok: false, reason, error: message, result: null },
+      pidInfo: makePidInfo(),
+      agySessionId: null,
+    }, []);
+    assert.equal(rec.status, "failed", reason);
+    assert.equal(rec.error_code, "agy_error", reason);
+    assert.equal(rec.error_message, message, reason);
+    assert.equal(rec.external_review.source_content_transmission, "sent", reason);
+  }
+});
+
 test("buildJobRecord: finalization_failed errorMessage classifies as finalization_failed (PR #21 review HIGH 1)", () => {
   // The companion's executeRun fallback synthesizes a record with
   // errorMessage="finalization_failed: meta=… ; state=…" when writeJobFile
