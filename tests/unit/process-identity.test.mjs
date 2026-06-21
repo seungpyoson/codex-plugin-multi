@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { capturePidInfo, currentBootId, holderActive } from "../../scripts/lib/process-identity.mjs";
 
 const SKIP_PS_UNDER_DARWIN_SANDBOX = {
@@ -14,6 +15,22 @@ test("currentBootId is stable within a process and non-empty", () => {
   assert.equal(typeof a, "string");
   assert.ok(a.length > 0);
   assert.equal(a, b);
+});
+
+test("currentBootId reads the clock-independent boot-session uuid on darwin", (t) => {
+  // The boot id must prove a reboot, not a clock step. On darwin that means
+  // kern.bootsessionuuid (clock-independent), NOT kern.boottime (= wall - uptime).
+  if (process.platform !== "darwin") return t.skip("darwin-only");
+  if (process.env.RELAY_BOOT_ID) return t.skip("RELAY_BOOT_ID override in effect");
+  const r = spawnSync("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], { encoding: "utf8" });
+  if (r.error || r.status !== 0 || !r.stdout.trim()) {
+    return t.skip("sysctl kern.bootsessionuuid unavailable (sandbox/ancient macOS)");
+  }
+  // currentBootId must return the UUID, never the clock-derived boottime string
+  // (which contains "sec ="). Proves the fix reads the reboot-proof source.
+  const got = currentBootId();
+  assert.equal(got, r.stdout.trim());
+  assert.ok(!got.includes("sec ="), `boot id must not be clock-derived boottime: ${got}`);
 });
 
 test("capturePidInfo returns {pid,starttime,argv0} for the live self pid", SKIP_PS_UNDER_DARWIN_SANDBOX, () => {

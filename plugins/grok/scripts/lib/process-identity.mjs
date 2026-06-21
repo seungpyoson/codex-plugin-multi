@@ -148,8 +148,20 @@ export function currentBootId(env = process.env) {
     catch { /* fall through */ }
   }
   if (!CACHED_BOOT_ID && process.platform === "darwin") {
-    const r = spawnSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], { encoding: "utf8" });
-    if (!r.error && r.status === 0) CACHED_BOOT_ID = r.stdout.trim();
+    // kern.bootsessionuuid is a per-boot UUID regenerated ONLY at actual boot, so
+    // it is clock-independent: an NTP/clock step cannot change it the way it shifts
+    // kern.boottime (= wall_clock - uptime). The boot id is the SOLE safe trigger
+    // for clearing an unverifiable (capture_error) slot (§6 of the #234 design), so
+    // it MUST prove a reboot, never a mere clock adjustment — otherwise a clock step
+    // would falsely "prove" a reboot and reclaim a live holder's slot. Prefer the
+    // UUID; fall back to clock-derived boottime only on ancient macOS lacking it.
+    const uuid = spawnSync("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], { encoding: "utf8" });
+    if (!uuid.error && uuid.status === 0 && uuid.stdout.trim()) {
+      CACHED_BOOT_ID = uuid.stdout.trim();
+    } else {
+      const bt = spawnSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], { encoding: "utf8" });
+      if (!bt.error && bt.status === 0 && bt.stdout.trim()) CACHED_BOOT_ID = bt.stdout.trim();
+    }
   }
   if (!CACHED_BOOT_ID) CACHED_BOOT_ID = `unknown-${hostname()}`; // never empty
   return CACHED_BOOT_ID;

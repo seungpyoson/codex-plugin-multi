@@ -30,7 +30,7 @@
 
 | File | Responsibility | Action |
 |---|---|---|
-| `scripts/lib/process-identity.mjs` | Canonical liveness: `capturePidInfo`, `currentBootId`, `holderActive` | Create (move from kimi `identity.mjs`) |
+| `scripts/lib/process-identity.mjs` | Canonical liveness: `capturePidInfo`, `currentBootId` (clock-independent boot-session id), `holderActive`; `classifyHolder` 4-state disposition added in Task 2 for the reclaim scan | Create (move from kimi `identity.mjs`) |
 | `scripts/ci/sync-process-identity.mjs` | Copy `process-identity.mjs` → 5 plugins | Create |
 | `plugins/kimi/scripts/lib/identity.mjs` | Re-export `capturePidInfo` from shared lib (no logic dup) | Modify |
 | `scripts/lib/review-workload.mjs` | Counting semaphore: slot family, all-slot accounting, boot-id reclaim, resolver-supplied lockRoot, capacity, legacy migration | Modify (core) |
@@ -129,8 +129,15 @@ export function currentBootId(env = process.env) {
     catch { /* fall through */ }
   }
   if (!CACHED_BOOT_ID && process.platform === "darwin") {
-    const r = spawnSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], { encoding: "utf8" });
-    if (!r.error && r.status === 0) CACHED_BOOT_ID = r.stdout.trim();
+    // kern.bootsessionuuid is clock-independent (regenerated ONLY at boot).
+    // kern.boottime (= wall - uptime) shifts on NTP/clock steps and would
+    // falsely "prove" a reboot, reclaiming a live slot — so it is only the fallback.
+    const uuid = spawnSync("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], { encoding: "utf8" });
+    if (!uuid.error && uuid.status === 0 && uuid.stdout.trim()) CACHED_BOOT_ID = uuid.stdout.trim();
+    else {
+      const bt = spawnSync("/usr/sbin/sysctl", ["-n", "kern.boottime"], { encoding: "utf8" });
+      if (!bt.error && bt.status === 0 && bt.stdout.trim()) CACHED_BOOT_ID = bt.stdout.trim();
+    }
   }
   if (!CACHED_BOOT_ID) CACHED_BOOT_ID = `unknown-${hostname()}`; // never empty
   return CACHED_BOOT_ID;
@@ -186,7 +193,8 @@ git commit -m "feat(workload): promote process liveness + boot-id to synced scri
 - Modify: `tests/unit/review-workload.test.mjs`
 
 **Interfaces:**
-- Consumes: `holderActive`, `capturePidInfo`, `currentBootId` from `./process-identity.mjs` (Task 1).
+- Consumes: `capturePidInfo`, `currentBootId` from `./process-identity.mjs` (Task 1).
+- **Adds to `./process-identity.mjs` (then re-syncs it via `sync-process-identity.mjs` + `build:relay`):** `classifyHolder(holder, env) -> 'alive' | 'dead' | 'unverifiable' | 'foreign'`. **Why this is required:** the existing `holderActive` boolean collapses `alive`/`unverifiable`/`foreign` → `true`, so it **cannot drive reclaim** — it can't distinguish an `unverifiable` (`capture_error`, reclaimable ONLY on a stale boot-id) slot from a genuinely `alive` one. Using `holderActive` for the reclaim scan would either deadlock (never reclaim unverifiable slots) or corrupt (reclaim a live holder). Keep `holderActive` as a thin wrapper = `classifyHolder(...) !== 'dead'` for any existing callers. Add a `classifyHolder` unit test to `tests/unit/process-identity.test.mjs` (alive→self pid; dead→starttime mismatch; unverifiable→`capture_error` throw; foreign→other hostname).
 - Produces: `acquireProviderWorkloadLease({ concurrencyKey, limit, lockRoot, jobId, cwd, sourceBearing, env }) -> {ok:true, lease}|{ok:true, lease:null}|{ok:false, error_code, reason, message, capacity}`. `lease = { file, token }` (plus non-enumerable exit listener). `releaseProviderWorkloadLease(lease) -> boolean`. `providerWorkloadBlockedExecution(block)` carries `capacity:{active_count, limit}` in diagnostics (counts only; holder ids debug-log only). Backward-compat: `provider` is still accepted and, when `concurrencyKey` is absent, the engine throws (no silent fallback) — see Task 6 for consumer wiring.
 
 Behavior is defined by §4, §5.2 (engine obeys supplied `lockRoot`, no internal `RELAY_PROVIDER_WORKLOAD_LOCK_DIR` read when `lockRoot` is provided), §6, §8 of the spec. The tests below are the contract.
@@ -288,11 +296,11 @@ Expected: FAIL — current signature/behaviour does not match (`capacity` undefi
 - [ ] **Step 4: Implement the slot-family semaphore**
 
 Modify `scripts/lib/review-workload.mjs` per §4/§6/§8. Key changes (keep the gate, `tryCreateLeaseFile` link-atomicity, exit-listener, and token-sealed `removeInactiveHolder` intact):
-- `import { holderActive, capturePidInfo, currentBootId } from "./process-identity.mjs";` and **delete** the local `pidAlive`/`holderActive`.
+- `import { classifyHolder, capturePidInfo, currentBootId } from "./process-identity.mjs";` (add `classifyHolder` to the lib per the Interfaces block above, then re-sync + `build:relay`) and **delete** the local `pidAlive`/`holderActive`.
 - `lockRoot` comes from the admission context; `lockPath`/scan operate under it. Throw if `sourceBearing === true` and `concurrencyKey` is missing/empty.
 - Validate `limit`: `Number.isSafeInteger(limit) && limit >= 1` else return a block (fail-closed).
 - `slotPath(lockRoot, key, i)` → `<lockRoot>/<keyslug>.slot-<i>.json`. Payload adds `{starttime, argv0}` (from `capturePidInfo(process.pid)`) and `boot_id` (`currentBootId(env)`).
-- Acquire under the gate: enumerate **all** existing `<keyslug>.slot-*.json` (glob via `readdirSync(lockRoot)` filtered by prefix), classify each via `holderActive`; for inactive holders run `removeInactiveHolder`; for unverifiable+stale-boot-id slots clear them (reboot-proven); compute `activeCount` across **all** indices; if `activeCount >= limit` return `blockResult(... capacity:{active_count, limit})`; else claim lowest free index `0..` (first index with no active holder), `tryCreateLeaseFile`.
+- Acquire under the gate: enumerate **all** existing `<keyslug>.slot-*.json` (glob via `readdirSync(lockRoot)` filtered by prefix), classify each via `classifyHolder` → `alive`|`dead`|`unverifiable`|`foreign`. **Reclaim policy:** `dead` → `removeInactiveHolder` (always); `unverifiable` (`capture_error`) → reclaim **only** if its recorded `boot_id !== currentBootId(env)` (reboot proven), else treat as occupied; `foreign` → occupied, **never** reclaimed (single-host design); `alive` → occupied. `activeCount` = count of slots NOT reclaimed (alive + held-unverifiable + foreign) across **all** indices; if `activeCount >= limit` return `blockResult(... capacity:{active_count, limit})`; else claim lowest free index `0..` (first index with no occupant after reclaim), `tryCreateLeaseFile`.
 - `providerWorkloadBlockedExecution` adds `capacity` (counts only) to `diagnostics.provider_workload`; any holder/job-id detail goes only to a debug log path, never the returned object.
 - Legacy: a pre-existing `<keyslug>.json` (old single-lock filename) is read as slot-0-equivalent (counts toward `activeCount` at limit 1) for one-time deploy compatibility.
 
@@ -550,7 +558,7 @@ Expected: both exit 0 / all pass. (Per memory, also confirm CI green after push 
 
 - **Spec coverage:** §3 D1/D2/D3 → Tasks 4/6/7; §4 semaphore → Task 2; §5 facts/resolver → Task 4; §5.1 identity → Tasks 4+6; §5.2 lock root → Tasks 2+4; §6 liveness/boot-id → Tasks 1+2+3; §7 resend → Task 5; §8 capacity → Task 2; §9 tests → Tasks 2/3/4/5/6/8; §10 files → all tasks; §11 rollout order → task ordering; §12 follow-ups → Task 9. No gaps.
 - **Placeholder scan:** test bodies in Task 3 Steps 2 are intentionally described (multi-process timing harness) with an explicit minimal contract; all other steps carry concrete code. Flagged for the implementer.
-- **Type consistency:** admission context `{concurrencyKey, limit, lockRoot}` is uniform across Tasks 2/4/6; `resolveConcurrencyAdmission` return shape matches `acquireProviderWorkloadLease` input; `capturePidInfo`/`holderActive`/`currentBootId` names consistent Tasks 1↔2↔3.
+- **Type consistency:** admission context `{concurrencyKey, limit, lockRoot}` is uniform across Tasks 2/4/6; `resolveConcurrencyAdmission` return shape matches `acquireProviderWorkloadLease` input; `capturePidInfo`/`holderActive`/`currentBootId`/`classifyHolder` names consistent Tasks 1↔2↔3. **Post-Task-1 corrections (depth check):** (a) `currentBootId` darwin source is `kern.bootsessionuuid` (clock-independent), not `kern.boottime`; (b) the reclaim scan in Task 2 uses the 4-state `classifyHolder`, not the boolean `holderActive`, because the boolean cannot distinguish `unverifiable` from `alive` — see Task 2 Interfaces.
 
 ## Execution caveat (codex rescue)
 
