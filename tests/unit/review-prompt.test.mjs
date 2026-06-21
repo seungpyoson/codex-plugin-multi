@@ -4360,3 +4360,74 @@ test("root2 detector3: negated-finding variant does not count as concrete (still
     assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
   }
 });
+
+test("root2 detector3: bounded code-locus regexes stay linear-time on adversarial input (ReDoS S5852 guard)", async () => {
+  // CONCRETE_FINDING_CODE_LOCUS runs on adversarial external-review text. After bounding every
+  // quantifier (the S5852 fix), all three locus regexes must stay linear-time. This input is a
+  // defect-cue-bearing clause (so hasConcreteFinding evaluates every locus regex) followed by a
+  // 200k-char pathological run with no terminating dot/paren — forcing each regex to scan to the
+  // end without matching. A backtracking regression (re-introducing an unbounded *,+) would blow
+  // this from ~10ms to seconds+; the generous 2000ms budget catches that without CI flake.
+  const adversarialReview = "Verdict: REQUEST_CHANGES\nthe handler throws " + "a".repeat(200000);
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const start = process.hrtime.bigint();
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
+      result: adversarialReview,
+      status: "completed",
+      errorCode: null,
+    });
+    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.ok(
+      elapsedMs < 2000,
+      `[${name}] buildReviewAuditManifest took ${elapsedMs.toFixed(1)}ms on a 200k-char adversarial review; ` +
+        "the bounded locus regexes must be linear (<2000ms). A super-linear regression likely re-introduced an unbounded quantifier.",
+    );
+    // A 200k-char review is long, so it is never "shallow" regardless of locus matching.
+    assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] a 200k-char review must not be flagged shallow`);
+  }
+});
+
+test("root2 detector3: long-but-realistic call loci still escape the shallow flag after bounding", async () => {
+  // EQUIVALENCE ANCHOR: the identifier bound ({0,128}) sits far above any real identifier, so a
+  // concise review whose only concrete finding cites a long-but-realistic function call must still
+  // be recognized (looks_shallow=false). Guards against tightening the bound far enough to clip
+  // real loci and re-introduce the Root-2 false positive. (Only the call locus is asserted here:
+  // hasConcreteFinding splits clauses on ".", so path/member loci are evaluated on dot-free clauses
+  // — that pre-existing reachability gap is tracked separately, not relied on by this fix.)
+  const cases = [
+    {
+      selected: "src/services/auth/scheduler.js",
+      result: "Verdict: REQUEST CHANGES. The function validateAndRefreshAuthToken() returns the wrong expiry instead of the computed deadline",
+    },
+    {
+      selected: "lib/persistence/pool.js",
+      result: "Request changes: acquireConnectionWithRetry() leaks the socket and the cleanup path swallows the close error",
+    },
+    {
+      selected: "webhooks.js",
+      result: "Verdict: REQUEST CHANGES. processIncomingWebhookPayload() drops the signature header instead of validating it first",
+    },
+  ];
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const { selected, result } of cases) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
+        result,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] looks_shallow should be false for: ${result}`);
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
+        false,
+        `[${name}] shallow_output should be absent for: ${result}`,
+      );
+      assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] failed_review_slot should be false for: ${result}`);
+    }
+  }
+});

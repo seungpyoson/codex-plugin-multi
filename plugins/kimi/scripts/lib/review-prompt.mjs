@@ -1412,10 +1412,18 @@ const TINY_SOURCE_MAX_LINES = 5;
 // nothing") never qualifies. Defect-cue oriented: a terse APPROVE that only
 // asserts correctness stays flagged (conservative — fail toward flagging).
 const CONCRETE_FINDING_DEFECT_CUE = /\b(instead of|should (?:be|use|return|call|not)|rather than|off-by-one|null deref|use-after-free|race condition|returns? the wrong|subtracts?|adds? to|drops?|never (?:called|awaited|closed)|leaks?|swallows?|throws?|overflow|underflow|incorrect|wrong (?:order|sign|value|index)|fails to|does not (?:handle|close|await|free|release))\b/i;
+// Every quantifier here is UPPER-BOUNDED (no unbounded *,+ on a character class):
+// these run on adversarial external-review text, so each must be provably linear-time
+// (S5852 / ReDoS hardening). The bounds (path-prefix 255, filename 128, line# 9 digits,
+// identifier 128, inter-token whitespace 16) sit far above any real path/identifier, so
+// bounding only clips pathological >bound runs — it never changes a match on real review
+// text (verified: 0 divergences on the realistic corpus) and the bounded language is a
+// strict SUBSET of the unbounded one, so the detector still only narrows (fails toward
+// flagging). Do NOT relax these back to *,+ without restoring the linear-time guarantee.
 const CONCRETE_FINDING_CODE_LOCUS = [
-  /(?<![\w./-])(?:[\w./-]*\/)?[\w-]+\.[a-z][\w]{0,4}(?::\d+)?(?![\w/])/i,
-  /(?<![\w.])[A-Za-z_$][\w$]*\s*\(/,
-  /(?<![\w.])[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*/,
+  /(?<![\w./-])(?:[\w./-]{0,255}\/)?[\w-]{1,128}\.[a-z][\w]{0,4}(?::\d{1,9})?(?![\w/])/i,
+  /(?<![\w.])[A-Za-z_$][\w$]{0,128}\s{0,16}\(/,
+  /(?<![\w.])[A-Za-z_$][\w$]{0,128}\.[A-Za-z_$][\w$]{0,128}/,
 ];
 const CONCRETE_FINDING_NEGATION = /\b(no|not|never|nothing|none|without|n't|correct|correctly|fine|clean|missing nothing|does not appear)\b/i;
 
