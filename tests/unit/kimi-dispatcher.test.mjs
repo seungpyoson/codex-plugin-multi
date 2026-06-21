@@ -6,9 +6,10 @@ import { providerApiCapability, sanitizeTargetEnv } from "../../plugins/kimi/scr
 
 // kimi-code has no per-invocation tool restriction and no step budget, so the
 // adapter no longer carries any tool-allowlist or max-step authority on the
-// mode profiles. The argv surface itself is covered by kimi-code-surface.test.mjs
-// (buildKimiCodeArgs / parseKimiResult / spawnKimi). This file guards the profile
-// table's contract and the spawn environment sanitization.
+// mode profiles. The ACP command surface itself is covered by
+// kimi-code-surface.test.mjs and acp-client.test.mjs (spawnKimi / runAcpPrompt /
+// acpResultToParsed). This file guards the profile table's contract and the spawn
+// environment sanitization.
 
 test("MODE_PROFILES: no profile carries dead tool-allowlist or step-budget authority", () => {
   for (const [name, profile] of Object.entries(MODE_PROFILES)) {

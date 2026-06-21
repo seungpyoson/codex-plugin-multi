@@ -26,6 +26,7 @@
 //   MOCK_ACP_HANG_ON_EOF=1         ignore stdin EOF so the client's graceful-close fallback kill fires (slow-close path)
 //   MOCK_ACP_NO_TRAILING_NEWLINE=1 emit the terminal session/prompt frame without a trailing newline, then EOF
 //   MOCK_ACP_END_STDOUT_NO_EXIT=1  emit a newline-less terminal frame and END stdout but stay alive (isolates the 'end' flush; no process-'close' backstop)
+//   MOCK_ACP_SPLIT_MULTIBYTE=1     write the agent_message_chunk JSON line in TWO raw Buffer halves split mid-multibyte-char (with a delay), forcing two stdout chunks — proves the client decodes UTF-8 across chunk boundaries (no U+FFFD mojibake)
 
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -113,6 +114,30 @@ async function finishPromptTurn(reqId, promptText) {
         ] },
       });
     });
+  }
+  if (env.MOCK_ACP_SPLIT_MULTIBYTE === "1") {
+    // Emit one agent_message_chunk whose serialized NDJSON line is written as TWO
+    // raw Buffer halves split at a UTF-8 continuation byte (so a multibyte char is
+    // bisected across the boundary), with a delay so the client sees two separate
+    // "data" chunks. A stateless per-chunk decode would bake U+FFFD here; a stream
+    // with setEncoding("utf8") holds the partial sequence and decodes it intact.
+    const note = `${JSON.stringify({
+      jsonrpc: "2.0", method: "session/update",
+      params: { sessionId: "session_mock", update: {
+        sessionUpdate: "agent_message_chunk", messageId: "msg_0", content: { type: "text", text: REPLY },
+      } },
+    })}\n`;
+    const buf = Buffer.from(note, "utf8");
+    let split = Math.floor(buf.length / 2);
+    for (let i = 1; i < buf.length; i += 1) {
+      if ((buf[i] & 0xc0) === 0x80) { split = i; break; } // first continuation byte -> bisects its char
+    }
+    process.stdout.write(buf.subarray(0, split));
+    setTimeout(() => {
+      process.stdout.write(buf.subarray(split));
+      send({ jsonrpc: "2.0", id: reqId, result: { stopReason: env.MOCK_ACP_STOP_REASON ?? "end_turn" } });
+    }, 50);
+    return;
   }
   const parts = [];
   const per = Math.ceil(REPLY.length / CHUNKS) || REPLY.length;

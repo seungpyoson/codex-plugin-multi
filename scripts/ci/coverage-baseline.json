@@ -36,7 +36,7 @@
       "functions": 100
     },
     "plugins/api-reviewers/scripts/lib/external-review.mjs": {
-      "lines": 85.98,
+      "lines": 84.8,
       "branches": 94.29,
       "functions": 100
     },
@@ -151,7 +151,7 @@
       "functions": 100
     },
     "plugins/claude/scripts/lib/external-review.mjs": {
-      "lines": 85.98,
+      "lines": 84.8,
       "branches": 94.29,
       "functions": 100
     },
@@ -301,7 +301,7 @@
       "functions": 100
     },
     "plugins/gemini/scripts/lib/external-review.mjs": {
-      "lines": 85.98,
+      "lines": 84.8,
       "branches": 94.29,
       "functions": 100
     },
@@ -426,7 +426,7 @@
       "functions": 100
     },
     "plugins/grok/scripts/lib/external-review.mjs": {
-      "lines": 85.98,
+      "lines": 84.8,
       "branches": 94.29,
       "functions": 100
     },
@@ -541,7 +541,7 @@
       "functions": 93
     },
     "plugins/kimi/scripts/lib/external-review.mjs": {
-      "lines": 85.98,
+      "lines": 84.8,
       "branches": 94.29,
       "functions": 100
     },

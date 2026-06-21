@@ -70,7 +70,13 @@ class AcpPeer {
     this.pending = new Map();
     this.buffer = "";
     this.protocolError = null;
-    child.stdout.on("data", (chunk) => this._ingest(chunk.toString("utf8")));
+    // Decode stdout as UTF-8 at the stream layer: Node's StringDecoder holds any
+    // multibyte sequence split across a chunk/pipe boundary until it completes, so
+    // "data" delivers already-decoded strings. A stateless per-chunk
+    // Buffer.toString("utf8") would bake U+FFFD mojibake into review prose / quoted
+    // non-ASCII source whenever a character straddled an OS pipe-buffer edge.
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => this._ingest(chunk));
     // A well-behaved NDJSON server newline-terminates every frame, but a final frame
     // emitted without a trailing newline at EOF would otherwise sit unparsed in the
     // buffer and the turn would be misread as incomplete. Flush it on stream end.
@@ -214,7 +220,10 @@ export async function runAcpPrompt({
   const getPidInfo = attachPidCapture(child, onSpawn);
 
   let stderr = "";
-  child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+  // Same UTF-8 stream decoding as stdout: a multibyte char split across a stderr
+  // chunk boundary must not corrupt diagnostics that feed error messages/disclosures.
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
 
   // Assistant text, grouped by messageId so review (final message only) and rescue
   // (full transcript) can both be served. Chunks with no messageId fold into one

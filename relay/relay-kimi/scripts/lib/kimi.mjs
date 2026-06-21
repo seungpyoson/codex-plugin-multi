@@ -20,14 +20,6 @@ function assertProfile(profile) {
   }
 }
 
-// Single source of truth for which profiles may use the kimi-code ACP surface.
-// Post-migration that is EVERY mode: the prompt embeds the selected source, so
-// review-family runs complete with no tool calls and rescue runs tools-on in the
-// working tree. A null/unknown profile is rejected.
-export function kimiCodeSurfaceEligible(profile) {
-  return Boolean(profile && typeof profile === "object" && typeof profile.name === "string");
-}
-
 // Map a relay mode profile onto the ACP tool-permission mode. Review-family runs
 // (permission_mode "plan") need no tools — the source is embedded in the prompt —
 // so we leave the agent's default mode and DENY any stray permission request,

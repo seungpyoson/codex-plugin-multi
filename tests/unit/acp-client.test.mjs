@@ -124,6 +124,20 @@ test("finalMessageOnly: review keeps the final message; rescue keeps the full tr
   assert.equal(rescue.result, "AB\nCD\nEF");
 });
 
+test("multibyte UTF-8 in the reply survives a stdout chunk-boundary split (no mojibake)", async () => {
+  // The model's review prose / quoted source can contain non-ASCII text. The ACP
+  // reply is decoded chunk-by-chunk; a multibyte char split across a pipe boundary
+  // must NOT corrupt to U+FFFD. The mock writes the chunk's JSON line in two raw
+  // halves split inside a multibyte sequence (with a delay forcing two "data"
+  // events). Regression for the stateless Buffer.toString("utf8") decode bug — relay
+  // must report the model's verdict verbatim, not mojibake.
+  const reply = "café — résumé ✅ 日本語 — naïve coöperate";
+  const r = await run({}, { MOCK_ACP_REPLY: reply, MOCK_ACP_SPLIT_MULTIBYTE: "1" });
+  assert.equal(r.ok, true, r.error ?? "");
+  assert.doesNotMatch(r.result, /�/, "no U+FFFD replacement chars from a stateless per-chunk decode");
+  assert.equal(r.result, reply, "multibyte content must decode intact across the stdout chunk boundary");
+});
+
 test("refusal stopReason -> kimi_refused (source was sent)", async () => {
   const r = await run({}, { MOCK_ACP_STOP_REASON: "refusal", MOCK_ACP_REPLY: "" });
   assert.equal(r.ok, false);

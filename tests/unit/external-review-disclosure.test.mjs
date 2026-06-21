@@ -22,7 +22,7 @@ const NOT_SENT_CODES = [
   "approval_scope_changed", "cache_install", "cli_contract_mismatch", "preflight_stale",
   "prompt_too_large", "scope_failed", "spawn_failed", "oauth_inference_rejected",
   "source_packet_too_large", "resend_confirmation_required", "not_authed", "sandbox_blocked",
-  "model_unavailable", "acp_protocol_error", "some_unmapped_code",
+  "model_unavailable", "acp_protocol_error", "usage_limited_preflight", "some_unmapped_code",
 ];
 
 for (const rel of COPIES) {
@@ -65,6 +65,12 @@ for (const rel of COPIES) {
       const text = externalReviewDisclosure(provider, "failed", T.NOT_SENT, code);
       assert.ok(text.length > 0, code);
     }
+    // Pre-send quota (usage_limited_preflight) must render the NOT_SENT framing
+    // verbatim — never a SENT-implying string. Pins the disclosure wording behind
+    // the over-disclosure fix (PR #226) so it cannot silently flip.
+    const preflightText = externalReviewDisclosure(provider, "failed", T.NOT_SENT, "usage_limited_preflight");
+    assert.match(preflightText, /was not sent/, "usage_limited_preflight must disclose NOT sent");
+    assert.match(preflightText, /before the review prompt was written/, "usage_limited_preflight must state the failure preceded the prompt write");
 
     // sourceContentTransmissionForExecution across statuses, codes, and pidInfo.
     for (const status of ["queued", "running", "stale", "cancelled", "completed", "failed"]) {
