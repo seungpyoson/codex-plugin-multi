@@ -60,38 +60,54 @@ function acpResultToParsed(acp) {
       raw: acp.rawTranscript,
     };
   }
+  // Collect the raw failure reason + detail from every signal, then enforce the
+  // source-transmission disclosure invariant at ONE chokepoint below (both
+  // directions), keyed on acp.sourceSent — the adapter's single source of truth for
+  // whether the prompt (the user's selected source) was written.
+  //
   // A quota/billing failure surfaces in the ACP error or stderr (scanned only on the
-  // error/stderr channels, never successful review text). usage_limited is a
-  // content-received (SENT) code: it assumes the quota was hit BY the review request,
-  // which holds ONLY once the prompt was written. Gate it on acp.sourceSent (the
-  // adapter's single source of truth) exactly like the lifecycle-code coercion below
-  // — usage_limited is just the one content-received code derived from TEXT scanning
-  // rather than the lifecycle, so the same disclosure invariant must apply. A quota
-  // error that surfaced BEFORE the prompt write (e.g. session/new rejected for usage
-  // limit, source NOT sent) maps to the pre-target usage_limited_preflight (NOT_SENT)
-  // so relay does not over-disclose not-sent source as SENT. (timeout is also a
-  // content-received code reachable pre-send, but that is the deliberately deferred
-  // #228 cross-provider behavior, not a text-scan classification bug.)
+  // error/stderr channels, never successful review text). It carries a SPECIFIC
+  // pre/post code so the disclosure names the quota cause: post-send usage_limited
+  // (content-received -> SENT), pre-send usage_limited_preflight (pre-target ->
+  // NOT_SENT).
+  let reason;
+  let error;
   const usageLimited = usageLimitMessage(acp.error ?? "", acp.stderr ?? "");
   if (usageLimited) {
-    const reason = acp.sourceSent === true ? "usage_limited" : "usage_limited_preflight";
-    return { ok: false, reason, error: usageLimited, sessionId: acp.sessionId, raw: acp.rawTranscript };
+    reason = acp.sourceSent === true ? "usage_limited" : "usage_limited_preflight";
+    error = usageLimited;
+  } else {
+    reason = ACP_REASON_TO_CODE[acp.reason] ?? acp.reason ?? "kimi_error";
+    error = acp.error;
   }
-  const mappedReason = ACP_REASON_TO_CODE[acp.reason] ?? acp.reason ?? "kimi_error";
-  // Disclosure invariant — closes the under-disclosure CLASS at one chokepoint.
-  // Once the adapter has written the prompt (acp.sourceSent === true, the adapter's
-  // single source of truth), the user's source HAS been transmitted, so the failure
-  // code MUST classify as content-received. A code that downstream buckets as
-  // pre-target/source-NOT-sent here would disclose transmitted source as NOT_SENT —
-  // the dangerous direction (e.g. a -32000 authRequired returned by session/prompt
-  // maps auth_required -> not_authed, a member of PRE_TARGET_NOT_SENT_ERROR_CODES).
-  // Coerce ANY such post-send code to the generic content-received code rather than
-  // patching each branch; pre-prompt failures (sourceSent === false) pass through
-  // unchanged and still disclose NOT_SENT. The raw detail is preserved in error.
-  const reason = acp.sourceSent === true && PRE_TARGET_NOT_SENT_ERROR_CODES.has(mappedReason)
-    ? "kimi_error"
-    : mappedReason;
-  return { ok: false, reason, error: acp.error, sessionId: acp.sessionId, raw: acp.rawTranscript };
+
+  // Disclosure invariant — closed SYMMETRICALLY at this one chokepoint so neither
+  // direction depends on each upstream branch remembering the sourceSent gate.
+  //
+  // Under-disclosure (sourceSent === true): the prompt was written, so the source HAS
+  // been transmitted and the code MUST classify content-received. A pre-target code
+  // here (e.g. a -32000 authRequired returned by session/prompt -> auth_required ->
+  // not_authed, a member of PRE_TARGET_NOT_SENT_ERROR_CODES) would disclose
+  // transmitted source as NOT_SENT — the dangerous direction. Coerce any post-send
+  // pre-target code to the generic content-received kimi_error.
+  //
+  // Over-disclosure (sourceSent === false): the prompt was never written, so the
+  // source did NOT leave the machine and the disclosure MUST be NOT_SENT. Allow only
+  // pre-target codes (which already disclose NOT_SENT) to pass; coerce ANYTHING that
+  // would classify content-received -> SENT (a lifecycle code OR a future un-gated
+  // text-scan like the quota matcher above) to the generic pre-target
+  // acp_protocol_error. This makes the over-disclosure class structurally unreachable
+  // — the mirror of the under-disclosure guard — instead of trusting each text-scan
+  // to remember the gate. EXCEPTION: timeout is the deliberately-deferred #228
+  // cross-provider behavior (a pre-prompt handshake timeout discloses SENT by design)
+  // and is left untouched until #228 distinguishes pre/post-send timeouts. The raw
+  // detail is preserved in error.
+  if (acp.sourceSent === true) {
+    if (PRE_TARGET_NOT_SENT_ERROR_CODES.has(reason)) reason = "kimi_error";
+  } else if (reason !== "timeout" && !PRE_TARGET_NOT_SENT_ERROR_CODES.has(reason)) {
+    reason = "acp_protocol_error";
+  }
+  return { ok: false, reason, error, sessionId: acp.sessionId, raw: acp.rawTranscript };
 }
 
 // Exported for focused bridge tests: proves the post-send pre-target coercion holds
