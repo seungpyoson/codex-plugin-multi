@@ -167,16 +167,29 @@ export function currentBootId(env = process.env) {
   return CACHED_BOOT_ID;
 }
 
-export function holderActive(holder, env = process.env) {
-  if (!holder || typeof holder !== "object") return false;
-  if (holder.hostname && holder.hostname !== hostname()) return true; // foreign host => occupied, fail-closed
+export function classifyHolder(holder, env = process.env, capture = capturePidInfo) {
+  if (!holder || typeof holder !== "object") return "dead";
+  if (holder.hostname && holder.hostname !== hostname()) return "foreign";
   let info;
-  try { info = capturePidInfo(holder.pid); }
+  try { info = capture(holder.pid); }
   catch (e) {
-    // capture_error (sandbox/hidepid) => occupied/fail-closed; process_gone => dead.
-    return !String(e?.message ?? "").startsWith("process_gone");
+    const message = String(e?.message ?? "");
+    // process_gone = proven gone. invalid_pid = structurally impossible to be a
+    // live process (0 / negative / non-integer — a corrupt or legacy-sentinel
+    // record). Both are safe to reclaim: neither can correspond to a running
+    // holder, so freeing the slot can never over-admit. This matches the
+    // pre-#234 single-flight `pidAlive` (invalid pid => not alive => reclaimable).
+    // Only capture_error — a REAL pid we cannot inspect (sandbox / hidepid /
+    // EACCES) — is genuinely "unverifiable" and MUST fail closed (occupied
+    // unless a stale boot id later proves a reboot).
+    if (message.startsWith("process_gone") || message.startsWith("invalid_pid")) return "dead";
+    return "unverifiable";
   }
-  if (holder.starttime != null && String(info.starttime) !== String(holder.starttime)) return false;
-  if (holder.argv0 != null && String(info.argv0) !== String(holder.argv0)) return false;
-  return true;
+  if (holder.starttime != null && String(info.starttime) !== String(holder.starttime)) return "dead";
+  if (holder.argv0 != null && String(info.argv0) !== String(holder.argv0)) return "dead";
+  return "alive";
+}
+
+export function holderActive(holder, env = process.env) {
+  return classifyHolder(holder, env) !== "dead";
 }

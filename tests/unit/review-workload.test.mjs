@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { capturePidInfo } from "../../scripts/lib/process-identity.mjs";
 import {
   PROVIDER_WORKLOAD_BLOCKED_CODE,
   acquireProviderWorkloadLease,
@@ -21,11 +22,42 @@ function tempEnv() {
   };
 }
 
-test("provider workload lease blocks concurrent source-bearing launches for the same provider", () => {
+const SKIP_WORKLOAD_ACQUIRE_UNDER_DARWIN_SANDBOX = {
+  skip: (() => {
+    if (process.platform !== "darwin") return false;
+    try {
+      capturePidInfo(process.pid);
+      return false;
+    } catch {
+      return "macOS sandboxing can deny ps; workload acquisition requires capturePidInfo(process.pid)";
+    }
+  })(),
+};
+
+function workloadTest(name, fn) {
+  test(name, SKIP_WORKLOAD_ACQUIRE_UNDER_DARWIN_SANDBOX, fn);
+}
+
+function ctx(over = {}) {
+  return {
+    concurrencyKey: "k",
+    limit: 1,
+    lockRoot: over.lockRoot,
+    jobId: "j",
+    cwd: "/tmp/w",
+    sourceBearing: true,
+    env: over.env,
+    ...over,
+  };
+}
+
+workloadTest("provider workload lease blocks concurrent source-bearing launches for the same provider", () => {
   const { root, env } = tempEnv();
   try {
     const first = acquireProviderWorkloadLease({
-      provider: "claude",
+      concurrencyKey: "claude",
+      limit: 1,
+      lockRoot: root,
       jobId: "job-first",
       cwd: "/tmp/work-a",
       sourceBearing: true,
@@ -34,7 +66,9 @@ test("provider workload lease blocks concurrent source-bearing launches for the 
     assert.equal(first.ok, true);
 
     const second = acquireProviderWorkloadLease({
-      provider: "claude",
+      concurrencyKey: "claude",
+      limit: 1,
+      lockRoot: root,
       jobId: "job-second",
       cwd: "/tmp/work-b",
       sourceBearing: true,
@@ -43,17 +77,20 @@ test("provider workload lease blocks concurrent source-bearing launches for the 
     assert.equal(second.ok, false);
     assert.equal(second.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
     assert.equal(second.reason, "active_same_provider_job");
-    assert.equal(second.holder.job_id, "job-first");
-    assert.equal(second.holder.provider, "claude");
+    assert.deepEqual(second.capacity, { active_count: 1, limit: 1 });
 
     const blocked = providerWorkloadBlockedExecution(second);
     assert.equal(blocked.preflight, true);
     assert.equal(blocked.parsed.reason, PROVIDER_WORKLOAD_BLOCKED_CODE);
     assert.match(blocked.errorMessage, /^provider_workload_blocked:/);
+    assert.deepEqual(blocked.diagnostics.provider_workload.capacity, { active_count: 1, limit: 1 });
+    assert.equal(blocked.diagnostics.provider_workload.holder, undefined);
 
     assert.equal(releaseProviderWorkloadLease(first.lease), true);
     const third = acquireProviderWorkloadLease({
-      provider: "claude",
+      concurrencyKey: "claude",
+      limit: 1,
+      lockRoot: root,
       jobId: "job-third",
       cwd: "/tmp/work-c",
       sourceBearing: true,
@@ -81,24 +118,54 @@ test("provider workload lease publishes a complete payload atomically", () => {
   assert.match(source, /linkSync\(/, "lease publication should atomically link a complete candidate file");
 });
 
+test("source-bearing acquisition requires an explicit concurrencyKey", () => {
+  assert.throws(
+    () => acquireProviderWorkloadLease({
+      provider: "legacy-provider",
+      limit: 1,
+      lockRoot: "/tmp/unused",
+      sourceBearing: true,
+    }),
+    /concurrencyKey is required/,
+  );
+});
+
+test("provider workload blocked execution diagnostics expose capacity only", () => {
+  const execution = providerWorkloadBlockedExecution({
+    ok: false,
+    error_code: PROVIDER_WORKLOAD_BLOCKED_CODE,
+    reason: "active_same_provider_job",
+    message: "k source-bearing review is already active",
+    capacity: { active_count: 2, limit: 2 },
+    holder: { job_id: "secret-job" },
+  });
+  assert.deepEqual(execution.diagnostics.provider_workload, {
+    reason: "active_same_provider_job",
+    capacity: { active_count: 2, limit: 2 },
+  });
+  assert.ok(!JSON.stringify(execution).includes("secret-job"));
+});
+
 test("provider workload lease serializes stale reclaim before removing inactive holders", () => {
   const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
   assert.match(source, /function acquireProviderWorkloadGate\(/,
     "stale reclaim must be protected by a provider-local gate");
-  assert.match(source, /const gate = acquireProviderWorkloadGate\(file, env\);/,
+  assert.match(source, /const gate = acquireProviderWorkloadGate\([^,]+, env\);/,
     "lease acquisition must hold the gate before inspecting or removing an inactive holder");
-  assert.match(source, /removeInactiveHolder\(file, holder\)/,
+  assert.match(source, /removeInactiveHolder\([^,]+, holder\)/,
     "inactive-holder removal must be bound to the holder inspected while the gate is held");
   assert.doesNotMatch(source, /removeInactiveHolder\(file\)\) continue/,
     "stale reclaim must not unlink the lock path outside a serialized compare-and-retry section");
 });
 
-test("provider workload lease release unregisters exit cleanup listener", () => {
+workloadTest("provider workload lease release unregisters exit cleanup listener", () => {
   const { root, env } = tempEnv();
   const before = process.listenerCount("exit");
   try {
     const acquired = acquireProviderWorkloadLease({
-      provider: "claude-listener",
+      concurrencyKey: "claude-listener",
+      limit: 1,
+      lockRoot: root,
       jobId: "job-listener",
       cwd: "/tmp/work-listener",
       sourceBearing: true,
@@ -113,11 +180,13 @@ test("provider workload lease release unregisters exit cleanup listener", () => 
   }
 });
 
-test("provider workload lease is provider-neutral and ignores source-free probes", () => {
+workloadTest("provider workload lease is provider-neutral and ignores source-free probes", () => {
   const { root, env } = tempEnv();
   try {
     const claude = acquireProviderWorkloadLease({
-      provider: "claude",
+      concurrencyKey: "claude",
+      limit: 1,
+      lockRoot: root,
       jobId: "job-claude",
       cwd: "/tmp/work-a",
       sourceBearing: true,
@@ -126,7 +195,9 @@ test("provider workload lease is provider-neutral and ignores source-free probes
     assert.equal(claude.ok, true);
 
     const gemini = acquireProviderWorkloadLease({
-      provider: "gemini",
+      concurrencyKey: "gemini",
+      limit: 1,
+      lockRoot: root,
       jobId: "job-gemini",
       cwd: "/tmp/work-b",
       sourceBearing: true,
@@ -135,7 +206,9 @@ test("provider workload lease is provider-neutral and ignores source-free probes
     assert.equal(gemini.ok, true);
 
     const sourceFree = acquireProviderWorkloadLease({
-      provider: "claude",
+      concurrencyKey: "claude",
+      limit: 1,
+      lockRoot: root,
       jobId: "job-ping",
       cwd: "/tmp/work-c",
       sourceBearing: false,
@@ -151,7 +224,7 @@ test("provider workload lease is provider-neutral and ignores source-free probes
   }
 });
 
-test("provider workload lease reclaims stale lock files whose pid is not alive", () => {
+workloadTest("provider workload lease reclaims stale lock files whose pid is not alive", () => {
   const { root, env } = tempEnv();
   try {
     writeFileSync(join(root, "kimi.json"), JSON.stringify({
@@ -164,15 +237,111 @@ test("provider workload lease reclaims stale lock files whose pid is not alive",
     }));
 
     const acquired = acquireProviderWorkloadLease({
-      provider: "kimi",
+      concurrencyKey: "kimi",
+      limit: 1,
+      lockRoot: root,
       jobId: "fresh-job",
       cwd: "/tmp/fresh",
       sourceBearing: true,
       env,
     });
     assert.equal(acquired.ok, true);
-    assert.equal(JSON.parse(readFileSync(join(root, "kimi.json"), "utf8")).job_id, "fresh-job");
+    assert.equal(JSON.parse(readFileSync(join(root, "kimi.slot-0.json"), "utf8")).job_id, "fresh-job");
     releaseProviderWorkloadLease(acquired.lease);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+workloadTest("limit=1 still single-flights (golden, byte-behaviour identical)", () => {
+  const { root } = tempEnv();
+  try {
+    const a = acquireProviderWorkloadLease(ctx({ lockRoot: root, jobId: "a" }));
+    assert.equal(a.ok, true);
+    const b = acquireProviderWorkloadLease(ctx({ lockRoot: root, jobId: "b" }));
+    assert.equal(b.ok, false);
+    assert.equal(b.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
+    assert.equal(b.capacity.active_count, 1);
+    assert.equal(b.capacity.limit, 1);
+    releaseProviderWorkloadLease(a.lease);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+workloadTest("limit=N admits N and blocks N+1 with capacity", () => {
+  const { root } = tempEnv();
+  try {
+    const leases = [];
+    for (let i = 0; i < 3; i++) {
+      const r = acquireProviderWorkloadLease(ctx({ lockRoot: root, limit: 3, jobId: `j${i}` }));
+      assert.equal(r.ok, true, `acquire ${i}`);
+      leases.push(r.lease);
+    }
+    const blocked = acquireProviderWorkloadLease(ctx({ lockRoot: root, limit: 3, jobId: "j3" }));
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.capacity.active_count, 3);
+    assert.equal(blocked.capacity.limit, 3);
+    leases.forEach(releaseProviderWorkloadLease);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+workloadTest("distinct concurrencyKeys never contend", () => {
+  const { root } = tempEnv();
+  try {
+    const a = acquireProviderWorkloadLease(ctx({ lockRoot: root, concurrencyKey: "kimi", limit: 1 }));
+    const b = acquireProviderWorkloadLease(ctx({ lockRoot: root, concurrencyKey: "deepseek.api", limit: 1 }));
+    assert.equal(a.ok, true);
+    assert.equal(b.ok, true);
+    releaseProviderWorkloadLease(a.lease);
+    releaseProviderWorkloadLease(b.lease);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+workloadTest("limit < 1 / non-integer denies for source-bearing (fail-closed)", () => {
+  const { root } = tempEnv();
+  try {
+    for (const bad of [0, -1, 1.5, NaN, "2"]) {
+      const r = acquireProviderWorkloadLease(ctx({ lockRoot: root, limit: bad }));
+      assert.equal(r.ok, false, `limit ${bad} must deny`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+workloadTest("engine uses supplied lockRoot and ignores RELAY_PROVIDER_WORKLOAD_LOCK_DIR", () => {
+  const { root } = tempEnv();
+  const decoy = mkdtempSync(join(tmpdir(), "decoy-"));
+  try {
+    const a = acquireProviderWorkloadLease(ctx({
+      lockRoot: root,
+      env: { RELAY_PROVIDER_WORKLOAD_LOCK_DIR: decoy },
+    }));
+    assert.equal(a.ok, true);
+    assert.ok(a.lease.file.startsWith(root));
+    assert.deepEqual(readdirSync(decoy), []);
+    releaseProviderWorkloadLease(a.lease);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(decoy, { recursive: true, force: true });
+  }
+});
+
+workloadTest("capacity exposes counts only, never job ids/holders", () => {
+  const { root } = tempEnv();
+  try {
+    const a = acquireProviderWorkloadLease(ctx({ lockRoot: root, limit: 1, jobId: "secret-job" }));
+    const b = acquireProviderWorkloadLease(ctx({ lockRoot: root, limit: 1, jobId: "other" }));
+    assert.equal(b.ok, false);
+    assert.deepEqual(Object.keys(b.capacity).sort(), ["active_count", "limit"]);
+    assert.ok(!JSON.stringify(b.capacity).includes("secret-job"));
+    assert.ok(!JSON.stringify(b).includes("secret-job"));
+    releaseProviderWorkloadLease(a.lease);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

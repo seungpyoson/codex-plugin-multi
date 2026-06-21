@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { capturePidInfo, currentBootId, holderActive } from "../../scripts/lib/process-identity.mjs";
+import { capturePidInfo, classifyHolder, currentBootId, holderActive } from "../../scripts/lib/process-identity.mjs";
 
 const SKIP_PS_UNDER_DARWIN_SANDBOX = {
   skip: process.platform === "darwin"
@@ -51,4 +51,34 @@ test("holderActive treats a dead-but-recycled pid (starttime mismatch) as inacti
   const self = capturePidInfo(process.pid);
   const stale = { hostname: (await import("node:os")).hostname(), pid: process.pid, starttime: "0", argv0: self.argv0 };
   assert.equal(holderActive(stale, process.env), false);
+});
+
+test("classifyHolder reports alive for the current process", SKIP_PS_UNDER_DARWIN_SANDBOX, () => {
+  const self = capturePidInfo(process.pid);
+  assert.equal(classifyHolder({ ...self }, process.env), "alive");
+});
+
+test("classifyHolder reports dead for pid reuse identity mismatch", SKIP_PS_UNDER_DARWIN_SANDBOX, () => {
+  const self = capturePidInfo(process.pid);
+  assert.equal(classifyHolder({ ...self, starttime: "0" }, process.env), "dead");
+});
+
+test("classifyHolder reports dead for a structurally invalid pid (cannot be a live process)", () => {
+  // An invalid pid (non-integer / 0 / negative) can never be a running holder,
+  // so the slot is safe to reclaim — matches the pre-#234 pidAlive behaviour.
+  assert.equal(classifyHolder({ pid: "not-a-pid" }, process.env), "dead");
+  assert.equal(classifyHolder({ pid: 0 }, process.env), "dead");
+  assert.equal(classifyHolder({ pid: -5 }, process.env), "dead");
+});
+
+test("classifyHolder reports unverifiable when a real pid cannot be inspected (capture_error)", () => {
+  // capture_error = a real pid we cannot inspect (sandbox/hidepid/EACCES). It
+  // MUST fail closed (occupied) — reclaimable only on a stale boot id. Injected
+  // capture makes this deterministic on every platform (not just darwin-sandbox).
+  const captureError = () => { throw new Error("capture_error: ps denied by sandbox"); };
+  assert.equal(classifyHolder({ pid: 4321 }, process.env, captureError), "unverifiable");
+});
+
+test("classifyHolder reports foreign for another hostname", () => {
+  assert.equal(classifyHolder({ hostname: "some-other-host", pid: process.pid }, process.env), "foreign");
 });

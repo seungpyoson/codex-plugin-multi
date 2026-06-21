@@ -194,7 +194,9 @@ git commit -m "feat(workload): promote process liveness + boot-id to synced scri
 
 **Interfaces:**
 - Consumes: `capturePidInfo`, `currentBootId` from `./process-identity.mjs` (Task 1).
-- **Adds to `./process-identity.mjs` (then re-syncs it via `sync-process-identity.mjs` + `build:relay`):** `classifyHolder(holder, env) -> 'alive' | 'dead' | 'unverifiable' | 'foreign'`. **Why this is required:** the existing `holderActive` boolean collapses `alive`/`unverifiable`/`foreign` → `true`, so it **cannot drive reclaim** — it can't distinguish an `unverifiable` (`capture_error`, reclaimable ONLY on a stale boot-id) slot from a genuinely `alive` one. Using `holderActive` for the reclaim scan would either deadlock (never reclaim unverifiable slots) or corrupt (reclaim a live holder). Keep `holderActive` as a thin wrapper = `classifyHolder(...) !== 'dead'` for any existing callers. Add a `classifyHolder` unit test to `tests/unit/process-identity.test.mjs` (alive→self pid; dead→starttime mismatch; unverifiable→`capture_error` throw; foreign→other hostname).
+- **Adds to `./process-identity.mjs` (then re-syncs it via `sync-process-identity.mjs` + `build:relay`):** `classifyHolder(holder, env = process.env, capture = capturePidInfo) -> 'alive' | 'dead' | 'unverifiable' | 'foreign'`. **Why this is required:** the existing `holderActive` boolean collapses `alive`/`unverifiable`/`foreign` → `true`, so it **cannot drive reclaim** — it can't distinguish an `unverifiable` (`capture_error`, reclaimable ONLY on a stale boot-id) slot from a genuinely `alive` one. Using `holderActive` for the reclaim scan would either deadlock (never reclaim unverifiable slots) or corrupt (reclaim a live holder). Keep `holderActive` as a thin wrapper = `classifyHolder(...) !== 'dead'` for any existing callers.
+  - **Throw→state mapping (matches the pre-#234 `pidAlive`, do NOT regress it):** `process_gone` **and** `invalid_pid` (0 / negative / non-integer — a corrupt or legacy sentinel pid that can never be a live process) → **`dead`** (safe to reclaim: cannot over-admit a live holder). ONLY `capture_error` (a real pid we cannot inspect — sandbox/hidepid/EACCES) → **`unverifiable`** (fail closed; reclaimable only on a stale boot-id). The old single-flight reclaimed invalid/zero pids (`pidAlive` returned `false` for `pid <= 0`); mapping `invalid_pid → unverifiable` is a **regression** that deadlocks legacy/corrupt slots.
+  - **`capture` injection seam:** the third param defaults to `capturePidInfo`; tests inject a function that throws `capture_error: …` to exercise the `unverifiable` branch deterministically on every platform (a real `capture_error` pid cannot be forced portably). Add `classifyHolder` unit tests to `tests/unit/process-identity.test.mjs`: alive→self pid; dead→starttime mismatch; **dead→invalid pid (`0`/`"not-a-pid"`)**; **unverifiable→injected `capture_error` throw**; foreign→other hostname.
 - Produces: `acquireProviderWorkloadLease({ concurrencyKey, limit, lockRoot, jobId, cwd, sourceBearing, env }) -> {ok:true, lease}|{ok:true, lease:null}|{ok:false, error_code, reason, message, capacity}`. `lease = { file, token }` (plus non-enumerable exit listener). `releaseProviderWorkloadLease(lease) -> boolean`. `providerWorkloadBlockedExecution(block)` carries `capacity:{active_count, limit}` in diagnostics (counts only; holder ids debug-log only). Backward-compat: `provider` is still accepted and, when `concurrencyKey` is absent, the engine throws (no silent fallback) — see Task 6 for consumer wiring.
 
 Behavior is defined by §4, §5.2 (engine obeys supplied `lockRoot`, no internal `RELAY_PROVIDER_WORKLOAD_LOCK_DIR` read when `lockRoot` is provided), §6, §8 of the spec. The tests below are the contract.
@@ -370,12 +372,15 @@ test("a SIGKILLed holder frees exactly one slot on the next acquire", () => {
 test("unverifiable slot with a STALE boot_id is reclaimed; with the CURRENT boot_id is NOT", () => {
   const root = mkdtempSync(join(tmpdir(), "wl-boot-"));
   try {
-    // Write a slot file with hostname=localhost, an unreadable pid, boot_id="STALE".
+    // Write a slot file with hostname=localhost, boot_id="STALE", whose holder
+    // classifies as UNVERIFIABLE (capture_error), NOT invalid/dead.
     // Acquire with RELAY_BOOT_ID="CURRENT": the STALE slot is reclaimed (reboot proven) -> ok.
-    // Write another with boot_id="CURRENT" + capture_error pid: acquire -> BLOCKED (occupied, not reclaimed).
+    // Write another with boot_id="CURRENT" + unverifiable holder: acquire -> BLOCKED (occupied, not reclaimed).
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 ```
+
+> **CRITICAL for the reboot-id test (post-Task-2 correction):** an invalid/zero/garbage pid now classifies as **`dead`** (reclaimed regardless of boot id), so it CANNOT stand in for an `unverifiable` holder. To get a deterministic `unverifiable` slot through the acquire path you must force `classifyHolder` down the `capture_error` branch. An invalid pid will silently make this test a no-op (it tests `dead`, not the boot-id path). Options, pick one: (a) thread an optional `capture` seam into `acquireProviderWorkloadLease`/`inspectSlot` (mirroring `classifyHolder(holder, env, capture)`) and inject a `capture_error`-throwing function; or (b) export `inspectSlot`/`shouldReclaimUnverifiable` and unit-test the boot-id branch directly with an injected capture. Do NOT rely on darwin-sandbox to produce `capture_error` — that skips on linux CI and leaves the boot-id reclaim path unexercised where it actually runs.
 
 - [ ] **Step 3: Implement test bodies, run, verify pass**
 

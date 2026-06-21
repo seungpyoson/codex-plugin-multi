@@ -1,19 +1,15 @@
-import { linkSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { hostname, tmpdir } from "node:os";
+import { hostname } from "node:os";
 import { join } from "node:path";
+import { classifyHolder, capturePidInfo, currentBootId } from "./process-identity.mjs";
 
 export const PROVIDER_WORKLOAD_BLOCKED_CODE = "provider_workload_blocked";
-const LOCK_ENV = "RELAY_PROVIDER_WORKLOAD_LOCK_DIR";
 const GATE_TIMEOUT_ENV = "RELAY_PROVIDER_WORKLOAD_GATE_TIMEOUT_MS";
 const SCHEMA_VERSION = 1;
 const DEFAULT_GATE_TIMEOUT_MS = 5_000;
 const GATE_POLL_MS = 25;
 const GATE_OWNER_FILE = "owner.json";
-
-function lockRoot(env = process.env) {
-  return env[LOCK_ENV] || join(tmpdir(), "relay", "provider-workload");
-}
 
 function trimEdgeHyphens(value) {
   let start = 0;
@@ -23,16 +19,20 @@ function trimEdgeHyphens(value) {
   return value.slice(start, end);
 }
 
-function providerSlug(provider) {
-  const dashed = String(provider ?? "unknown")
+function keySlug(key) {
+  const dashed = String(key ?? "unknown")
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-");
   const slug = trimEdgeHyphens(dashed);
   return slug || "unknown";
 }
 
-function lockPath(provider, env) {
-  return join(lockRoot(env), `${providerSlug(provider)}.json`);
+function legacyLockPath(root, slug) {
+  return join(root, `${slug}.json`);
+}
+
+function slotPath(root, slug, index) {
+  return join(root, `${slug}.slot-${index}.json`);
 }
 
 function gatePath(file) {
@@ -66,44 +66,39 @@ function readHolder(file) {
   }
 }
 
-function pidAlive(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+function readHolderState(file) {
   try {
-    process.kill(pid, 0);
-    return true;
+    const stat = lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      return { present: true, holder: null, parseable: false };
+    }
+    return { present: true, holder: JSON.parse(readFileSync(file, "utf8")), parseable: true };
   } catch (error) {
-    return error?.code === "EPERM";
+    if (error?.code === "ENOENT") return { present: false, holder: null, parseable: false };
+    return { present: true, holder: null, parseable: false };
   }
 }
 
-function holderActive(holder) {
-  if (!holder || typeof holder !== "object") return false;
-  if (holder.hostname && holder.hostname !== hostname()) return true;
-  return pidAlive(holder.pid);
+function recordedBootId(holder) {
+  return typeof holder?.boot_id === "string" && holder.boot_id.length > 0 ? holder.boot_id : null;
 }
 
-function safeHolder(holder, file) {
-  return Object.freeze({
-    provider: holder?.provider ?? null,
-    job_id: holder?.job_id ?? null,
-    pid: Number.isSafeInteger(holder?.pid) ? holder.pid : null,
-    hostname: holder?.hostname ?? null,
-    cwd: holder?.cwd ?? null,
-    started_at: holder?.started_at ?? null,
-    lock_file: file,
-  });
+function shouldReclaimUnverifiable(holder, env) {
+  const bootId = recordedBootId(holder);
+  return bootId != null && bootId !== currentBootId(env);
 }
 
-function blockResult(provider, file, holder) {
-  const visible = safeHolder(holder, file);
-  const jobSuffix = visible.job_id ? ` in job ${visible.job_id}` : "";
-  const message = `${providerSlug(provider)} source-bearing review is already active${jobSuffix}`;
+function blockResult(key, capacity, reason = "active_same_provider_job") {
+  const message = `${keySlug(key)} source-bearing review is already active`;
   return Object.freeze({
     ok: false,
     error_code: PROVIDER_WORKLOAD_BLOCKED_CODE,
-    reason: "active_same_provider_job",
+    reason,
     message,
-    holder: visible,
+    capacity: Object.freeze({
+      active_count: capacity?.active_count ?? 0,
+      limit: capacity?.limit ?? null,
+    }),
   });
 }
 
@@ -150,7 +145,7 @@ function gateOwnerActive(owner, gateDir, env) {
   if (owner.hostname && owner.hostname !== hostname()) {
     return gateAgeMs(gateDir) <= gateTimeoutMs(env);
   }
-  return pidAlive(owner.pid);
+  return classifyHolder(owner, env) !== "dead";
 }
 
 function tryReclaimProviderWorkloadGate(gateDir, env) {
@@ -255,6 +250,46 @@ function removeInactiveHolder(file, expectedHolder) {
   }
 }
 
+function enumerateSlotFiles(root, slug) {
+  const prefix = `${slug}.slot-`;
+  const suffix = ".json";
+  let names;
+  try {
+    names = readdirSync(root);
+  } catch {
+    return null;
+  }
+  const slots = [];
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(suffix)) continue;
+    const rawIndex = name.slice(prefix.length, -suffix.length);
+    if (!/^\d+$/.test(rawIndex)) continue;
+    const index = Number(rawIndex);
+    if (!Number.isSafeInteger(index)) continue;
+    slots.push({ index, file: join(root, name), legacy: false });
+  }
+  slots.sort((a, b) => a.index - b.index);
+  return slots;
+}
+
+function inspectSlot(slot, env) {
+  const state = readHolderState(slot.file);
+  if (!state.present) return { occupied: false, reclaimed: false };
+  const holder = state.holder;
+  if (!state.parseable || !holder || typeof holder !== "object" || !holder.token) {
+    return { occupied: true, reclaimed: false };
+  }
+
+  const classification = classifyHolder(holder, env);
+  if (classification === "dead") {
+    return { occupied: !removeInactiveHolder(slot.file, holder), reclaimed: true };
+  }
+  if (classification === "unverifiable" && shouldReclaimUnverifiable(holder, env)) {
+    return { occupied: !removeInactiveHolder(slot.file, holder), reclaimed: true };
+  }
+  return { occupied: true, reclaimed: false };
+}
+
 function acquiredResult(file, payload) {
   const lease = { file, token: payload.token };
   const exitListener = () => releaseProviderWorkloadLease(lease);
@@ -269,6 +304,9 @@ function acquiredResult(file, payload) {
 
 export function acquireProviderWorkloadLease({
   provider,
+  concurrencyKey,
+  limit,
+  lockRoot,
   jobId,
   cwd = process.cwd(),
   sourceBearing = true,
@@ -276,16 +314,40 @@ export function acquireProviderWorkloadLease({
 } = {}) {
   if (sourceBearing !== true) return Object.freeze({ ok: true, lease: null });
 
-  const root = lockRoot(env);
-  const file = lockPath(provider, env);
+  if (concurrencyKey == null || String(concurrencyKey).trim() === "") {
+    throw new Error("provider workload concurrencyKey is required for source-bearing jobs");
+  }
+
+  const key = String(concurrencyKey);
+  const slug = keySlug(key);
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    return blockResult(key, { active_count: 0, limit: null }, "invalid_provider_workload_limit");
+  }
+  if (typeof lockRoot !== "string" || lockRoot.trim() === "") {
+    return blockResult(key, { active_count: 0, limit }, "invalid_provider_workload_lock_root");
+  }
+
+  const root = lockRoot;
+  const gateFile = legacyLockPath(root, slug);
   mkdirSync(root, { recursive: true, mode: 0o700 });
+
+  let pidInfo;
+  try {
+    pidInfo = capturePidInfo(process.pid);
+  } catch {
+    return blockResult(key, { active_count: 0, limit }, "unverifiable_current_process");
+  }
 
   const payload = Object.freeze({
     schema_version: SCHEMA_VERSION,
-    provider: String(provider ?? "unknown"),
-    provider_slug: providerSlug(provider),
+    provider: provider == null ? null : String(provider),
+    concurrency_key: key,
+    key_slug: slug,
     job_id: String(jobId ?? ""),
     pid: process.pid,
+    starttime: pidInfo.starttime,
+    argv0: pidInfo.argv0,
+    boot_id: currentBootId(env),
     hostname: hostname(),
     cwd: String(cwd ?? ""),
     started_at: new Date().toISOString(),
@@ -293,16 +355,34 @@ export function acquireProviderWorkloadLease({
   });
 
   for (;;) {
-    const gate = acquireProviderWorkloadGate(file, env);
-    if (!gate.ok) return blockResult(provider, file, gate.holder);
+    const gate = acquireProviderWorkloadGate(gateFile, env);
+    if (!gate.ok) return blockResult(key, { active_count: limit, limit });
     try {
-      if (tryCreateLeaseFile(file, payload)) return acquiredResult(file, payload);
+      const slots = enumerateSlotFiles(root, slug);
+      if (!slots) return blockResult(key, { active_count: limit, limit }, "unreadable_provider_workload_lock_root");
 
-      const holder = readHolder(file);
-      if (holderActive(holder)) return blockResult(provider, file, holder);
-      if (removeInactiveHolder(file, holder) && tryCreateLeaseFile(file, payload)) {
-        return acquiredResult(file, payload);
+      slots.unshift({ index: 0, file: gateFile, legacy: true });
+
+      let activeCount = 0;
+      const occupiedIndices = new Set();
+      for (const slot of slots) {
+        const result = inspectSlot(slot, env);
+        if (!result.occupied) continue;
+        activeCount += 1;
+        occupiedIndices.add(slot.index);
       }
+
+      if (activeCount >= limit) {
+        return blockResult(key, { active_count: activeCount, limit });
+      }
+
+      let index = 0;
+      for (;;) {
+        if (!occupiedIndices.has(index) && !existsSync(slotPath(root, slug, index))) break;
+        index += 1;
+      }
+      const file = slotPath(root, slug, index);
+      if (tryCreateLeaseFile(file, payload)) return acquiredResult(file, payload);
     } finally {
       gate.release?.();
     }
@@ -324,10 +404,16 @@ export function releaseProviderWorkloadLease(lease) {
 
 export function providerWorkloadBlockedExecution(block) {
   const message = block?.message || "provider source-bearing review is already active";
+  const capacity = block?.capacity
+    ? {
+        active_count: block.capacity.active_count,
+        limit: block.capacity.limit,
+      }
+    : null;
   const diagnostics = {
     provider_workload: {
       reason: block?.reason ?? "active_same_provider_job",
-      holder: block?.holder ?? null,
+      capacity,
     },
   };
   return {
