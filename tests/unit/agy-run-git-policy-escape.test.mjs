@@ -31,11 +31,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo } from "../helpers/fixture-git.mjs";
 import { writeJobRecordToFile } from "../../plugins/agy/scripts/lib/state.mjs";
 
-const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..");
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/agy/scripts/agy-companion.mjs");
 const SECRET = "AGY-ROUND3-LEAK-CANARY-source-body";
 
