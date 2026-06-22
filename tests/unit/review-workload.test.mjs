@@ -8,7 +8,9 @@ import { capturePidInfo } from "../../scripts/lib/process-identity.mjs";
 import {
   PROVIDER_WORKLOAD_BLOCKED_CODE,
   acquireProviderWorkloadLease,
+  acquireProviderWorkloadGate,
   providerWorkloadBlockedExecution,
+  concurrencyAdmissionBlockedExecution,
   releaseProviderWorkloadLease,
 } from "../../scripts/lib/review-workload.mjs";
 
@@ -282,7 +284,7 @@ test("provider workload blocked execution diagnostics expose capacity only", () 
     ok: false,
     error_code: PROVIDER_WORKLOAD_BLOCKED_CODE,
     reason: "active_same_provider_job",
-    message: "k source-bearing review is already active",
+    message: "source-bearing review is already active",
     capacity: { active_count: 2, limit: 2 },
     holder: { job_id: "secret-job" },
   });
@@ -628,6 +630,95 @@ workloadTest("capacity exposes counts only, never job ids/holders", () => {
     assert.ok(!JSON.stringify(b.capacity).includes("secret-job"));
     assert.ok(!JSON.stringify(b).includes("secret-job"));
     releaseProviderWorkloadLease(a.lease);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrencyAdmissionBlockedExecution classifies the failure without leaking the raw error (paths/identity)", () => {
+  // resolveConcurrencyAdmission can throw a shared_state-identity failure whose
+  // message embeds an absolute config-dir path (e.g. ENOENT ... stat '/abs/dir').
+  // The shared helper must classify by reason and name only provider.route —
+  // never forward that raw OS detail into the disclosed/persisted record (§8).
+  const execution = concurrencyAdmissionBlockedExecution("claude", "subscription");
+  assert.equal(execution.payload_sent, false);
+  assert.equal(execution.parsed.reason, PROVIDER_WORKLOAD_BLOCKED_CODE);
+  assert.deepEqual(execution.diagnostics.provider_workload, {
+    reason: "concurrency_admission_failed",
+    capacity: null,
+  });
+  assert.match(
+    execution.errorMessage,
+    /^provider_workload_blocked: concurrency admission failed for claude\.subscription$/,
+  );
+  // No filesystem path, ENOENT, or stat detail anywhere in the record. (A revert
+  // to the old `(error, provider, route)` + `: ${detail}` signature would shift
+  // the args and break the exact-message match above.)
+  assert.doesNotMatch(
+    JSON.stringify(execution),
+    /ENOENT|stat |\/(?:Users|home|tmp|private|var)\//,
+    "concurrency-admission disclosure must not forward filesystem paths or raw OS error detail",
+  );
+});
+
+workloadTest("a corrupt/unreadable gate owner is timeout-gated, not reclaimed immediately (fail-closed)", () => {
+  const { root, env } = tempEnv();
+  try {
+    const slug = "k";
+    const gateDir = join(root, `${slug}.json.gate`);
+    mkdirSync(gateDir, { recursive: true, mode: 0o700 });
+    // A live holder whose owner.json is unparseable. With the fail-open bug this
+    // is reclaimed on the FIRST inspection (no liveness proof, no timeout); fixed,
+    // it must wait for the gate to age past the timeout — matching inspectSlot's
+    // fail-closed treatment of an unparseable slot file.
+    writeFileSync(join(gateDir, "owner.json"), "{ this is not valid json");
+    // Age the gate so reclaim fires well before the acquire deadline (no boundary
+    // race), but still only AFTER the timeout — proving it waited rather than
+    // reclaiming immediately.
+    const aged = new Date(Date.now() - 200);
+    utimesSync(gateDir, aged, aged);
+    const acquireEnv = { ...env, RELAY_PROVIDER_WORKLOAD_GATE_TIMEOUT_MS: "800" };
+    const start = Date.now();
+    const lease = acquireProviderWorkloadLease({
+      concurrencyKey: slug, limit: 1, lockRoot: root, jobId: "after-corrupt",
+      cwd: "/tmp/w", sourceBearing: true, env: acquireEnv,
+    });
+    const elapsed = Date.now() - start;
+    try {
+      assert.equal(lease.ok, true, "a corrupt gate owner must eventually reclaim after the timeout (no permanent deadlock)");
+      // "At least" is robust to load (load only makes acquisition slower). With
+      // the fail-open bug elapsed ≈ 0; fixed it waits ~600ms (800ms timeout minus
+      // the 200ms pre-aging).
+      assert.ok(elapsed >= 400, `corrupt gate owner must be timeout-gated, not immediately reclaimed; elapsed=${elapsed}ms`);
+    } finally {
+      if (lease.lease) releaseProviderWorkloadLease(lease.lease);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+workloadTest("the gate owner.json production WRITE persists real liveness identity (pid-reuse + boot-id)", () => {
+  // Behavioral counterpart to the source-literal guard above. The gate owner is
+  // written then released inside the acquire critical section, so it is observed
+  // here by calling the exported gate primitive directly. If pidInfo fails to
+  // thread through to writeGateOwner, starttime/argv0 land null on disk and a
+  // crashed gate owner (reused pid reads "alive") becomes unreclaimable.
+  const { root, env } = tempEnv();
+  try {
+    const gateBase = join(root, "k.json");
+    const pidInfo = capturePidInfo(process.pid);
+    const gate = acquireProviderWorkloadGate(gateBase, env, undefined, pidInfo);
+    try {
+      assert.equal(gate.ok, true, "gate must be acquirable on a clean root");
+      const owner = JSON.parse(readFileSync(join(`${gateBase}.gate`, "owner.json"), "utf8"));
+      assert.equal(owner.pid, process.pid);
+      assert.equal(owner.starttime, pidInfo.starttime, "gate owner must record the real starttime (PID-reuse detection)");
+      assert.equal(owner.argv0, pidInfo.argv0, "gate owner must record the real argv0 (PID-reuse detection)");
+      assert.ok(typeof owner.boot_id === "string" && owner.boot_id.length > 0, "gate owner must record boot_id (stale-boot reclaim)");
+    } finally {
+      gate.release?.();
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

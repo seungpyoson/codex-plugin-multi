@@ -36,6 +36,7 @@ import {
 import {
   acquireProviderWorkloadLease,
   providerWorkloadBlockedExecution,
+  concurrencyAdmissionBlockedExecution,
   releaseProviderWorkloadLease,
 } from "./lib/review-workload.mjs";
 
@@ -171,16 +172,6 @@ const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "m
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 const CREDENTIAL_REDACTION_VALUE = Symbol("credential_redaction_value");
 const REDACTION_SECRET_ENV_PREFIX = "API_REVIEWERS_REDACTION_SECRET";
-
-function concurrencyAdmissionBlockedExecution(error, provider, route) {
-  const detail = error?.message ?? String(error);
-  return providerWorkloadBlockedExecution({
-    ok: false,
-    reason: "concurrency_admission_failed",
-    message: `concurrency admission failed for ${provider}.${route}: ${detail}`,
-    capacity: null,
-  });
-}
 
 function resolveApiReviewerAdmissionContext(provider, env = process.env) {
   const route = "direct_api";
@@ -4372,8 +4363,8 @@ async function cmdRun(options) {
       let admissionContext;
       try {
         admissionContext = resolveApiReviewerAdmissionContext(provider, process.env);
-      } catch (error) {
-        execution = concurrencyAdmissionBlockedExecution(error, provider, "direct_api");
+      } catch {
+        execution = concurrencyAdmissionBlockedExecution(provider, "direct_api");
         execution.prompt = renderedPrompt;
       }
       const workloadAdmission = execution ? null : acquireProviderWorkloadLease({

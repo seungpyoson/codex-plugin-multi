@@ -10,6 +10,16 @@ const SKIP_PS_UNDER_DARWIN_SANDBOX = {
     : false,
 };
 
+const ORIGINAL_PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
+function withPlatform(platform, fn) {
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+  try {
+    return fn();
+  } finally {
+    Object.defineProperty(process, "platform", ORIGINAL_PLATFORM_DESCRIPTOR);
+  }
+}
+
 test("currentBootId is stable within a process and non-empty", () => {
   const a = currentBootId();
   const b = currentBootId();
@@ -95,4 +105,32 @@ test("classifyHolder reports unverifiable when a real pid cannot be inspected (c
 
 test("classifyHolder reports foreign for another hostname", () => {
   assert.equal(classifyHolder({ hostname: "some-other-host", pid: process.pid }, process.env), "foreign");
+});
+
+test("capturePidInfo throws capture_error (fail-closed), not process_gone, on an unsupported platform", () => {
+  // An unsupported platform is "cannot inspect", NOT "proven gone". The thrown
+  // prefix is the contract classifyHolder keys on: process_gone ⇒ reclaimable,
+  // capture_error ⇒ unverifiable (fail closed). Emitting process_gone here would
+  // make every holder reclaimable on an unsupported platform — an over-admission.
+  withPlatform("win32", () => {
+    assert.throws(
+      () => capturePidInfo(process.pid),
+      (e) => {
+        const message = String(e?.message ?? "");
+        assert.match(message, /^capture_error:/, `unsupported platform must throw capture_error, got: ${message}`);
+        assert.doesNotMatch(message, /process_gone/, "unsupported platform must NOT use the process_gone (reclaimable) prefix");
+        return true;
+      },
+    );
+  });
+});
+
+test("classifyHolder is unverifiable (fail-closed), not dead, on an unsupported platform", () => {
+  // End-to-end fail-closed guard: with the real capturePidInfo on an unsupported
+  // platform, a holder must classify unverifiable (occupied), never dead
+  // (reclaimable). A process_gone prefix regression would flip this to dead.
+  withPlatform("win32", () => {
+    const verdict = classifyHolder({ pid: process.pid, starttime: "1", argv0: "node" }, process.env);
+    assert.equal(verdict, "unverifiable");
+  });
 });

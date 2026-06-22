@@ -62,6 +62,7 @@ import { diffSourceFiles } from "./lib/diff-source.mjs";
 import {
   acquireProviderWorkloadLease,
   providerWorkloadBlockedExecution,
+  concurrencyAdmissionBlockedExecution,
   releaseProviderWorkloadLease,
 } from "./lib/review-workload.mjs";
 
@@ -81,16 +82,6 @@ const DEFAULT_KIMI_PING_TIMEOUT_MS = 900000;
 const KIMI_READINESS_PREFLIGHT_TIMEOUT_MS = 900000;
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "KIMI FILE";
 const KIMI_SOURCE_PACKET_MAX_BYTES = 32 * 1024;
-
-function concurrencyAdmissionBlockedExecution(error, provider, route) {
-  const detail = error?.message ?? String(error);
-  return providerWorkloadBlockedExecution({
-    ok: false,
-    reason: "concurrency_admission_failed",
-    message: `concurrency admission failed for ${provider}.${route}: ${detail}`,
-    capacity: null,
-  });
-}
 
 function processHomeDir(env = process.env) {
   return env.HOME || homedir();
@@ -1335,8 +1326,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     const route = "subscription";
     try {
       admissionContext = resolveKimiAdmissionContext(invocation.target, route, process.env);
-    } catch (error) {
-      const workloadPreflight = concurrencyAdmissionBlockedExecution(error, invocation.target, route);
+    } catch {
+      const workloadPreflight = concurrencyAdmissionBlockedExecution(invocation.target, route);
       workloadPreflight.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containment.path, workloadPreflight);
       if (neutralCwd) {
         try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }

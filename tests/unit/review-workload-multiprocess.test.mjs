@@ -14,8 +14,28 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { acquireProviderWorkloadLease, releaseProviderWorkloadLease } from "../../scripts/lib/review-workload.mjs";
+import { capturePidInfo } from "../../scripts/lib/process-identity.mjs";
 
 const WORKLOAD_LIB = fileURLToPath(new URL("../../scripts/lib/review-workload.mjs", import.meta.url));
+
+// These two tests spawn real child processes that take the REAL liveness-capture
+// acquire path (no RELAY_WORKLOAD_TEST_MODE). On a macOS sandbox that denies
+// /bin/ps, every child blocks on `unverifiable_current_process`, so the children
+// never acquire and the assertions hard-fail rather than proving anything. Skip
+// when the current process cannot capture its own identity (same guard used by
+// review-workload.test.mjs). Linux CI has /proc, so it still runs there; the
+// boot-id reclaim test below uses an injected capture and is unaffected.
+const SKIP_WORKLOAD_ACQUIRE_UNDER_DARWIN_SANDBOX = {
+  skip: (() => {
+    if (process.platform !== "darwin") return false;
+    try {
+      capturePidInfo(process.pid);
+      return false;
+    } catch {
+      return "macOS sandboxing can deny ps; multi-process workload acquisition requires capturePidInfo(process.pid)";
+    }
+  })(),
+};
 
 function countSlotFiles(root) {
   return readdirSync(root).filter((f) => /\.slot-\d+\.json$/.test(f) || /^[^.]+\.json$/.test(f)).length;
@@ -97,7 +117,7 @@ function waitForFile(filePath, proc, timeoutMs = 15000) {
   });
 }
 
-test("at most `limit` processes ever hold a slot concurrently; the overflow is blocked", async () => {
+test("at most `limit` processes ever hold a slot concurrently; the overflow is blocked", SKIP_WORKLOAD_ACQUIRE_UNDER_DARWIN_SANDBOX, async () => {
   const root = mkdtempSync(join(tmpdir(), "wl-mp-"));
   const logFile = join(root, "outcomes.log");
   writeFileSync(logFile, "");
@@ -148,7 +168,7 @@ test("at most `limit` processes ever hold a slot concurrently; the overflow is b
   }
 });
 
-test("a SIGKILLed holder frees exactly one slot — the dead slot is reclaimed, a live sibling is preserved", async () => {
+test("a SIGKILLed holder frees exactly one slot — the dead slot is reclaimed, a live sibling is preserved", SKIP_WORKLOAD_ACQUIRE_UNDER_DARWIN_SANDBOX, async () => {
   const root = mkdtempSync(join(tmpdir(), "wl-kill-"));
   try {
     const limit = 2;

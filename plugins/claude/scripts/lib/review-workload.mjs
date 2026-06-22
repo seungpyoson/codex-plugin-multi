@@ -89,8 +89,14 @@ function shouldReclaimUnverifiable(holder, env) {
   return bootId != null && bootId !== currentBootId(env);
 }
 
-function blockResult(key, capacity, reason = "active_same_provider_job") {
-  const message = `${keySlug(key)} source-bearing review is already active`;
+function blockResult(capacity, reason = "active_same_provider_job") {
+  // The message is deliberately identity-free. For shared_state routes the
+  // concurrency key is a hash of the account/config-dir identity, so embedding
+  // its slug here would leak an account fingerprint into error_message — an
+  // unsanitized channel that bypasses sanitizeProviderWorkloadDiagnostic (§8).
+  // The non-sensitive detail (active_count / limit / reason) is carried
+  // structurally in `capacity` and `reason`, which DO flow through the sanitizer.
+  const message = "source-bearing review is already active";
   return Object.freeze({
     ok: false,
     error_code: PROVIDER_WORKLOAD_BLOCKED_CODE,
@@ -166,7 +172,15 @@ function tryReclaimProviderWorkloadGate(gateDir, env, capture) {
   const ownerRaw = readGateOwnerRaw(gateDir);
   const owner = parseGateOwner(ownerRaw);
   if (gateOwnerActive(owner, env, capture)) return false;
-  if (ownerRaw === undefined) {
+  // A usable owner object that is NOT active (classified dead / stale-boot) is a
+  // proven-reclaimable holder → reclaim immediately. But when we have NO usable
+  // owner — the file is missing (ENOENT → undefined), unreadable (EACCES/other
+  // read error → null), or corrupt/non-object JSON (parse → null/non-object) —
+  // we have no liveness proof either way. Fail closed: require the gate to age
+  // past the timeout before reclaiming, matching inspectSlot which treats an
+  // unparseable slot file as occupied. Immediate reclaim on a merely unreadable
+  // owner would evict a LIVE holder whose owner.json briefly could not be read.
+  if (!owner || typeof owner !== "object") {
     if (gateAgeMs(gateDir) <= gateTimeoutMs(env)) return false;
   }
 
@@ -196,7 +210,11 @@ function releaseProviderWorkloadGate(gateDir, token) {
   }
 }
 
-function acquireProviderWorkloadGate(file, env, capture, pidInfo) {
+// Exported for tests: the gate owner.json is written and released within the
+// count-then-claim critical section of acquireProviderWorkloadLease, so it is
+// not observable after a full acquire. Tests call this directly to assert the
+// production write persists the real liveness identity (starttime/argv0/boot_id).
+export function acquireProviderWorkloadGate(file, env, capture, pidInfo) {
   const gateDir = gatePath(file);
   const deadline = Date.now() + gateTimeoutMs(env);
   for (;;) {
@@ -344,10 +362,10 @@ export function acquireProviderWorkloadLease({
   const key = String(concurrencyKey);
   const slug = keySlug(key);
   if (!Number.isSafeInteger(limit) || limit < 1) {
-    return blockResult(key, { active_count: 0, limit: null }, "invalid_provider_workload_limit");
+    return blockResult({ active_count: 0, limit: null }, "invalid_provider_workload_limit");
   }
   if (typeof lockRoot !== "string" || lockRoot.trim() === "") {
-    return blockResult(key, { active_count: 0, limit }, "invalid_provider_workload_lock_root");
+    return blockResult({ active_count: 0, limit }, "invalid_provider_workload_lock_root");
   }
 
   const root = lockRoot;
@@ -358,7 +376,7 @@ export function acquireProviderWorkloadLease({
   try {
     pidInfo = captureCurrentPidInfo(env);
   } catch {
-    return blockResult(key, { active_count: 0, limit }, "unverifiable_current_process");
+    return blockResult({ active_count: 0, limit }, "unverifiable_current_process");
   }
 
   const payload = Object.freeze({
@@ -379,10 +397,10 @@ export function acquireProviderWorkloadLease({
 
   for (;;) {
     const gate = acquireProviderWorkloadGate(gateFile, env, capture, pidInfo);
-    if (!gate.ok) return blockResult(key, { active_count: limit, limit });
+    if (!gate.ok) return blockResult({ active_count: limit, limit });
     try {
       const slots = enumerateSlotFiles(root, slug);
-      if (!slots) return blockResult(key, { active_count: limit, limit }, "unreadable_provider_workload_lock_root");
+      if (!slots) return blockResult({ active_count: limit, limit }, "unreadable_provider_workload_lock_root");
 
       slots.unshift({ index: 0, file: gateFile, legacy: true });
 
@@ -402,7 +420,7 @@ export function acquireProviderWorkloadLease({
       }
 
       if (activeCount >= limit) {
-        return blockResult(key, { active_count: activeCount, limit });
+        return blockResult({ active_count: activeCount, limit });
       }
 
       let index = 0;
@@ -429,6 +447,23 @@ export function releaseProviderWorkloadLease(lease) {
   } catch {
     return false;
   }
+}
+
+export function concurrencyAdmissionBlockedExecution(provider, route) {
+  // Single source for the "admission resolution threw" preflight across all
+  // source-bearing consumers (api-reviewer + companions + grok-web). It must
+  // NOT forward the raw thrown error: resolveConcurrencyAdmission can throw a
+  // shared_state-identity failure whose message embeds a filesystem path
+  // (e.g. "ENOENT ... stat '/abs/config/dir'"), which would leak straight into
+  // the persisted/disclosed errorMessage. provider.route (e.g.
+  // "claude.subscription") is non-sensitive and the failure is classified by
+  // reason; underlying detail belongs in operator debug logs, never the record (§8).
+  return providerWorkloadBlockedExecution({
+    ok: false,
+    reason: "concurrency_admission_failed",
+    message: `concurrency admission failed for ${provider}.${route}`,
+    capacity: null,
+  });
 }
 
 export function providerWorkloadBlockedExecution(block) {

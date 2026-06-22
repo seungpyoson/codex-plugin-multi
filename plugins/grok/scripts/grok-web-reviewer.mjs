@@ -42,6 +42,7 @@ import { isJwtShapedToken } from "./lib/jwt.mjs";
 import {
   acquireProviderWorkloadLease,
   providerWorkloadBlockedExecution,
+  concurrencyAdmissionBlockedExecution,
   releaseProviderWorkloadLease,
 } from "./lib/review-workload.mjs";
 
@@ -1720,16 +1721,6 @@ function grokCliAuthExpiredMessage(cfg, env = process.env) {
 
 function grokCliAuthHome(env = process.env) {
   return resolve(env.GROK_CLI_AUTH_HOME || env.GROK_HOME || join(processHomeDir(env), ".grok"));
-}
-
-function concurrencyAdmissionBlockedExecution(error, provider, route) {
-  const detail = error?.message ?? String(error);
-  return providerWorkloadBlockedExecution({
-    ok: false,
-    reason: "concurrency_admission_failed",
-    message: `concurrency admission failed for ${provider}.${route}: ${detail}`,
-    capacity: null,
-  });
 }
 
 function resolveSharedStateDir(pathValue) {
@@ -4987,9 +4978,9 @@ async function cmdRun(options) {
         if (sourceBearing) {
           try {
             admissionContext = resolveGrokAdmissionContext(cfg, process.env);
-          } catch (error) {
+          } catch {
             const route = concurrencyRouteForGrokConfig(cfg);
-            execution = concurrencyAdmissionBlockedExecution(error, cfg.provider, route);
+            execution = concurrencyAdmissionBlockedExecution(cfg.provider, route);
             execution.prompt = prompt;
           }
         }

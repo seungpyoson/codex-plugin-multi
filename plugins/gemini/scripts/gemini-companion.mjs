@@ -72,6 +72,7 @@ import { diffSourceFiles } from "./lib/diff-source.mjs";
 import {
   acquireProviderWorkloadLease,
   providerWorkloadBlockedExecution,
+  concurrencyAdmissionBlockedExecution,
   releaseProviderWorkloadLease,
 } from "./lib/review-workload.mjs";
 
@@ -82,16 +83,6 @@ const DEFAULT_GEMINI_REVIEW_TIMEOUT_MS = 900000;
 const DEFAULT_GEMINI_PING_TIMEOUT_MS = 900000;
 const GEMINI_READINESS_PREFLIGHT_TIMEOUT_MS = 900000;
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "GEMINI FILE";
-
-function concurrencyAdmissionBlockedExecution(error, provider, route) {
-  const detail = error?.message ?? String(error);
-  return providerWorkloadBlockedExecution({
-    ok: false,
-    reason: "concurrency_admission_failed",
-    message: `concurrency admission failed for ${provider}.${route}: ${detail}`,
-    capacity: null,
-  });
-}
 
 function processHomeDir(env = process.env) {
   return env.HOME || homedir();
@@ -1473,8 +1464,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     const route = "subscription";
     try {
       admissionContext = resolveGeminiAdmissionContext(invocation.target, route, process.env);
-    } catch (error) {
-      const workloadPreflight = concurrencyAdmissionBlockedExecution(error, invocation.target, route);
+    } catch {
+      const workloadPreflight = concurrencyAdmissionBlockedExecution(invocation.target, route);
       workloadPreflight.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.containment.path, workloadPreflight);
       const errorRecord = buildJobRecord(invocation, {
         exitCode: workloadPreflight.exitCode,

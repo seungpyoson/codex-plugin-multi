@@ -97,6 +97,7 @@ import { buildProviderAccountIdentity } from "./lib/provider-identity.mjs";
 import {
   acquireProviderWorkloadLease,
   providerWorkloadBlockedExecution,
+  concurrencyAdmissionBlockedExecution,
   releaseProviderWorkloadLease,
 } from "./lib/review-workload.mjs";
 
@@ -122,16 +123,6 @@ const DEFAULT_REVIEW_PERMISSION_MODE_LADDER = Object.freeze(["dontAsk", "auto", 
 const ALLOWED_REVIEW_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "dontAsk", "auto", "bypassPermissions"]);
 const PERMISSION_MODE_RETRYABLE_ERROR_CODES = new Set(["parse_error", "claude_error"]);
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "CLAUDE FILE";
-
-function concurrencyAdmissionBlockedExecution(error, provider, route) {
-  const detail = error?.message ?? String(error);
-  return providerWorkloadBlockedExecution({
-    ok: false,
-    reason: "concurrency_admission_failed",
-    message: `concurrency admission failed for ${provider}.${route}: ${detail}`,
-    capacity: null,
-  });
-}
 
 function processHomeDir(env = process.env) {
   return env.HOME || homedir();
@@ -1610,8 +1601,8 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     const route = "subscription";
     try {
       admissionContext = resolveClaudeAdmissionContext(invocation.target, route, process.env);
-    } catch (error) {
-      const workloadPreflight = concurrencyAdmissionBlockedExecution(error, invocation.target, route);
+    } catch {
+      const workloadPreflight = concurrencyAdmissionBlockedExecution(invocation.target, route);
       const finalRecord = buildClaudeFinalRecord(
         invocation,
         workloadPreflight,

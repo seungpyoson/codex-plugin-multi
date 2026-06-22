@@ -34,10 +34,15 @@ export function capturePidInfo(pid) {
     return captureDarwin(pid);
   }
   // Other platforms (win32, freebsd, ...) unsupported at this milestone.
-  // Target companions are used on macOS/Linux in practice; error explicitly so
-  // a silent-pass policy never disguises a platform regression.
+  // Target companions are used on macOS/Linux in practice. This is a
+  // "cannot inspect" condition, NOT "proven gone": emit capture_error so
+  // classifyHolder treats an unsupported-platform holder as `unverifiable`
+  // (fail closed / occupied), never `dead` (reclaimable). A process_gone prefix
+  // here would let ANY holder be reclaimed on an unsupported platform — a
+  // fail-open over-admission, and a contract violation (process_gone means a
+  // specific pid is provably gone, which we have not established here).
   throw new Error(
-    `process_gone: platform ${process.platform} not supported by capturePidInfo`
+    `capture_error: platform ${process.platform} not supported by capturePidInfo`
   );
 }
 
