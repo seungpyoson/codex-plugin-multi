@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -392,23 +392,34 @@ test("provider workload counts occupied slots above a lowered limit before admit
   }
 });
 
-test("legacy workload lock and slot zero coexist as one occupied index at limit greater than one", () => {
+test("legacy lock and slot-0 are distinct holders: both count toward the limit (no over-admit)", () => {
   const { root, env } = tempEnv();
   try {
-    const legacyAndSlotZero = holder({ pid: 201, token: "same-index-token" });
-    writeFileSync(join(root, "k.json"), JSON.stringify(legacyAndSlotZero));
-    writeSlot(root, 0, legacyAndSlotZero);
+    // The legacy single-flight lock (<slug>.json, mapped to index 0) and <slug>.slot-0.json are
+    // DISTINCT holders during a mixed-version deploy (new code never writes the legacy path). They
+    // must BOTH count, or limit>1 over-admits a source-bearing job. Deduping by index undercounts.
+    writeFileSync(join(root, "k.json"), JSON.stringify(holder({ pid: 201 }))); // legacy holder A
+    writeSlot(root, 0, { pid: 202 }); // slot-0 holder B (distinct pid/token)
 
-    const acquired = acquireProviderWorkloadLease(ctx({
+    const blocked = acquireProviderWorkloadLease(ctx({
       lockRoot: root,
       limit: 2,
       env: { ...env, RELAY_WORKLOAD_TEST_MODE: "1", RELAY_BOOT_ID: "BOOT" },
       capture: matchingCapture,
     }));
+    assert.equal(blocked.ok, false, "two distinct index-0 holders must count as two, not one");
+    assert.deepEqual(blocked.capacity, { active_count: 2, limit: 2 });
 
-    assert.equal(acquired.ok, true);
-    assert.match(acquired.lease.file, /k\.slot-1\.json$/);
-    releaseProviderWorkloadLease(acquired.lease);
+    // At limit 3 the same two holders count as two, so a third is admitted at the next free index.
+    const admitted = acquireProviderWorkloadLease(ctx({
+      lockRoot: root,
+      limit: 3,
+      env: { ...env, RELAY_WORKLOAD_TEST_MODE: "1", RELAY_BOOT_ID: "BOOT" },
+      capture: matchingCapture,
+    }));
+    assert.equal(admitted.ok, true);
+    assert.match(admitted.lease.file, /k\.slot-1\.json$/);
+    releaseProviderWorkloadLease(admitted.lease);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -434,6 +445,38 @@ test("foreign-host workload holders count as occupied and are never boot-id recl
     assert.equal(blocked.ok, false);
     assert.deepEqual(blocked.capacity, { active_count: 1, limit: 1 });
     assert.equal(JSON.parse(readFileSync(join(root, "k.slot-0.json"), "utf8")).hostname, "some-other-host");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("foreign-host gate owner is never reclaimed even when stale (fail-closed; wall-clock reclaim removed)", () => {
+  const { root, env } = tempEnv();
+  try {
+    // F3 made the gate match slots: a foreign-host owner classifies "foreign" -> active, and the old
+    // defensive wall-clock reclaim branch was removed (reclaiming a holder possibly live on another
+    // host sharing the lock dir would over-admit source-bearing diffs). Backdate the gate dir so a
+    // wall-clock policy WOULD reclaim it — proving the current code does NOT.
+    writeGateOwner(root, currentProcessGateOwner({ hostname: "some-other-host", pid: 401 }));
+    const gateDir = join(root, "k.json.gate");
+    const longAgoSec = Date.now() / 1000 - 3600;
+    utimesSync(gateDir, longAgoSec, longAgoSec);
+    const captureError = () => { throw new Error("capture_error: foreign gate owner must not be inspected"); };
+
+    const blocked = acquireProviderWorkloadLease(ctx({
+      lockRoot: root,
+      limit: 1,
+      env: {
+        ...env,
+        RELAY_WORKLOAD_TEST_MODE: "1",
+        RELAY_BOOT_ID: "CURRENT",
+        RELAY_PROVIDER_WORKLOAD_GATE_TIMEOUT_MS: "60",
+      },
+      capture: captureError,
+    }));
+
+    assert.equal(blocked.ok, false, "stale foreign gate owner must NOT be wall-clock reclaimed");
+    assert.equal(blocked.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

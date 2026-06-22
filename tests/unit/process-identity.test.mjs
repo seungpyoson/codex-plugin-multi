@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { capturePidInfo, classifyHolder, currentBootId, holderActive } from "../../scripts/lib/process-identity.mjs";
 
 const SKIP_PS_UNDER_DARWIN_SANDBOX = {
@@ -15,6 +16,19 @@ test("currentBootId is stable within a process and non-empty", () => {
   assert.equal(typeof a, "string");
   assert.ok(a.length > 0);
   assert.equal(a, b);
+});
+
+test("currentBootId fallback is the constant unknown-<hostname> sentinel with an operator warning", () => {
+  // When boot-id detection fails (no /proc, no sysctl), currentBootId returns `unknown-${hostname()}`.
+  // The `unknown-` PREFIX is a contract: shouldReclaimUnverifiable (review-workload.mjs) treats any
+  // `unknown-`-prefixed recorded boot id as operator-cleanup-only, so the fallback fails closed. Two
+  // regressions this guards: (1) dropping the prefix would defeat that suppression; (2) adding
+  // per-process entropy (a nonce) would make every restart look like a reboot and reclaim LIVE
+  // holders. The exact-constant match below rejects both. The fallback path itself is cache- and
+  // syscall-gated (untestable in-process without dep injection), so this is a source-level guard.
+  const source = readFileSync(new URL("../../scripts/lib/process-identity.mjs", import.meta.url), "utf8");
+  assert.match(source, /CACHED_BOOT_ID = `unknown-\$\{hostname\(\)\}`/, "fallback must be the constant unknown-<hostname> sentinel (no nonce)");
+  assert.match(source, /warnBootIdFallback\(/, "fallback must emit a one-time operator warning");
 });
 
 test("currentBootId reads the clock-independent boot-session uuid on darwin", (t) => {

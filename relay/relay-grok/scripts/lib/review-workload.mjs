@@ -391,7 +391,12 @@ export function acquireProviderWorkloadLease({
       for (const slot of slots) {
         const result = inspectSlot(slot, env, capture);
         if (!result.occupied) continue;
-        if (occupiedIndices.has(slot.index)) continue;
+        // Count every occupied file, NOT distinct indices. The legacy lock (<slug>.json, mapped to
+        // index 0) and <slug>.slot-0.json are DISTINCT holders — new code never writes the legacy
+        // path, so a legacy single-flight holder coexisting with a slot-0 holder (mixed-version
+        // deploy) is two concurrent source-bearing jobs. Deduping by index would under-count and
+        // over-admit at limit>1. occupiedIndices (index-keyed, idempotent) is only for picking a
+        // free slot index below; admission counting must stay per-holder.
         activeCount += 1;
         occupiedIndices.add(slot.index);
       }

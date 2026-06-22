@@ -915,7 +915,10 @@ test("direct API reviewer maps held provider workload to a counts-only blocked t
       reason: "active_same_provider_job",
       capacity: { active_count: admission.limit, limit: admission.limit },
     });
-    assert.equal(record.runtime_diagnostics.provider_workload.holder, undefined);
+    // The deepEqual above pins the persisted shape to counts-only. The §8 holder-strip itself (when
+    // a producer DOES attach a holder) is guarded by the cross-consumer injection test in
+    // tests/unit/job-record.test.mjs — this smoke path's real producer never emits a holder, so a
+    // bare `holder === undefined` assertion here would be vacuous (it cannot fail).
     assert.doesNotMatch(result.stdout, /held-api-reviewer-workload|blocked-boundary-token|MUST_NOT_REACH_API_REVIEWER|external_review_launched/);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
