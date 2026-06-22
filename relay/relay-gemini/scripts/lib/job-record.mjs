@@ -32,7 +32,7 @@ import {
 } from "./external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason } from "./external-model-review-quality.mjs";
 import { buildPacketRecovery } from "./provider-route-policy.mjs";
-import { buildPrivacyRedactor } from "./privacy-redaction.mjs";
+import { buildPrivacyRedactor, sanitizeProviderWorkloadDiagnostic } from "./privacy-redaction.mjs";
 import { elapsedMs } from "./time.mjs";
 import path from "node:path";
 
@@ -559,21 +559,11 @@ function normalizeProviderAccountIdentity(input) {
 }
 
 function normalizeProviderWorkloadDiagnostic(input, redactText = (value) => value) {
-  if (!input || typeof input !== "object") return null;
   // §8/§9: a blocked provider-workload diagnostic is a disclosure surface — it carries
   // counts only ({active_count, limit}). The blocking job's holder identity
   // (job_id/provider/pid/host/cwd/lock_file) must never be persisted or returned: it is a
   // cross-job info-disclosure vector for source-bearing reviews, and belongs in debug logs only.
-  const capInput = input.capacity && typeof input.capacity === "object" ? input.capacity : null;
-  const capacity = capInput ? {
-    active_count: Number.isSafeInteger(capInput.active_count) ? capInput.active_count : null,
-    limit: Number.isSafeInteger(capInput.limit) ? capInput.limit : null,
-  } : null;
-
-  return {
-    reason: typeof input.reason === "string" ? redactText(input.reason) : null,
-    capacity,
-  };
+  return sanitizeProviderWorkloadDiagnostic(input, redactText);
 }
 
 function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => value) {

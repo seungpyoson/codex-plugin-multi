@@ -28,6 +28,12 @@ import {
   SCHEMA_VERSION as KIMI_SCHEMA_VERSION,
 } from "../../plugins/kimi/scripts/lib/job-record.mjs";
 import {
+  buildRecord as buildApiReviewerRecord,
+} from "../../plugins/api-reviewers/scripts/api-reviewer.mjs";
+import {
+  buildRecord as buildGrokRecord,
+} from "../../plugins/grok/scripts/grok-web-reviewer.mjs";
+import {
   buildExternalReview,
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -1975,6 +1981,149 @@ test("buildJobRecord: keeps counts-only provider workload blocked diagnostics (n
     });
     assert.equal(rec.runtime_diagnostics.provider_workload.holder, undefined);
     assert.doesNotMatch(JSON.stringify(rec), /must-not-persist|job-active|dev-host/);
+  }
+});
+
+test("provider workload blocked diagnostics are counts-only across every terminal record consumer", () => {
+  const providerWorkload = {
+    reason: "active_same_provider_job",
+    capacity: { active_count: 3, limit: 4 },
+    holder: {
+      pid: 54321,
+      hostname: "leaky-hostname",
+      cwd: "/tmp/leaky-cwd",
+      lock_file: "/tmp/leaky-lock-file.json",
+      token: "leaky-token",
+      job_id: "leaky-job-id",
+      argv0: "leaky-argv0",
+    },
+  };
+  const expected = {
+    reason: "active_same_provider_job",
+    capacity: { active_count: 3, limit: 4 },
+  };
+  const forbidden = [
+    "54321",
+    "leaky-hostname",
+    "/tmp/leaky-cwd",
+    "/tmp/leaky-lock-file.json",
+    "leaky-token",
+    "leaky-job-id",
+    "leaky-argv0",
+  ];
+  const blockedParsed = (provider) => ({
+    ok: false,
+    reason: "provider_workload_blocked",
+    error: `${provider} source-bearing review is already active`,
+    structured: null,
+    denials: [],
+  });
+  const startedAt = "2026-05-29T00:00:00.000Z";
+  const endedAt = "2026-05-29T00:00:01.000Z";
+  const scopeInfo = {
+    cwd: "/tmp/src",
+    workspaceRoot: "/tmp/src",
+    scope: "custom",
+    scope_base: null,
+    scope_paths: ["README.md"],
+    files: [],
+  };
+  const apiEnvName = "RELAY_F7_API_KEY";
+  const oldApiEnv = process.env[apiEnvName];
+  process.env[apiEnvName] = "test-api-key";
+  try {
+    const records = [
+      ["claude", buildJobRecord(makeInvocation(), {
+        exitCode: null,
+        parsed: blockedParsed("claude"),
+        pidInfo: null,
+        runtimeDiagnostics: { provider_workload: providerWorkload },
+        errorMessage: "provider_workload_blocked: source-bearing review is already active",
+        claudeSessionId: CLAUDE_UUID,
+      }, [])],
+      ["gemini", buildGeminiJobRecord(
+        makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+        {
+          exitCode: null,
+          parsed: blockedParsed("gemini"),
+          pidInfo: null,
+          runtimeDiagnostics: { provider_workload: providerWorkload },
+          errorMessage: "provider_workload_blocked: source-bearing review is already active",
+          geminiSessionId: GEMINI_UUID,
+        },
+        [],
+      )],
+      ["kimi", buildKimiJobRecord(
+        makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+        {
+          exitCode: null,
+          parsed: blockedParsed("kimi"),
+          pidInfo: null,
+          runtimeDiagnostics: { provider_workload: providerWorkload },
+          errorMessage: "provider_workload_blocked: source-bearing review is already active",
+          kimiSessionId: "kimi-session-123",
+        },
+        [],
+      )],
+      ["api-reviewer", buildApiReviewerRecord({
+        provider: "deepseek",
+        cfg: {
+          display_name: "DeepSeek",
+          model: "deepseek-chat",
+          auth_mode: "api_key",
+          env_keys: [apiEnvName],
+          base_url: "https://api.deepseek.example.invalid/v1",
+          request_defaults: null,
+        },
+        mode: "custom-review",
+        options: { jobId: UUID, prompt: "", reviewSlotPriorAttempts: [] },
+        scopeInfo,
+        execution: {
+          exitCode: null,
+          parsed: blockedParsed("deepseek"),
+          pidInfo: null,
+          payload_sent: false,
+          diagnostics: { provider_workload: providerWorkload },
+        },
+        startedAt,
+        endedAt,
+      })],
+      ["grok", buildGrokRecord({
+        cfg: {
+          provider: "grok-web",
+          canonical_provider: "grok",
+          display_name: "Grok",
+          model: "grok-build",
+          auth_mode: "subscription",
+          transport: "web",
+          base_url: "http://127.0.0.1:8000/v1",
+        },
+        mode: "custom-review",
+        options: { jobId: UUID, prompt: "", reviewSlotPriorAttempts: [] },
+        scopeInfo,
+        execution: {
+          exitCode: null,
+          parsed: blockedParsed("grok"),
+          pidInfo: null,
+          payload_sent: false,
+          diagnostics: { provider_workload: providerWorkload },
+        },
+        startedAt,
+        endedAt,
+      })],
+    ];
+
+    for (const [name, record] of records) {
+      assert.deepEqual(record.runtime_diagnostics.provider_workload, expected, name);
+      assert.equal(record.runtime_diagnostics.provider_workload.holder, undefined, name);
+      const encoded = JSON.stringify(record);
+      for (const value of forbidden) {
+        assert.ok(!encoded.includes(value), `${name} leaked ${value}`);
+      }
+    }
+  } finally {
+    if (oldApiEnv == null) delete process.env[apiEnvName];
+    else process.env[apiEnvName] = oldApiEnv;
   }
 });
 

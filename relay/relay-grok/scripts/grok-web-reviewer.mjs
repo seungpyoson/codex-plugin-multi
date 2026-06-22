@@ -24,7 +24,7 @@ import {
 import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
-import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
+import { buildPrivacyRedactor, sanitizeProviderWorkloadDiagnostic } from "./lib/privacy-redaction.mjs";
 import {
   EXTERNAL_REVIEW_KEYS,
   SOURCE_CONTENT_TRANSMISSION,
@@ -3709,6 +3709,10 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       }),
     });
   }
+  const providerWorkload = sanitizeProviderWorkloadDiagnostic(
+    safeDiagnostics?.provider_workload,
+    redactSensitiveText,
+  );
   let runtimeDiagnostics = safeDiagnostics ? (cfg.transport === "cli" ? {
     cli_request: {
       transport: "cli",
@@ -3742,7 +3746,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       grok_home_cleanup: safeDiagnostics.grok_home_cleanup ?? null,
     },
     cost_quota: null,
-    ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
+    ...(providerWorkload ? { provider_workload: providerWorkload } : {}),
   } : {
     ...(safeDiagnostics.cli_request ? { cli_request: safeDiagnostics.cli_request } : {}),
     tunnel_request: {
@@ -3762,7 +3766,7 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       auto_start_attempted: safeDiagnostics.tunnel_start?.attempted ?? safeDiagnostics.tunnel_state.auto_start_attempted ?? false,
     } : null,
     session_tokens: safeDiagnostics.session_tokens ?? null,
-    ...(safeDiagnostics.provider_workload ? { provider_workload: safeDiagnostics.provider_workload } : {}),
+    ...(providerWorkload ? { provider_workload: providerWorkload } : {}),
   }) : null;
   if (runtimeDiagnostics && safeDiagnostics?.source_packet_policy) {
     runtimeDiagnostics.source_packet_policy = safeDiagnostics.source_packet_policy;
@@ -5177,6 +5181,7 @@ async function runCli() {
 }
 
 export {
+  buildRecord,
   buildReviewMetadata,
   readUtf8ScopeFileWithinLimit,
   releaseStateLock,

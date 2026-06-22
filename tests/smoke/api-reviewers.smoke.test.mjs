@@ -6,8 +6,9 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readF
 import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
+import { CONCURRENCY_FACTS, resolveConcurrencyAdmission } from "../../scripts/lib/provider-route-policy.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
 import { badVerdictReviewFixture, requestChangesReviewFixture, substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
 
@@ -214,33 +215,55 @@ function assertDirectApiNotSent(record, displayName) {
 }
 
 async function importApiReviewerInternalsForTest() {
-  const tempScriptsDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-module-"));
-  const source = readFileSync(COMPANION, "utf8");
-  const footer = `try {
-  await main();
-} catch (e) {
-  printJson({ ok: false, error: e.message });
-  process.exit(1);
-}
-`;
-  assert.match(source, /async function readUtf8ScopeFileWithinLimit/);
-  assert.match(source, /try \{\n  await main\(\);/);
-  const testSource = source.replace(footer, "export { buildRecord, readUtf8ScopeFileWithinLimit, sameFileIdentity };\n");
-  assert.notEqual(testSource, source);
-  cpSync(path.join(REPO_ROOT, "plugins/api-reviewers/scripts/lib"), path.join(tempScriptsDir, "lib"), { recursive: true });
-  const modulePath = path.join(tempScriptsDir, "api-reviewer.mjs");
-  writeFileSync(modulePath, testSource);
-  try {
-    return await import(pathToFileURL(modulePath).href);
-  } finally {
-    rmSync(tempScriptsDir, { recursive: true, force: true });
-  }
+  return await import(new URL("../../plugins/api-reviewers/scripts/api-reviewer.mjs", import.meta.url).href);
 }
 
 function makeWorkspace() {
   const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-smoke-"));
   writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
   return cwd;
+}
+
+function writeOccupiedApiReviewerWorkloadSlots({ provider, cwd, dataDir }) {
+  const route = "direct_api";
+  const workloadLockDir = path.join(dataDir, ".provider-workload");
+  const env = {
+    RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+    RELAY_WORKLOAD_TEST_MODE: "1",
+    RELAY_BOOT_ID: "TEST",
+  };
+  const fact = CONCURRENCY_FACTS[provider]?.[route];
+  assert.ok(fact, `expected concurrency fact for ${provider}.${route}`);
+  const admission = resolveConcurrencyAdmission({
+    category: fact.category,
+    declaredLimit: fact.limit,
+    limitEnv: fact.limit_env,
+    provider,
+    route,
+    env,
+  });
+  assert.equal(admission.concurrencyKey, `${provider}.${route}`);
+  mkdirSync(admission.lockRoot, { recursive: true });
+  for (let index = 0; index < admission.limit; index += 1) {
+    const holder = {
+      schema_version: 1,
+      provider,
+      concurrency_key: admission.concurrencyKey,
+      key_slug: admission.concurrencyKey,
+      job_id: `held-api-reviewer-workload-${index}`,
+      pid: process.pid,
+      boot_id: env.RELAY_BOOT_ID,
+      hostname: hostname(),
+      cwd,
+      started_at: new Date().toISOString(),
+      token: `blocked-boundary-token-${index}`,
+    };
+    writeFileSync(
+      path.join(admission.lockRoot, `${admission.concurrencyKey}.slot-${index}.json`),
+      `${JSON.stringify(holder)}\n`,
+    );
+  }
+  return { admission, env };
 }
 
 async function createGlmSessionGrant({ cwd, dataDir, prompt = "Review seed file only.", ttlMs = "900000", env = {} } = {}) {
@@ -853,6 +876,51 @@ test("API_REVIEWERS_MAX_TOKENS overrides provider request defaults", async () =>
   assert.equal(record.status, "completed");
   assert.equal(record.provider, "glm");
   assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API reviewer maps held provider workload to a counts-only blocked terminal record", async () => {
+  const cwd = makeWorkspace();
+  const dataDir = mkdtempSync(path.join(tmpdir(), "api-reviewers-workload-block-"));
+  const { admission, env: workloadEnv } = writeOccupiedApiReviewerWorkloadSlots({
+    provider: "deepseek",
+    cwd,
+    dataDir,
+  });
+  try {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro", "MUST_NOT_REACH_API_REVIEWER"),
+        DEEPSEEK_API_KEY: "secret-test-value",
+        ...workloadEnv,
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.provider, "deepseek");
+    assert.equal(record.error_code, "provider_workload_blocked");
+    assertDirectApiNotSent(record, "DeepSeek");
+    assert.deepEqual(record.runtime_diagnostics.provider_workload, {
+      reason: "active_same_provider_job",
+      capacity: { active_count: admission.limit, limit: admission.limit },
+    });
+    assert.equal(record.runtime_diagnostics.provider_workload.holder, undefined);
+    assert.doesNotMatch(result.stdout, /held-api-reviewer-workload|blocked-boundary-token|MUST_NOT_REACH_API_REVIEWER|external_review_launched/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("direct API reviewer persistence prunes old terminal job directories without touching active or unsafe entries", async () => {
