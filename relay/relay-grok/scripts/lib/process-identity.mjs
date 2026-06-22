@@ -140,6 +140,16 @@ function captureDarwin(pid) {
 }
 
 let CACHED_BOOT_ID = null;
+let WARNED_BOOT_ID_FALLBACK = false;
+
+function warnBootIdFallback(id) {
+  if (WARNED_BOOT_ID_FALLBACK) return;
+  WARNED_BOOT_ID_FALLBACK = true;
+  process.stderr.write(
+    `relay: boot id detection failed; using ${id}; unverifiable holder cleanup requires operator action\n`
+  );
+}
+
 export function currentBootId(env = process.env) {
   if (env.RELAY_BOOT_ID) return String(env.RELAY_BOOT_ID); // test override
   if (CACHED_BOOT_ID) return CACHED_BOOT_ID;
@@ -163,7 +173,10 @@ export function currentBootId(env = process.env) {
       if (!bt.error && bt.status === 0 && bt.stdout.trim()) CACHED_BOOT_ID = bt.stdout.trim();
     }
   }
-  if (!CACHED_BOOT_ID) CACHED_BOOT_ID = `unknown-${hostname()}`; // never empty
+  if (!CACHED_BOOT_ID) {
+    CACHED_BOOT_ID = `unknown-${hostname()}`; // never empty; operator-cleanup-only
+    warnBootIdFallback(CACHED_BOOT_ID);
+  }
   return CACHED_BOOT_ID;
 }
 

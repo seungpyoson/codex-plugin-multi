@@ -85,6 +85,7 @@ function recordedBootId(holder) {
 
 function shouldReclaimUnverifiable(holder, env) {
   const bootId = recordedBootId(holder);
+  if (bootId?.startsWith("unknown-")) return false;
   return bootId != null && bootId !== currentBootId(env);
 }
 
@@ -153,18 +154,18 @@ function gateAgeMs(gateDir) {
   }
 }
 
-function gateOwnerActive(owner, gateDir, env) {
+function gateOwnerActive(owner, env, capture) {
   if (!owner || typeof owner !== "object") return false;
-  if (owner.hostname && owner.hostname !== hostname()) {
-    return gateAgeMs(gateDir) <= gateTimeoutMs(env);
-  }
-  return classifyHolder(owner, env) !== "dead";
+  const classification = classifyHolder(owner, env, capture);
+  if (classification === "dead") return false;
+  if (classification === "unverifiable" && shouldReclaimUnverifiable(owner, env)) return false;
+  return true;
 }
 
-function tryReclaimProviderWorkloadGate(gateDir, env) {
+function tryReclaimProviderWorkloadGate(gateDir, env, capture) {
   const ownerRaw = readGateOwnerRaw(gateDir);
   const owner = parseGateOwner(ownerRaw);
-  if (gateOwnerActive(owner, gateDir, env)) return false;
+  if (gateOwnerActive(owner, env, capture)) return false;
   if (ownerRaw === undefined) {
     if (gateAgeMs(gateDir) <= gateTimeoutMs(env)) return false;
   }
@@ -195,7 +196,7 @@ function releaseProviderWorkloadGate(gateDir, token) {
   }
 }
 
-function acquireProviderWorkloadGate(file, env) {
+function acquireProviderWorkloadGate(file, env, capture, pidInfo) {
   const gateDir = gatePath(file);
   const deadline = Date.now() + gateTimeoutMs(env);
   for (;;) {
@@ -206,6 +207,9 @@ function acquireProviderWorkloadGate(file, env) {
         writeGateOwner(gateDir, {
           schema_version: SCHEMA_VERSION,
           pid: process.pid,
+          starttime: pidInfo?.starttime ?? null,
+          argv0: pidInfo?.argv0 ?? null,
+          boot_id: currentBootId(env),
           hostname: hostname(),
           started_at: new Date().toISOString(),
           token,
@@ -220,7 +224,7 @@ function acquireProviderWorkloadGate(file, env) {
       });
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
-      if (tryReclaimProviderWorkloadGate(gateDir, env)) continue;
+      if (tryReclaimProviderWorkloadGate(gateDir, env, capture)) continue;
       if (Date.now() >= deadline) {
         return Object.freeze({
           ok: false,
@@ -374,7 +378,7 @@ export function acquireProviderWorkloadLease({
   });
 
   for (;;) {
-    const gate = acquireProviderWorkloadGate(gateFile, env);
+    const gate = acquireProviderWorkloadGate(gateFile, env, capture, pidInfo);
     if (!gate.ok) return blockResult(key, { active_count: limit, limit });
     try {
       const slots = enumerateSlotFiles(root, slug);
@@ -387,6 +391,7 @@ export function acquireProviderWorkloadLease({
       for (const slot of slots) {
         const result = inspectSlot(slot, env, capture);
         if (!result.occupied) continue;
+        if (occupiedIndices.has(slot.index)) continue;
         activeCount += 1;
         occupiedIndices.add(slot.index);
       }
