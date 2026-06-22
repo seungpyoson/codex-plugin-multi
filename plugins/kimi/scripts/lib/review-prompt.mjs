@@ -765,16 +765,25 @@ function codeCorrectlyHandlesPermissionError(lower) {
 // Split into a CUE pattern (i/we + a no-inspection cue) and a TARGET pattern (inspection verb or a
 // source object within the next ~48 chars) so each regex stays well under the complexity cap while
 // preserving the positional "i/we ... cue ... target, one sentence" semantics.
-const REVIEWER_BLOCK_CUE = /\b(?:i|we)\b[^.\n]{0,30}?\b(?:could ?n['o]?t|can ?n['o]?t|cannot|was ?n['o]?t able|were ?n['o]?t able|did ?n['o]?t|never|only|unable to|lacked? access|no access)\b/i;
-const REVIEWER_BLOCK_TARGET = /\b(?:inspect|read|open|access|examine|verif|confirm|load)(?:ed|ing|y|ies|ied)?\b|\bthe (?:diff|source|file|selected|module|contents)\b/i;
+// Cue + target are each split in two (kept under the complexity cap). Contractions are expanded to
+// full forms by the normalizer below, so the cue patterns need no apostrophe-variant branches.
+const REVIEWER_BLOCK_CUE_A = /\b(?:i|we)\b[^.\n]{0,30}?\b(?:could not|cannot|did not|never|only)\b/i;
+const REVIEWER_BLOCK_CUE_B = /\b(?:i|we)\b[^.\n]{0,30}?\b(?:was not able|were not able|unable to|lacked? access|no access)\b/i;
+const REVIEWER_BLOCK_TARGET_VERB = /\b(?:inspect|read|open|access|examine|verif|confirm|load)(?:ed|ing|y|ies|ied)?\b/i;
+const REVIEWER_BLOCK_TARGET_OBJ = /\bthe (?:diff|source|file|selected|module|contents)\b/i;
 function reviewerFirstPersonBlock(lower) {
-  const m = REVIEWER_BLOCK_CUE.exec(lower);
-  if (!m) return false;
-  const start = m.index + m[0].length;
-  return REVIEWER_BLOCK_TARGET.test(lower.slice(start, start + 48));
+  for (const cue of [REVIEWER_BLOCK_CUE_A, REVIEWER_BLOCK_CUE_B]) {
+    const m = cue.exec(lower);
+    if (!m) continue;
+    const tail = lower.slice(m.index + m[0].length, m.index + m[0].length + 48);
+    if (REVIEWER_BLOCK_TARGET_VERB.test(tail) || REVIEWER_BLOCK_TARGET_OBJ.test(tail)) return true;
+  }
+  return false;
 }
 function reviewProcessBlockedSignal(lowerRaw) {
-  const lower = String(lowerRaw ?? "").replace(/[‘’ʼ′]/g, "'");
+  // Normalize curly apostrophes, then expand contractions to full forms ("couldn't" -> "could not")
+  // so the block patterns and the literal list below match a single canonical spelling.
+  const lower = String(lowerRaw ?? "").replace(/[‘’ʼ′]/g, "'").replace(/\bcan't\b/g, "cannot").replace(/n't\b/g, " not");
   if (reviewerFirstPersonBlock(lower)) return true;
   return includesAny(lower, [
     "no inspection was possible",
@@ -1455,9 +1464,11 @@ const TINY_SOURCE_MAX_LINES = 5;
 // set. hasDefectCue() is the single entry point used everywhere CONCRETE_FINDING_DEFECT_CUE was.
 const DEFECT_CUE_PHRASE = /\b(?:instead of|rather than|should (?:be|use|return|call|not)|fails to|does not (?:handle|close|await|free|release))\b/i;
 const DEFECT_CUE_TERM = /\b(?:off-by-one|null deref|use-after-free|race condition|overflow|underflow|incorrect|returns? the wrong|wrong (?:order|sign|value|index))\b/i;
-const DEFECT_CUE_VERB = /\b(?:subtracts?|adds? to|drops?|leaks?|swallows?|throws?|never (?:called|awaited|closed))\b/i;
+const DEFECT_CUE_VERB_A = /\b(?:subtracts?|adds? to|drops?|leaks?)\b/i;
+const DEFECT_CUE_VERB_B = /\b(?:swallows?|throws?|never (?:called|awaited|closed))\b/i;
 function hasDefectCue(clause) {
-  return DEFECT_CUE_PHRASE.test(clause) || DEFECT_CUE_TERM.test(clause) || DEFECT_CUE_VERB.test(clause);
+  return DEFECT_CUE_PHRASE.test(clause) || DEFECT_CUE_TERM.test(clause)
+    || DEFECT_CUE_VERB_A.test(clause) || DEFECT_CUE_VERB_B.test(clause);
 }
 // Every quantifier here is UPPER-BOUNDED (no unbounded *,+ on a character class):
 // these run on adversarial external-review text, so each must be provably linear-time
@@ -1488,21 +1499,30 @@ const CONCRETE_FINDING_CODE_LOCUS = [
 // defect noun within two words ("no off-by-one"), so a bare negation in the finding ("never called",
 // "none of the keys") does not suppress it.
 const CONCRETE_FINDING_PRAISE = /\bas (?:expected|intended|designed|documented|planned|specified|promised|required|appropriate|advertised|warranted)\b/i;
-const DISMISSAL_NEGATED_DEFECT = /\b(?:no|not|never|none|without|n['o]?t)\b(?: \w+){0,2} (?:issues?|problems?|bugs?|concerns?|defects?|regressions?|blockers?|off-by-one)\b/i;
+// Each kept under the regex-complexity cap by splitting wide alternations across paired patterns
+// (the union is identical). The bare "n['o]?t" negation was dropped: the leading \b makes it
+// unmatchable inside contractions ("isn't"), so it never fired.
+const DISMISSAL_NEGATED_DEFECT_A = /\b(?:no|not|never|none|without)\b(?: \w+){0,2} (?:issues?|problems?|bugs?|concerns?)\b/i;
+const DISMISSAL_NEGATED_DEFECT_B = /\b(?:no|not|never|none|without)\b(?: \w+){0,2} (?:defects?|regressions?|blockers?|off-by-one)\b/i;
 const DISMISSAL_SHOULD_NOT = /\bshould not (?:be (?:an? )?(?:problem|issue|concern|blocker|big deal)|cause|regress|matter|break|hurt|harm|affect)\b/i;
 const DISMISSAL_NOTHING = /\bnothing (?:wrong|concerning|of concern|problematic|improper|improperly|amiss|untoward|alarming|broken|to (?:flag|note|fix|report))\b/i;
-const DISMISSAL_ABSENCE = /\bmissing nothing\b|\bdoes not appear\b|\bno (?:concerns?|issues?|problems?|blockers?|objections?)\b/i;
-const DISMISSAL_CORRECTLY = /\bcorrectly (?:handles?|handled|throws?|works?|working|closes?|closed|returns?|catches?|caught|falls? back)\b/i;
+const DISMISSAL_ABSENCE = /\bmissing nothing\b|\bdoes not appear\b/i;
+const DISMISSAL_NO_X = /\bno (?:concerns?|issues?|problems?|blockers?|objections?)\b/i;
+const DISMISSAL_CORRECTLY_A = /\bcorrectly (?:handles?|handled|throws?|works?|working|closes?|closed)\b/i;
+const DISMISSAL_CORRECTLY_B = /\bcorrectly (?:returns?|catches?|caught|falls? back)\b/i;
 const DISMISSAL_LOOKS = /\b(?:looks?|seems?|is|are|all) (?:fine|clean|good|correct|solid|right|reasonable|ok|okay|sensible|acceptable)\b/i;
 const DISMISSAL_LGTM_PHRASES = ["lgtm", "ship it", "nicely done", "well done", "good work", "solid work", "looks solid", "that is acceptable", "that's acceptable"];
 const CONTRAST_WORDS = [" but ", " yet ", " however", " whereas ", " though ", " although ", " instead ", " nevertheless", " nonetheless"];
 
 function clauseIsDismissal(clause) {
-  return DISMISSAL_NEGATED_DEFECT.test(clause)
+  return DISMISSAL_NEGATED_DEFECT_A.test(clause)
+    || DISMISSAL_NEGATED_DEFECT_B.test(clause)
     || DISMISSAL_SHOULD_NOT.test(clause)
     || DISMISSAL_NOTHING.test(clause)
     || DISMISSAL_ABSENCE.test(clause)
-    || DISMISSAL_CORRECTLY.test(clause)
+    || DISMISSAL_NO_X.test(clause)
+    || DISMISSAL_CORRECTLY_A.test(clause)
+    || DISMISSAL_CORRECTLY_B.test(clause)
     || DISMISSAL_LOOKS.test(clause)
     || includesAny(clause.toLowerCase(), DISMISSAL_LGTM_PHRASES);
 }
