@@ -202,12 +202,17 @@ function configuredSecrets(env, configuredSecretNames = []) {
     if (typeof value !== "string" || value.length < minLength) continue;
     values.push(value);
     if (value.includes(";")) {
+      // Apply the same minLength threshold to cookie subparts and extracted cookie
+      // values as the top-level value (line above). Without it, short attributes like
+      // "Path=/" registered "/" as a global secret, so every benign slash in provider
+      // output got redacted (hello/world -> hello[REDACTED]world). Over-redaction
+      // corrupts diagnostics; it is not a leak, but it is still wrong.
       for (const part of value.split(";").map((item) => item.trim()).filter(Boolean)) {
-        values.push(part);
+        if (part.length >= minLength) values.push(part);
         const eqIndex = part.indexOf("=");
         if (eqIndex !== -1) {
           const cookieValue = part.slice(eqIndex + 1).trim();
-          if (cookieValue) values.push(cookieValue);
+          if (cookieValue.length >= minLength) values.push(cookieValue);
         }
       }
     }

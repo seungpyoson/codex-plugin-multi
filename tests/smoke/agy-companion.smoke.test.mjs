@@ -1064,3 +1064,123 @@ test("agy non-review stdout noise is not accepted as a completed review", () => 
     rmTree(cwd);
   }
 });
+
+function resolveRealGit() {
+  const which = spawnSync(process.platform === "win32" ? "where" : "which", ["git"], { encoding: "utf8" });
+  return String(which.stdout ?? "").trim().split(/\r?\n/).filter(Boolean)[0] ?? "";
+}
+
+// Brace-match concatenated JSON values from a stdout stream. printJson() (and fail())
+// pretty-print with JSON.stringify(obj, null, 2), so the terminal record can span multiple
+// lines — a line-based JSON.parse would break on it. Returns the parsed objects in order.
+function parseJsonStream(raw) {
+  const objs = [];
+  let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === "\"") inStr = false; continue; }
+    if (c === "\"") { inStr = true; continue; }
+    if (c === "{") { if (depth === 0) start = i; depth++; }
+    else if (c === "}") { depth--; if (depth === 0 && start >= 0) { objs.push(JSON.parse(raw.slice(start, i + 1))); start = -1; } }
+  }
+  return objs;
+}
+
+// PR #218 round-2 HIGH (source-disclosure INVERSION): a git-binary policy rejection raised
+// by a POST-spawn workspace re-resolution — e.g. a mid-run .git boundary topology change
+// that moves the RELAY_GIT_BINARY override inside a new workspace boundary so the cached
+// resolveGitBinary key misses and re-validation throws — used to escape cmdRun to
+// main().catch -> fail(), which hard-coded source_content_transmission:"not_sent". That is
+// a FALSE disclosure: the source was already delivered to the target at execve. The
+// companion now latches "source sent" on spawn and discloses SENT for any post-spawn fail.
+test("agy post-spawn git_binary_rejected (mid-run .git topology change) discloses SENT, not a false not_sent", () => {
+  const realGit = resolveRealGit();
+  assert.ok(realGit, "a real git binary must be resolvable for this test");
+  const root = mkdtempSync(path.join(tmpdir(), "agy-inv-"));
+  const cwd = path.join(root, "ws");
+  mkdirSync(cwd);
+  try {
+    const { base } = fixtureBranchDiffRepo(cwd);
+    // Override git binary OUTSIDE the workspace at spawn time (a sibling under root).
+    const gitbin = path.join(root, "gitbin");
+    mkdirSync(gitbin);
+    const override = writeExecutable(gitbin, "git", `#!/bin/sh\nexec ${JSON.stringify(realGit)} "$@"\n`);
+    const capturePath = path.join(root, "captured-prompt.txt");
+    // Mock captures the --print prompt (proves the source was sent) and creates root/.git
+    // mid-run: root then becomes the outermost workspace boundary and contains gitbin, so
+    // the post-spawn resolveGitBinary cacheKey misses and re-validation rejects the override.
+    const mock = writeExecutable(root, "agy-topology-mock", [
+      "#!/usr/bin/env node",
+      "const fs = require('node:fs');",
+      "const args = process.argv.slice(2);",
+      "if (args[0] === 'models') { console.log('verified-local-model'); process.exit(0); }",
+      "const pi = args.indexOf('--print');",
+      `fs.writeFileSync(${JSON.stringify(capturePath)}, pi >= 0 ? args[pi + 1] : '');`,
+      `try { fs.mkdirSync(${JSON.stringify(path.join(root, ".git"))}); } catch {}`,
+      "console.log('Verdict: APPROVE');",
+      "console.log('Blocking findings');",
+      "console.log('- None. I inspected the selected source packet and found no blocking issues. I checked source-routing leaks, behavioral regressions, missing tests, and security-sensitive changes against the selected AGY source rather than an unrestricted workspace walk.');",
+      "console.log('Non-blocking concerns');",
+      "console.log('- None. The selected source packet was reviewed for the requested mode, scope base, and external-review contract.');",
+      "console.log('- Residual risk: no additional concern after checking the selected source packet.');",
+      "",
+    ].join("\n"));
+    const { stdout, dataDir } = runCompanion(
+      ["run", "--mode", "review", "--cwd", cwd, "--scope-base", base, "--timeout-ms", "30000", "please review the change"],
+      { cwd, env: { RELAY_GIT_BINARY: override, AGY_BINARY: mock } },
+    );
+    try {
+      assert.equal(existsSync(capturePath), true, "the mock AGY must have received the source prompt (proves the source was sent)");
+      const terminal = parseJsonStream(stdout).at(-1);
+      assert.equal(terminal.error_code ?? terminal.external_review?.error_code, "git_binary_rejected");
+      const disclosure = terminal.source_content_transmission ?? terminal.external_review?.source_content_transmission;
+      assert.equal(disclosure, "sent", "a post-spawn failure after the source was sent must disclose SENT, never not_sent");
+    } finally {
+      rmTree(dataDir);
+    }
+  } finally {
+    rmTree(root);
+  }
+});
+
+// Symmetric guard: a genuine PRE-spawn git-binary rejection (override inside the workspace
+// from the start) must still disclose not_sent — the target never spawned, so the source
+// truly never left this process. The disclosure fix must not over-correct.
+test("agy pre-spawn git_binary_rejected discloses not_sent (source genuinely not sent)", () => {
+  const realGit = resolveRealGit();
+  assert.ok(realGit, "a real git binary must be resolvable for this test");
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-presym-"));
+  try {
+    const { base } = fixtureBranchDiffRepo(cwd);
+    // Override git binary INSIDE the workspace from the start -> policy reject pre-spawn,
+    // before the target is ever spawned.
+    const gitbin = path.join(cwd, "gitbin");
+    mkdirSync(gitbin);
+    const override = writeExecutable(gitbin, "git", `#!/bin/sh\nexec ${JSON.stringify(realGit)} "$@"\n`);
+    const ranMarker = path.join(cwd, "MOCK_SOURCE_SPAWN");
+    const mock = writeExecutable(cwd, "agy-never-mock", [
+      "#!/usr/bin/env node",
+      "const fs = require('node:fs');",
+      "const args = process.argv.slice(2);",
+      "if (args[0] === 'models') { console.log('verified-local-model'); process.exit(0); }",
+      `if (args.includes('--print')) fs.writeFileSync(${JSON.stringify(ranMarker)}, '1');`,
+      "console.log('Verdict: APPROVE');",
+      "",
+    ].join("\n"));
+    const { stdout, dataDir } = runCompanion(
+      ["run", "--mode", "review", "--cwd", cwd, "--scope-base", base, "--timeout-ms", "30000", "please review"],
+      { cwd, env: { RELAY_GIT_BINARY: override, AGY_BINARY: mock } },
+    );
+    try {
+      const terminal = parseJsonStream(stdout).at(-1);
+      const disclosure = terminal.source_content_transmission ?? terminal.external_review?.source_content_transmission;
+      assert.equal(terminal.error_code ?? terminal.external_review?.error_code, "git_binary_rejected");
+      assert.equal(disclosure, "not_sent", "a pre-spawn failure must disclose not_sent");
+      assert.equal(existsSync(ranMarker), false, "the target must never have spawned with source (source not sent)");
+    } finally {
+      rmTree(dataDir);
+    }
+  } finally {
+    rmTree(cwd);
+  }
+});

@@ -65,6 +65,18 @@ const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "AGY FILE";
 const AGY_SOURCE_PACKET_MAX_BYTES = 256 * 1024;
 const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
 
+// Set true once the AGY target process has spawned (onSpawn fires on execve), which is
+// the point the selected source packet is delivered to it via --print argv. The top-level
+// error sinks fail() and main().catch have no execution object in scope and would
+// otherwise hard-code source_content_transmission:"not_sent"; once the target has spawned
+// that is a FALSE disclosure (the source already left this process) — a disclosure
+// inversion that under-warns the operator. This module-scoped latch is the process-level
+// mirror of pidInfo for those sinks, so they disclose SENT for ANY post-spawn failure,
+// including throws from post-spawn workspace-root re-resolution (e.g. consumeCancelMarker
+// / state-dir resolution under a mid-run .git boundary topology change) that escape cmdRun
+// to main().catch. One CLI invocation per process, so a set-once latch is sufficient.
+let sourceSentToTarget = false;
+
 const ROUTE_CAPABILITIES = Object.freeze({
   source_packet: Object.freeze({
     max_bytes: AGY_SOURCE_PACKET_MAX_BYTES,
@@ -1159,11 +1171,16 @@ async function run(rest) {
         model: options.model ?? null,
         promptText: sidecarPrompt,
         timeoutMs,
-        onSpawn: (pidInfo) => writeRunningRecord(invocation, pidInfo, mutationContext.mutations, {
-          promptText: sidecarPrompt,
-          selectedFiles,
-          timeoutMs,
-        }),
+        onSpawn: (pidInfo) => {
+          // The target has spawned: the source packet is now delivered via --print argv.
+          // Latch SENT for the top-level error sinks (see sourceSentToTarget).
+          sourceSentToTarget = true;
+          writeRunningRecord(invocation, pidInfo, mutationContext.mutations, {
+            promptText: sidecarPrompt,
+            selectedFiles,
+            timeoutMs,
+          });
+        },
       },
     );
   } catch (error) {
@@ -1303,7 +1320,9 @@ function fail(code, message, details = {}) {
     error_code: code,
     message,
     error_message: message,
-    source_content_transmission: "not_sent",
+    // Honor whether the target already received the source (see sourceSentToTarget):
+    // a post-spawn failure reaching this generic sink must not falsely report not_sent.
+    source_content_transmission: sourceSentToTarget ? "sent" : "not_sent",
     ...details,
   });
   process.exit(1);
@@ -1467,7 +1486,7 @@ main().catch((error) => {
     status: "failed",
     error_code: "agy_companion_error",
     error_message: error.message,
-    source_content_transmission: "not_sent",
+    source_content_transmission: sourceSentToTarget ? "sent" : "not_sent",
   });
   process.exit(1);
 });

@@ -30,6 +30,21 @@ test("privacy redactor replaces over-threshold selected-source excerpts and pres
   assert.match(out, new RegExp(boundedEvidence));
 });
 
+test("privacy redactor: short cookie attributes do not over-redact benign output (Path=/ regression)", () => {
+  // A semicolon cookie env value like "session=...; Path=/" must NOT register the
+  // single-char "/" (from the "Path=/" subpart) as a global secret. Before the
+  // minLength guard on cookie subparts/values, every benign slash in provider output
+  // was redacted (hello/world -> hello[REDACTED]world), corrupting diagnostics.
+  const redact = buildPrivacyRedactor({
+    env: { APP_COOKIE: "session=YWJjZA==; Domain=example.test; Path=/" },
+  });
+  assert.equal(redact.text("hello/world"), "hello/world");
+  assert.equal(redact.text("path/to/file"), "path/to/file");
+  // The over-threshold session secret value is still redacted — the fix narrows
+  // over-redaction, it does not weaken real secret coverage.
+  assert.doesNotMatch(redact.text("cookie was YWJjZA=="), /YWJjZA==/);
+});
+
 test("privacy redactor enforces aggregate selected-source quote budget", () => {
   const snippets = Array.from({ length: 9 }, (_, index) =>
     `quote-${index}-${String.fromCharCode(65 + index).repeat(94)}`
