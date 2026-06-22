@@ -762,10 +762,20 @@ function codeCorrectlyHandlesPermissionError(lower) {
 // "we never saw a crash" are no-finding PRAISE, not review-process blocks. A genuine perception block
 // names the artifact ("i never saw the source"), which still matches via the "the source/file/..."
 // object alternative below.
-const REVIEW_PROCESS_FIRST_PERSON_BLOCK_RE = /\b(?:i|we)\b[^.\n]{0,30}?\b(?:could ?not|couldn'?t|can ?not|can'?t|cannot|was ?not able|wasn'?t able|were ?not able|weren'?t able|did ?not|didn'?t|never|only|unable to|lacked? access|had no access|have no access|no access to)\b[^.\n]{0,44}?\b(?:inspect(?:ed|ing)?|read(?:ing)?|open(?:ed|ing)?|access(?:ed|ing)?|examine[d]?|verif(?:y|ied|ying)|confirm(?:ed|ing)?|load(?:ed|ing)?|the diff|the (?:\w+ ){0,2}?(?:file|source|module|contents|selected))\b/;
+// Split into a CUE pattern (i/we + a no-inspection cue) and a TARGET pattern (inspection verb or a
+// source object within the next ~48 chars) so each regex stays well under the complexity cap while
+// preserving the positional "i/we ... cue ... target, one sentence" semantics.
+const REVIEWER_BLOCK_CUE = /\b(?:i|we)\b[^.\n]{0,30}?\b(?:could ?n['o]?t|can ?n['o]?t|cannot|was ?n['o]?t able|were ?n['o]?t able|did ?n['o]?t|never|only|unable to|lacked? access|no access)\b/i;
+const REVIEWER_BLOCK_TARGET = /\b(?:inspect|read|open|access|examine|verif|confirm|load)(?:ed|ing|y|ies|ied)?\b|\bthe (?:diff|source|file|selected|module|contents)\b/i;
+function reviewerFirstPersonBlock(lower) {
+  const m = REVIEWER_BLOCK_CUE.exec(lower);
+  if (!m) return false;
+  const start = m.index + m[0].length;
+  return REVIEWER_BLOCK_TARGET.test(lower.slice(start, start + 48));
+}
 function reviewProcessBlockedSignal(lowerRaw) {
   const lower = String(lowerRaw ?? "").replace(/[‘’ʼ′]/g, "'");
-  if (REVIEW_PROCESS_FIRST_PERSON_BLOCK_RE.test(lower)) return true;
+  if (reviewerFirstPersonBlock(lower)) return true;
   return includesAny(lower, [
     "no inspection was possible",
     "could not be inspected",
@@ -1222,7 +1232,7 @@ function isOutOfScopeInspectionGapLine(lower, selectedSource = null, selectedSou
 // the interior dotted segments before the final extension. Every quantifier is UPPER-BOUNDED
 // (segments {1,128}/{1,64}, depth {0,32}/{0,8}, ext {1,6}) so the token scan stays linear-time
 // (S5852 / ReDoS-safe) — do NOT relax these back to *,+.
-const NON_SELECTED_FILE_TOKEN_RE = /(?:^|[\s`'"(\[{,;:])((?:[a-z0-9_-]{1,128}\/){0,32}[a-z0-9_-]{1,128}(?:\.[a-z0-9_-]{1,64}){0,8}\.[a-z0-9]{1,6})(?=$|[\s`'")\]}.,;:])/g;
+const NON_SELECTED_FILE_TOKEN_RE = /(?:^|[\s`'"([{,;:])((?:[a-z0-9_-]{1,128}\/){0,32}[a-z0-9_-]{1,128}(?:\.[a-z0-9_-]{1,64}){0,8}\.[a-z0-9]{1,6})(?=$|[\s`'")\]}.,;:])/g;
 function namesNonSelectedFileGapLine(lower, selectedSource) {
   const selectedPaths = (selectedSource?.files ?? [])
     .map((file) => String(file?.path ?? "").toLowerCase())
@@ -1441,7 +1451,14 @@ const TINY_SOURCE_MAX_LINES = 5;
 // seems incorrect"), or a praise/absence LGTM ("correctly throws ... missing
 // nothing") never qualifies. Defect-cue oriented: a terse APPROVE that only
 // asserts correctness stays flagged (conservative — fail toward flagging).
-const CONCRETE_FINDING_DEFECT_CUE = /\b(instead of|should (?:be|use|return|call|not)|rather than|off-by-one|null deref|use-after-free|race condition|returns? the wrong|subtracts?|adds? to|drops?|never (?:called|awaited|closed)|leaks?|swallows?|throws?|overflow|underflow|incorrect|wrong (?:order|sign|value|index)|fails to|does not (?:handle|close|await|free|release))\b/i;
+// Split into three small sub-patterns (each under the regex-complexity cap); their union is the cue
+// set. hasDefectCue() is the single entry point used everywhere CONCRETE_FINDING_DEFECT_CUE was.
+const DEFECT_CUE_PHRASE = /\b(?:instead of|rather than|should (?:be|use|return|call|not)|fails to|does not (?:handle|close|await|free|release))\b/i;
+const DEFECT_CUE_TERM = /\b(?:off-by-one|null deref|use-after-free|race condition|overflow|underflow|incorrect|returns? the wrong|wrong (?:order|sign|value|index))\b/i;
+const DEFECT_CUE_VERB = /\b(?:subtracts?|adds? to|drops?|leaks?|swallows?|throws?|never (?:called|awaited|closed))\b/i;
+function hasDefectCue(clause) {
+  return DEFECT_CUE_PHRASE.test(clause) || DEFECT_CUE_TERM.test(clause) || DEFECT_CUE_VERB.test(clause);
+}
 // Every quantifier here is UPPER-BOUNDED (no unbounded *,+ on a character class):
 // these run on adversarial external-review text, so each must be provably linear-time
 // (S5852 / ReDoS hardening). The bounds (path-prefix 255, filename 128, line# 9 digits,
@@ -1451,7 +1468,7 @@ const CONCRETE_FINDING_DEFECT_CUE = /\b(instead of|should (?:be|use|return|call|
 // strict SUBSET of the unbounded one, so the detector still only narrows (fails toward
 // flagging). Do NOT relax these back to *,+ without restoring the linear-time guarantee.
 const CONCRETE_FINDING_CODE_LOCUS = [
-  /(?<![\w./-])(?:[\w./-]{0,255}\/)?[\w-]{1,128}\.[a-z][\w]{0,4}(?::\d{1,9})?(?![\w/])/i,
+  /(?<![\w./-])(?:[\w./-]{0,255}\/)?[\w-]{1,128}\.[a-z]\w{0,4}(?::\d{1,9})?(?![\w/])/i,
   /(?<![\w.])[A-Za-z_$][\w$]{0,128}\s{0,16}\(/,
   /(?<![\w.])[A-Za-z_$][\w$]{0,128}\.[A-Za-z_$][\w$]{0,128}/,
 ];
@@ -1465,30 +1482,58 @@ const CONCRETE_FINDING_CODE_LOCUS = [
 // praise that reuses defect vocabulary with no confirmation/dismissal marker ("throws sensibly",
 // "should not matter", a lone "throws() helpful errors" clause) is an accepted residual of keyword
 // classification and is routed to advisory disposition in #236 (Way 2), not patched by enumeration.
-const CONCRETE_FINDING_PRAISE = /\b(?:throws?|returns?|handles?|handled|behaves?|works?|working|drops?|catches?|caught|falls? back|degrades?) (?:[a-z]+ ){0,4}?as (?:expected|intended|designed|documented|planned|specified|promised|required|appropriate|advertised|warranted)\b/i;
-const CONCRETE_FINDING_DISMISSAL = /\b(?:no|not|never|without|n't|none) (?:\w+ ){0,2}?(?:issue|issues|problem|problems|bug|bugs|concern|concerns|defect|defects|off-by-one|regression|regressions|blocker|blockers)\b|\bshould not (?:be (?:a |an )?(?:problem|issue|concern|blocker|big deal)|cause (?:a |any )?(?:problem|issue|concern|trouble|harm)s?|create (?:a |any )?(?:problem|issue|concern)s?|introduce (?:a |any )?(?:problem|issue|concern|regression)s?|regress|matter|break|hurt|harm|affect (?:anything|behaviou?r|the output|the result|existing|other)|be affected|be an issue|be a concern)\b|\bmissing nothing\b|\bnothing (?:wrong|concerning|to (?:flag|note|fix|report)|of concern|problematic|improper|improperly|amiss|untoward|alarming|broken)\b|\bdoes not appear\b|\bno (?:concerns?|issues?|problems?|blockers?|objections?)\b|\b(?:looks?|seems?|is|are|all) (?:fine|clean|good|correct|solid|right|reasonable|ok|okay|sensible|acceptable)\b|\bcorrectly (?:handles?|handled|throws?|works?|working|closes?|closed|returns?|catches?|caught|falls? back)\b|\b(?:lgtm|ship it|nicely done|well done|good work|solid work|looks solid|that is acceptable|that's acceptable)\b/i;
-const CONCRETE_FINDING_CONTRAST = /\b(?:but|yet|however|whereas|though|although|instead|nevertheless|nonetheless)\b/i;
+// PRAISE: the cue is already required by the caller, so a bare "as <confirmation>" suffices to mark
+// the cue as describing CORRECT behavior. DISMISSAL is split into small sub-patterns (each well under
+// the regex-complexity cap) plus an includesAny LGTM list; a negation only dismisses when BOUND to a
+// defect noun within two words ("no off-by-one"), so a bare negation in the finding ("never called",
+// "none of the keys") does not suppress it.
+const CONCRETE_FINDING_PRAISE = /\bas (?:expected|intended|designed|documented|planned|specified|promised|required|appropriate|advertised|warranted)\b/i;
+const DISMISSAL_NEGATED_DEFECT = /\b(?:no|not|never|none|without|n['o]?t)\b(?: \w+){0,2} (?:issues?|problems?|bugs?|concerns?|defects?|regressions?|blockers?|off-by-one)\b/i;
+const DISMISSAL_SHOULD_NOT = /\bshould not (?:be (?:an? )?(?:problem|issue|concern|blocker|big deal)|cause|regress|matter|break|hurt|harm|affect)\b/i;
+const DISMISSAL_NOTHING = /\bnothing (?:wrong|concerning|of concern|problematic|improper|improperly|amiss|untoward|alarming|broken|to (?:flag|note|fix|report))\b/i;
+const DISMISSAL_ABSENCE = /\bmissing nothing\b|\bdoes not appear\b|\bno (?:concerns?|issues?|problems?|blockers?|objections?)\b/i;
+const DISMISSAL_CORRECTLY = /\bcorrectly (?:handles?|handled|throws?|works?|working|closes?|closed|returns?|catches?|caught|falls? back)\b/i;
+const DISMISSAL_LOOKS = /\b(?:looks?|seems?|is|are|all) (?:fine|clean|good|correct|solid|right|reasonable|ok|okay|sensible|acceptable)\b/i;
+const DISMISSAL_LGTM_PHRASES = ["lgtm", "ship it", "nicely done", "well done", "good work", "solid work", "looks solid", "that is acceptable", "that's acceptable"];
+const CONTRAST_WORDS = [" but ", " yet ", " however", " whereas ", " though ", " although ", " instead ", " nevertheless", " nonetheless"];
+
+function clauseIsDismissal(clause) {
+  return DISMISSAL_NEGATED_DEFECT.test(clause)
+    || DISMISSAL_SHOULD_NOT.test(clause)
+    || DISMISSAL_NOTHING.test(clause)
+    || DISMISSAL_ABSENCE.test(clause)
+    || DISMISSAL_CORRECTLY.test(clause)
+    || DISMISSAL_LOOKS.test(clause)
+    || includesAny(clause.toLowerCase(), DISMISSAL_LGTM_PHRASES);
+}
+function clauseIsPraiseOrDismissal(clause) {
+  return CONCRETE_FINDING_PRAISE.test(clause) || clauseIsDismissal(clause);
+}
+function firstContrastIndex(lowerClause) {
+  let best = -1;
+  for (const word of CONTRAST_WORDS) {
+    const at = lowerClause.indexOf(word);
+    if (at !== -1 && (best === -1 || at < best)) best = at;
+  }
+  return best;
+}
 
 function hasConcreteFinding(text) {
   const value = String(text ?? "");
   const clauses = value.split(/[\n.;!?]+/);
   return clauses.some((clause) => {
-    if (!CONCRETE_FINDING_DEFECT_CUE.test(clause)) return false;
+    if (!hasDefectCue(clause)) return false;
     if (!CONCRETE_FINDING_CODE_LOCUS.some((pattern) => pattern.test(clause))) return false;
     // Contrast override: when the clause's praise/dismissal head is followed by an adversative
     // whose TAIL carries its own independent defect cue and is not itself a dismissal/praise, the
     // tail is a real finding ("works as expected, but the empty-input branch throws and crashes"),
     // so the head marker must not suppress it.
-    const adv = clause.match(CONCRETE_FINDING_CONTRAST);
-    if (adv) {
-      const tail = clause.slice(adv.index + adv[0].length);
-      if (CONCRETE_FINDING_DEFECT_CUE.test(tail) && !CONCRETE_FINDING_DISMISSAL.test(tail) && !CONCRETE_FINDING_PRAISE.test(tail)) {
-        return true;
-      }
+    const advIdx = firstContrastIndex(clause.toLowerCase());
+    if (advIdx !== -1) {
+      const tail = clause.slice(advIdx);
+      if (hasDefectCue(tail) && !clauseIsPraiseOrDismissal(tail)) return true;
     }
-    if (CONCRETE_FINDING_PRAISE.test(clause)) return false;
-    if (CONCRETE_FINDING_DISMISSAL.test(clause)) return false;
-    return true;
+    return !clauseIsPraiseOrDismissal(clause);
   });
 }
 
