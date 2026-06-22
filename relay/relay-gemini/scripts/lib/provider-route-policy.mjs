@@ -157,6 +157,8 @@ export const CONCURRENCY_FACTS = freezeConcurrencyFacts({
   },
   grok: {
     subscription: { category: "shared_state", limit: 1 },
+  },
+  "grok-web": {
     subscription_web: { category: "shared_state", limit: 1 },
   },
   deepseek: {
@@ -164,6 +166,9 @@ export const CONCURRENCY_FACTS = freezeConcurrencyFacts({
   },
   glm: {
     direct_api: { category: "stateless", limit: 1, limit_env: "RELAY_GLM_CONCURRENCY_LIMIT" },
+  },
+  custom: {
+    direct_api: { category: "stateless", limit: 1, limit_env: "RELAY_CUSTOM_DIRECT_API_CONCURRENCY_LIMIT" },
   },
 });
 
@@ -290,6 +295,11 @@ function sharedStateConcurrencyKey(sharedStateIdentity) {
   return createHash("sha256").update(`${stats.dev}:${stats.ino}`).digest("hex");
 }
 
+function sharedStateStringConcurrencyKey(identityString) {
+  if (typeof identityString !== "string" || identityString.trim() === "") return null;
+  return createHash("sha256").update(identityString).digest("hex");
+}
+
 export function resolveConcurrencyAdmission({
   category,
   declaredLimit = null,
@@ -297,6 +307,7 @@ export function resolveConcurrencyAdmission({
   limitEnv = null,
   limit_env: limitEnvSnake = null,
   sharedStateIdentity = null,
+  identityString = null,
   provider = null,
   route = null,
   env = process.env,
@@ -312,7 +323,7 @@ export function resolveConcurrencyAdmission({
       throw new Error("shared_state concurrency limit greater than 1 is unrepresentable");
     }
     return Object.freeze({
-      concurrencyKey: sharedStateConcurrencyKey(sharedStateIdentity),
+      concurrencyKey: sharedStateStringConcurrencyKey(identityString) ?? sharedStateConcurrencyKey(sharedStateIdentity),
       limit: 1,
       lockRoot: providerWorkloadLockRoot(category, env),
     });

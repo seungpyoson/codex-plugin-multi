@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   canAutoFallbackFromCliExecution,
@@ -10,6 +14,13 @@ import {
   resolveGrokTransportMode,
   webAutoFallbackConfig,
 } from "../../plugins/grok/scripts/lib/grok-transport-adapters.mjs";
+import { resolveGrokAdmissionContext } from "../../plugins/grok/scripts/grok-web-reviewer.mjs";
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+function assertSourceMatches(source, pattern, message) {
+  assert.ok(pattern.test(source), message);
+}
 
 test("resolveGrokConfig defaults to subscription CLI adapter facts", () => {
   const cfg = resolveGrokConfig({}, {});
@@ -246,4 +257,103 @@ test("direct API credentials do not influence subscription transport config", ()
   assert.equal(fallback.auth_mode, "subscription_web");
   assert.equal(fallback.credential_ref, null);
   assert.equal(fallback.credential_value, null);
+});
+
+test("grok source-bearing admission resolves CLI and web shared-state identities and fails closed", () => {
+  const source = readFileSync(path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs"), "utf8");
+
+  assertSourceMatches(source, /CONCURRENCY_FACTS/, "missing CONCURRENCY_FACTS import/use");
+  assertSourceMatches(source, /resolveConcurrencyAdmission/, "missing resolveConcurrencyAdmission import/use");
+  assertSourceMatches(source, /resolveGrokCliSharedStateDir/, "missing grok CLI shared-state resolver");
+  assertSourceMatches(source, /grokCliAuthHome/, "missing grokCliAuthHome reuse");
+  assertSourceMatches(source, /GROK_HOME/, "missing GROK_HOME handling");
+  assertSourceMatches(source, /resolveGrokWebAdmissionIdentity/, "missing grok-web identity resolver");
+  assertSourceMatches(source, /grok2ApiHomeCandidates/, "missing grok2api home candidate reuse");
+  assertSourceMatches(source, /sharedStateIdentity/, "missing sharedStateIdentity");
+  assertSourceMatches(source, /identityString/, "missing identityString");
+  assertSourceMatches(source, /grok-web:endpoint=/, "missing endpoint identity string");
+  assertSourceMatches(source, /grok_web_identity_unresolved/, "missing fail-closed unresolved identity marker");
+  assertSourceMatches(source, /CONCURRENCY_FACTS\[[^\]]+\]\?\.\[[^\]]+\]/, "missing fail-closed fact lookup");
+  assertSourceMatches(source, /providerWorkloadBlockedExecution/, "missing providerWorkloadBlockedExecution failure path");
+  assertSourceMatches(source, /acquireProviderWorkloadLease\(\{\s*\.\.\.admissionContext/s, "missing admission context spread into lease");
+  assertSourceMatches(source, /workloadAdmission\.ok[\s\S]{0,100}workloadAdmission\.lease\s*==\s*null/, "missing null-lease invariant");
+  assertSourceMatches(source, /source-bearing admission returned no workload lease/, "missing fail-loud invariant message");
+});
+
+test("grok-web managed home keys identically regardless of GROK2API_ADMIN_KEY presence (GW-1)", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "grok-gw1-"));
+  try {
+    const homeDir = path.join(tmp, "grok2api-home");
+    mkdirSync(homeDir, { recursive: true });
+    const baseEnv = {
+      HOME: tmp,
+      GROK2API_HOME: homeDir,
+      RELAY_WORKLOAD_TEST_MODE: "1",
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: path.join(tmp, "locks"),
+    };
+    // No explicit endpoint => managed mode; an incidental admin key must NOT flip the
+    // mode to endpoint identity, or the same managed home would serialize inconsistently.
+    const withoutAdmin = resolveGrokAdmissionContext(
+      resolveGrokConfig({ transport: "web" }, baseEnv),
+      baseEnv,
+    );
+    const adminEnv = { ...baseEnv, GROK2API_ADMIN_KEY: "operator-admin-secret" };
+    const withAdmin = resolveGrokAdmissionContext(
+      resolveGrokConfig({ transport: "web" }, adminEnv),
+      adminEnv,
+    );
+    assert.equal(withoutAdmin.concurrencyKey, withAdmin.concurrencyKey);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("grok-web explicit endpoint without an operator admin key keys on a transparent default marker, never a throw or fabricated identity (GW-2)", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "grok-gw2-"));
+  try {
+    const env = {
+      HOME: tmp,
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9931/v1",
+      RELAY_WORKLOAD_TEST_MODE: "1",
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: path.join(tmp, "locks"),
+    };
+    // Explicit endpoint but no operator-supplied GROK2API_ADMIN_KEY: this is the normal
+    // local-tunnel happy path (bundled default account). The bundled default must never be
+    // hashed as if it were operator intent, but it must NOT deny either — all default-account
+    // runs against this endpoint on this single host share one backing session and must
+    // serialize on a deterministic `admin=default` marker.
+    const a = resolveGrokAdmissionContext(resolveGrokConfig({ transport: "web" }, env), env);
+    const b = resolveGrokAdmissionContext(resolveGrokConfig({ transport: "web" }, env), env);
+    assert.equal(a.concurrencyKey, b.concurrencyKey); // deterministic, no throw
+    // The default marker must differ from any real operator-admin identity on the same
+    // endpoint, so a default-account run and an operator-account run never silently merge.
+    const adminEnv = { ...env, GROK2API_ADMIN_KEY: "operator-admin-secret" };
+    const withAdmin = resolveGrokAdmissionContext(resolveGrokConfig({ transport: "web" }, adminEnv), adminEnv);
+    assert.notEqual(a.concurrencyKey, withAdmin.concurrencyKey);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("grok-web explicit endpoint with an explicit admin identity ties to exactly one endpoint identity (GW-2)", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "grok-gw2b-"));
+  try {
+    const env = {
+      HOME: tmp,
+      GROK_WEB_BASE_URL: "http://127.0.0.1:9931/v1",
+      GROK2API_ADMIN_KEY: "operator-admin-secret",
+      RELAY_WORKLOAD_TEST_MODE: "1",
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: path.join(tmp, "locks"),
+    };
+    const a = resolveGrokAdmissionContext(resolveGrokConfig({ transport: "web" }, env), env);
+    const b = resolveGrokAdmissionContext(resolveGrokConfig({ transport: "web" }, env), env);
+    // Same endpoint + same admin identity => same key (two runs serialize).
+    assert.equal(a.concurrencyKey, b.concurrencyKey);
+    // Same endpoint, different admin identity => different key (not silently merged).
+    const otherEnv = { ...env, GROK2API_ADMIN_KEY: "different-admin-secret" };
+    const other = resolveGrokAdmissionContext(resolveGrokConfig({ transport: "web" }, otherEnv), otherEnv);
+    assert.notEqual(a.concurrencyKey, other.concurrencyKey);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

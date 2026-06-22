@@ -1922,7 +1922,7 @@ test("buildJobRecord: drops malformed source packet and provider identity diagno
   }
 });
 
-test("buildJobRecord: preserves provider workload blocked diagnostics across companion providers", () => {
+test("buildJobRecord: keeps counts-only provider workload blocked diagnostics (no holder identity) across companion providers", () => {
   const providers = [
     [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
     [
@@ -1951,6 +1951,7 @@ test("buildJobRecord: preserves provider workload blocked diagnostics across com
       runtimeDiagnostics: {
         provider_workload: {
           reason: "active_same_provider_job",
+          capacity: { active_count: 1, limit: 1 },
           holder: {
             provider: invocation.target,
             job_id: "job-active",
@@ -1967,19 +1968,13 @@ test("buildJobRecord: preserves provider workload blocked diagnostics across com
       ...sessionFields,
     }, []);
 
+    // §8/§9: counts are kept; the entire holder identity (and its token) is dropped.
     assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
       reason: "active_same_provider_job",
-      holder: {
-        provider: invocation.target,
-        job_id: "job-active",
-        pid: 12345,
-        hostname: "dev-host",
-        cwd: "/tmp/src",
-        started_at: "2026-05-28T02:45:52.446Z",
-        lock_file: "/tmp/relay/provider-workload/provider.json",
-      },
+      capacity: { active_count: 1, limit: 1 },
     });
-    assert.doesNotMatch(JSON.stringify(rec), /must-not-persist/);
+    assert.equal(rec.runtime_diagnostics.provider_workload.holder, undefined);
+    assert.doesNotMatch(JSON.stringify(rec), /must-not-persist|job-active|dev-host/);
   }
 });
 
@@ -2001,6 +1996,7 @@ test("buildJobRecord: malformed provider workload diagnostics stay bounded and r
       pidInfo: null,
       runtimeDiagnostics: {
         provider_workload: {
+          capacity: { active_count: "bad", limit: 2 },
           holder: {
             provider: 123,
             job_id: null,
@@ -2017,17 +2013,11 @@ test("buildJobRecord: malformed provider workload diagnostics stay bounded and r
       claudeSessionId: CLAUDE_UUID,
     }, []);
 
+    // §8: the holder identity is dropped wholesale, so the secrets it carried can never
+    // reach the persisted record; malformed counts null out, valid counts survive.
     assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
       reason: null,
-      holder: {
-        provider: null,
-        job_id: null,
-        pid: null,
-        hostname: "host-[REDACTED]",
-        cwd: "/tmp/[REDACTED]/src",
-        started_at: null,
-        lock_file: "/tmp/[REDACTED]/provider.json",
-      },
+      capacity: { active_count: null, limit: 2 },
     });
     assert.doesNotMatch(JSON.stringify(rec), /secret-test-value|must-not-persist/);
   } finally {
@@ -2036,7 +2026,7 @@ test("buildJobRecord: malformed provider workload diagnostics stay bounded and r
   }
 });
 
-test("buildJobRecord: malformed provider workload holder fields are nulled across companion providers", () => {
+test("buildJobRecord: malformed provider workload capacity fields are nulled and holder is never persisted across companion providers", () => {
   const providers = [
     [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
     [
@@ -2065,6 +2055,10 @@ test("buildJobRecord: malformed provider workload holder fields are nulled acros
       runtimeDiagnostics: {
         provider_workload: {
           reason: 42,
+          capacity: {
+            active_count: "1",
+            limit: false,
+          },
           holder: {
             provider: false,
             job_id: 99,
@@ -2080,22 +2074,18 @@ test("buildJobRecord: malformed provider workload holder fields are nulled acros
       ...sessionFields,
     }, []);
 
+    // Malformed counts null out; the holder identity is dropped wholesale (§8).
     assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
       reason: null,
-      holder: {
-        provider: null,
-        job_id: null,
-        pid: null,
-        hostname: null,
-        cwd: null,
-        started_at: null,
-        lock_file: null,
+      capacity: {
+        active_count: null,
+        limit: null,
       },
     });
   }
 });
 
-test("buildJobRecord: provider workload reason and holder started_at are redacted across companion providers", () => {
+test("buildJobRecord: provider workload keeps counts only — reason redacted, holder identity never persisted (§8/§9) across companion providers", () => {
   const secretName = "RELAY_WORKLOAD_SECRET";
   const oldSecret = process.env[secretName];
   process.env[secretName] = "secret-workload-value";
@@ -2128,6 +2118,7 @@ test("buildJobRecord: provider workload reason and holder started_at are redacte
         runtimeDiagnostics: {
           provider_workload: {
             reason: "secret-workload-value-active",
+            capacity: { active_count: 1, limit: 1 },
             holder: {
               provider: invocation.target,
               job_id: "held-job",
@@ -2144,11 +2135,12 @@ test("buildJobRecord: provider workload reason and holder started_at are redacte
       }, []);
 
       assert.equal(rec.runtime_diagnostics.provider_workload.reason, "[REDACTED]-active");
-      assert.equal(
-        rec.runtime_diagnostics.provider_workload.holder.started_at,
-        "2026-05-29T00:00:00.000Z-[REDACTED]",
-      );
+      // §9: counts survive into the persisted record.
+      assert.deepEqual(rec.runtime_diagnostics.provider_workload.capacity, { active_count: 1, limit: 1 });
+      // §8: the blocking job's holder identity is stripped entirely — never persisted.
+      assert.equal(rec.runtime_diagnostics.provider_workload.holder, undefined);
       assert.doesNotMatch(JSON.stringify(rec), /secret-workload-value/);
+      assert.doesNotMatch(JSON.stringify(rec), /held-job/);
     }
   } finally {
     if (oldSecret == null) delete process.env[secretName];
@@ -2156,7 +2148,7 @@ test("buildJobRecord: provider workload reason and holder started_at are redacte
   }
 });
 
-test("buildJobRecord: provider workload diagnostics without holder preserve the reason only", () => {
+test("buildJobRecord: provider workload diagnostics without capacity preserve the reason only", () => {
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: null,
     parsed: {
@@ -2178,7 +2170,7 @@ test("buildJobRecord: provider workload diagnostics without holder preserve the 
 
   assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
     reason: "lock_file_unreadable",
-    holder: null,
+    capacity: null,
   });
 });
 

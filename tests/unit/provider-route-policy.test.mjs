@@ -2043,6 +2043,35 @@ test("concurrency admission fails closed on malformed category and unresolved sh
   );
 });
 
+test("shared_state concurrency admission can key on a stable non-directory identity string", () => {
+  const first = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    identityString: "grok-web:endpoint=http://127.0.0.1:3000/v1;admin=sha256:abc",
+    provider: "grok-web",
+    route: "subscription_web",
+  });
+  const second = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    identityString: "grok-web:endpoint=http://127.0.0.1:3000/v1;admin=sha256:abc",
+    provider: "grok-web",
+    route: "subscription_web",
+  });
+  const different = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    identityString: "grok-web:endpoint=http://127.0.0.1:3001/v1;admin=sha256:abc",
+    provider: "grok-web",
+    route: "subscription_web",
+  });
+
+  assert.equal(first.concurrencyKey, second.concurrencyKey);
+  assert.notEqual(first.concurrencyKey, different.concurrencyKey);
+  assert.match(first.concurrencyKey, /^[a-f0-9]{64}$/);
+  assert.equal(first.limit, 1);
+});
+
 test("shared_state concurrency admission ignores lock root override outside test mode", (t) => {
   const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-"));
   t.after(() => rmSync(sharedStateDir, { recursive: true, force: true }));

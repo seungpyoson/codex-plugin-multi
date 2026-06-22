@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { accessSync, constants as fsConstants, realpathSync } from "node:fs";
+import { accessSync, constants as fsConstants, mkdirSync, realpathSync } from "node:fs";
 import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -14,7 +14,9 @@ import { elapsedMs } from "./lib/time.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import {
   buildPacketRecovery,
+  CONCURRENCY_FACTS,
   latestSourcePacketPreviousAttempt,
+  resolveConcurrencyAdmission,
   selectProviderRoute,
   sourcePacketPreviousAttemptFromJobRecord,
   sourceSentPacketRecoveryReason,
@@ -546,7 +548,7 @@ function grok2ApiHomeCandidates(env = process.env) {
     return [{ path: resolve(env.GROK2API_BOOTSTRAP_DIR), source: "GROK2API_BOOTSTRAP_DIR" }];
   }
   candidates.push({ path: defaultGrok2ApiBootstrapDir(env), source: "default_bootstrap_dir" });
-  const home = homedir();
+  const home = processHomeDir(env);
   for (const rel of [
     "grok2api",
     join("Projects", "grok2api"),
@@ -565,12 +567,16 @@ function grok2ApiHomeCandidates(env = process.env) {
   });
 }
 
+function processHomeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+
 function defaultGrok2ApiBootstrapDir(env = process.env) {
   return resolve(env.GROK2API_BOOTSTRAP_DIR || join(defaultManagedRuntimeDir(env), "grok2api"));
 }
 
 function defaultManagedRuntimeDir(env = process.env) {
-  return resolve(env.RELAY_RUNTIME_DIR || join(homedir(), ".relay", "runtime"));
+  return resolve(env.RELAY_RUNTIME_DIR || join(processHomeDir(env), ".relay", "runtime"));
 }
 
 function legacyTmpGrok2ApiBootstrapDir(env = process.env) {
@@ -1713,7 +1719,108 @@ function grokCliAuthExpiredMessage(cfg, env = process.env) {
 }
 
 function grokCliAuthHome(env = process.env) {
-  return resolve(env.GROK_CLI_AUTH_HOME || env.GROK_HOME || join(homedir(), ".grok"));
+  return resolve(env.GROK_CLI_AUTH_HOME || env.GROK_HOME || join(processHomeDir(env), ".grok"));
+}
+
+function concurrencyAdmissionBlockedExecution(error, provider, route) {
+  const detail = error?.message ?? String(error);
+  return providerWorkloadBlockedExecution({
+    ok: false,
+    reason: "concurrency_admission_failed",
+    message: `concurrency admission failed for ${provider}.${route}: ${detail}`,
+    capacity: null,
+  });
+}
+
+function resolveSharedStateDir(pathValue) {
+  mkdirSync(pathValue, { recursive: true });
+  return realpathSync(pathValue);
+}
+
+function resolveGrokCliSharedStateDir(env = process.env) {
+  return resolveSharedStateDir(grokCliAuthHome(env));
+}
+
+function resolveManagedGrok2ApiSharedStateDir(env = process.env) {
+  const candidate = grok2ApiHomeCandidates(env)[0];
+  if (!candidate?.path) {
+    throw new Error("grok_web_identity_unresolved: no managed grok2api home candidate");
+  }
+  return resolveSharedStateDir(candidate.path);
+}
+
+function hasExplicitGrokWebEndpoint(env = process.env) {
+  // Mode is driven ONLY by an explicit operator-supplied endpoint, never by incidental
+  // env presence: a managed tunnel that merely has GROK2API_ADMIN_KEY configured is
+  // still managed and must key on its home dir, not flip to endpoint identity (GW-1).
+  return Boolean(env.GROK_WEB_BASE_URL || env.GROK2API_BASE_URL);
+}
+
+function grokWebEndpointIdentityString(cfg, env = process.env) {
+  // Endpoint comes from the resolved config (the value actually forwarded to the tunnel,
+  // see GROK2API_BASE_URL: cfg.grok2api_base_url), falling back to the raw operator env so
+  // identity and transport never disagree. hasExplicitGrokWebEndpoint already gated entry on
+  // one of these being set, so the guard below is defensive (and keeps a fail-closed marker).
+  const endpoint = typeof cfg?.grok2api_base_url === "string" && cfg.grok2api_base_url.trim() !== ""
+    ? cfg.grok2api_base_url
+    : (env?.GROK_WEB_BASE_URL || env?.GROK2API_BASE_URL || null);
+  if (!endpoint) {
+    throw new Error("grok_web_identity_unresolved: grok-web endpoint identity requires a resolved base URL");
+  }
+  // The admin component distinguishes distinct grok2api accounts behind the SAME endpoint.
+  // Only a genuinely operator-supplied raw GROK2API_ADMIN_KEY counts as an account identity;
+  // the bundled DEFAULT_GROK2API_ADMIN_KEY that webConfig fills in is NOT operator intent, so
+  // it is never hashed as if it were. When no operator key is present, all default-account
+  // runs against this endpoint on this single host share one backing session and MUST
+  // serialize, so they key on a stable, transparent `admin=default` marker — deterministic
+  // (never a fabricated unique identity that would split shared state) and never colliding
+  // with a `sha256:`-prefixed real account hash (GW-2).
+  const rawAdminKey = typeof env?.GROK2API_ADMIN_KEY === "string" && env.GROK2API_ADMIN_KEY !== ""
+    ? env.GROK2API_ADMIN_KEY
+    : null;
+  const adminComponent = rawAdminKey
+    ? `sha256:${createHash("sha256").update(rawAdminKey).digest("hex")}`
+    : "default";
+  return `grok-web:endpoint=${endpoint};admin=${adminComponent}`;
+}
+
+function resolveGrokWebAdmissionIdentity(cfg, env = process.env) {
+  if (hasExplicitGrokWebEndpoint(env)) {
+    return { identityString: grokWebEndpointIdentityString(cfg, env) };
+  }
+  return { sharedStateIdentity: resolveManagedGrok2ApiSharedStateDir(env) };
+}
+
+function concurrencyRouteForGrokConfig(cfg) {
+  return cfg.provider === "grok-web" ? "subscription_web" : "subscription";
+}
+
+function resolveGrokAdmissionContext(cfg, env = process.env) {
+  const provider = cfg.provider;
+  const route = concurrencyRouteForGrokConfig(cfg);
+  const fact = CONCURRENCY_FACTS[provider]?.[route];
+  if (!fact) {
+    throw new Error(`missing concurrency fact for source-bearing route ${provider}.${route}`);
+  }
+  const identity = provider === "grok-web"
+    ? resolveGrokWebAdmissionIdentity(cfg, env)
+    : { sharedStateIdentity: resolveGrokCliSharedStateDir(env) };
+  return resolveConcurrencyAdmission({
+    category: fact.category,
+    declaredLimit: fact.limit,
+    limitEnv: fact.limit_env,
+    ...identity,
+    provider,
+    route,
+    env,
+  });
+}
+
+function assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing) {
+  if (workloadAdmission.ok && sourceBearing && workloadAdmission.lease == null) {
+    process.stderr.write("grok-web-reviewer: source-bearing admission returned no workload lease\n");
+    process.exit(2);
+  }
 }
 
 function parseBase64UrlJson(value) {
@@ -4871,15 +4978,29 @@ async function cmdRun(options) {
         execution.prompt = prompt;
       }
       if (!execution) {
-        const workloadAdmission = acquireProviderWorkloadLease({
+        const sourceBearing = modeSendsSelectedSource(mode);
+        let admissionContext = {};
+        if (sourceBearing) {
+          try {
+            admissionContext = resolveGrokAdmissionContext(cfg, process.env);
+          } catch (error) {
+            const route = concurrencyRouteForGrokConfig(cfg);
+            execution = concurrencyAdmissionBlockedExecution(error, cfg.provider, route);
+            execution.prompt = prompt;
+          }
+        }
+        const workloadAdmission = execution ? null : acquireProviderWorkloadLease({
+          ...admissionContext,
           provider: cfg.provider,
           jobId,
           cwd: scopeInfo.cwd,
-          sourceBearing: modeSendsSelectedSource(mode),
+          sourceBearing,
+          env: process.env,
         });
-        if (workloadAdmission.ok) {
+        if (workloadAdmission?.ok) {
+          assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing);
           workloadLease = workloadAdmission.lease;
-        } else {
+        } else if (workloadAdmission) {
           execution = providerWorkloadBlockedExecution(workloadAdmission);
           execution.prompt = prompt;
         }
@@ -5059,6 +5180,8 @@ export {
   buildReviewMetadata,
   readUtf8ScopeFileWithinLimit,
   releaseStateLock,
+  resolveGrokAdmissionContext,
+  resolveGrokWebAdmissionIdentity,
   runCli,
   sameFileIdentity,
   sortJobSummaries,

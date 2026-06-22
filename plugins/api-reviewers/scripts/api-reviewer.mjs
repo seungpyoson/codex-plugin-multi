@@ -21,8 +21,10 @@ import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from ".
 import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
 import {
   buildPacketRecovery,
+  CONCURRENCY_FACTS,
   latestSourcePacketPreviousAttempt,
   normalizeApprovalScope,
+  resolveConcurrencyAdmission,
   selectProviderRoute,
   sourceSendApprovalTupleFingerprint,
   sourceSentPacketRecoveryReason,
@@ -169,6 +171,39 @@ const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "m
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 const CREDENTIAL_REDACTION_VALUE = Symbol("credential_redaction_value");
 const REDACTION_SECRET_ENV_PREFIX = "API_REVIEWERS_REDACTION_SECRET";
+
+function concurrencyAdmissionBlockedExecution(error, provider, route) {
+  const detail = error?.message ?? String(error);
+  return providerWorkloadBlockedExecution({
+    ok: false,
+    reason: "concurrency_admission_failed",
+    message: `concurrency admission failed for ${provider}.${route}: ${detail}`,
+    capacity: null,
+  });
+}
+
+function resolveApiReviewerAdmissionContext(provider, env = process.env) {
+  const route = "direct_api";
+  const fact = CONCURRENCY_FACTS[provider]?.[route];
+  if (!fact) {
+    throw new Error(`missing concurrency fact for source-bearing route ${provider}.${route}`);
+  }
+  return resolveConcurrencyAdmission({
+    category: fact.category,
+    declaredLimit: fact.limit,
+    limitEnv: fact.limit_env,
+    provider,
+    route,
+    env,
+  });
+}
+
+function assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing) {
+  if (workloadAdmission.ok && sourceBearing && workloadAdmission.lease == null) {
+    process.stderr.write("api-reviewer: source-bearing admission returned no workload lease\n");
+    process.exit(2);
+  }
+}
 
 function configuredPath(envKey, fallbackPath) {
   const value = process.env[envKey];
@@ -4333,15 +4368,25 @@ async function cmdRun(options) {
     if (execution) {
       // handled below by the terminal JobRecord path without a launch event
     } else {
-      const workloadAdmission = acquireProviderWorkloadLease({
+      let admissionContext;
+      try {
+        admissionContext = resolveApiReviewerAdmissionContext(provider, process.env);
+      } catch (error) {
+        execution = concurrencyAdmissionBlockedExecution(error, provider, "direct_api");
+        execution.prompt = renderedPrompt;
+      }
+      const workloadAdmission = execution ? null : acquireProviderWorkloadLease({
+        ...admissionContext,
         provider,
         jobId,
         cwd: scopeInfo.cwd,
         sourceBearing: true,
+        env: process.env,
       });
-      if (workloadAdmission.ok) {
+      if (workloadAdmission?.ok) {
+        assertSourceBearingWorkloadLease(workloadAdmission, true);
         workloadLease = workloadAdmission.lease;
-      } else {
+      } else if (workloadAdmission) {
         execution = providerWorkloadBlockedExecution(workloadAdmission);
         execution.prompt = renderedPrompt;
       }

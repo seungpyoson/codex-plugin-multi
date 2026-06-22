@@ -28,6 +28,8 @@ function seedRepo(cwd) {
 }
 
 function runCompanion(args, { cwd, dataDir, env = {} }) {
+  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(dataDir, "provider-workload");
   return spawnSync("node", [COMPANION, ...args], {
     cwd,
     encoding: "utf8",
@@ -35,6 +37,8 @@ function runCompanion(args, { cwd, dataDir, env = {} }) {
       ...process.env,
       CLAUDE_BINARY: MOCK,
       CLAUDE_PLUGIN_DATA: dataDir,
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+      RELAY_WORKLOAD_TEST_MODE: "1",
       ...env,
     },
   });

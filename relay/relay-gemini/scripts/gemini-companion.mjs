@@ -3,10 +3,10 @@ import { fileURLToPath } from "node:url";
 import { basename as basenamePath, dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync,
-  writeFileSync, chmodSync, readdirSync, statSync, lstatSync,
+  writeFileSync, chmodSync, readdirSync, statSync, lstatSync, realpathSync,
 } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -35,8 +35,10 @@ import {
   subscriptionAuthMode,
 } from "./lib/auth-selection.mjs";
 import {
+  CONCURRENCY_FACTS,
   latestSourcePacketPreviousAttempt,
   normalizeApprovalScope,
+  resolveConcurrencyAdmission,
   sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketCanResumeWithoutResendFromJobRecord,
   sourcePacketPreviousAttemptForContinuation,
@@ -80,6 +82,57 @@ const DEFAULT_GEMINI_REVIEW_TIMEOUT_MS = 900000;
 const DEFAULT_GEMINI_PING_TIMEOUT_MS = 900000;
 const GEMINI_READINESS_PREFLIGHT_TIMEOUT_MS = 900000;
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "GEMINI FILE";
+
+function concurrencyAdmissionBlockedExecution(error, provider, route) {
+  const detail = error?.message ?? String(error);
+  return providerWorkloadBlockedExecution({
+    ok: false,
+    reason: "concurrency_admission_failed",
+    message: `concurrency admission failed for ${provider}.${route}: ${detail}`,
+    capacity: null,
+  });
+}
+
+function processHomeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+
+function resolveGeminiCliHomeDir(env = process.env) {
+  // Key on the dir the spawned Gemini CLI actually reads/mutates: GEMINI_CONFIG_DIR
+  // (the override the relay forwards via sanitizeTargetEnv and the CLI honors) else
+  // $HOME/.gemini. GEMINI_CLI_HOME is a relay-only name the CLI ignores, so keying on
+  // it would let the admission key desync from the dir two concurrent reviews corrupt.
+  return resolvePath(env.GEMINI_CONFIG_DIR || joinPath(processHomeDir(env), ".gemini"));
+}
+
+function resolveSharedStateDir(pathValue) {
+  mkdirSync(pathValue, { recursive: true });
+  return realpathSync(pathValue);
+}
+
+function resolveGeminiAdmissionContext(provider, route, env = process.env) {
+  const fact = CONCURRENCY_FACTS[provider]?.[route];
+  if (!fact) {
+    throw new Error(`missing concurrency fact for source-bearing route ${provider}.${route}`);
+  }
+  const sharedStateIdentity = resolveSharedStateDir(resolveGeminiCliHomeDir(env));
+  return resolveConcurrencyAdmission({
+    category: fact.category,
+    declaredLimit: fact.limit,
+    limitEnv: fact.limit_env,
+    sharedStateIdentity,
+    provider,
+    route,
+    env,
+  });
+}
+
+function assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing) {
+  if (workloadAdmission.ok && sourceBearing && workloadAdmission.lease == null) {
+    process.stderr.write("gemini-companion: source-bearing admission returned no workload lease\n");
+    process.exit(2);
+  }
+}
 const CONTINUABLE_STATUSES = new Set(["completed", "failed", "cancelled", "stale"]);
 const RUN_MODES = Object.freeze(["review", "adversarial-review", "custom-review", "rescue"]);
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
@@ -1414,14 +1467,45 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     process.exit(2);
   }
 
+  const sourceBearing = modeSendsSelectedSource(invocation.mode);
+  let admissionContext = {};
+  if (sourceBearing) {
+    const route = "subscription";
+    try {
+      admissionContext = resolveGeminiAdmissionContext(invocation.target, route, process.env);
+    } catch (error) {
+      const workloadPreflight = concurrencyAdmissionBlockedExecution(error, invocation.target, route);
+      workloadPreflight.reviewAuditManifest = reviewAuditManifest(invocation, prompt, executionScope.containment.path, workloadPreflight);
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: workloadPreflight.exitCode,
+        endedAt: workloadPreflight.endedAt,
+        parsed: workloadPreflight.parsed,
+        pidInfo: null,
+        geminiSessionId: null,
+        errorMessage: workloadPreflight.errorMessage,
+        reviewAuditManifest: workloadPreflight.reviewAuditManifest,
+        runtimeDiagnostics: workloadPreflight.runtimeDiagnostics,
+        ...redactionFieldsForPrompt(prompt),
+      }, mutationContext.mutations);
+      writeJobFile(workspaceRoot, jobId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      cleanupExecutionResources(executionScope, mutationContext);
+      if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
+  }
+
   const workloadAdmission = acquireProviderWorkloadLease({
+    ...admissionContext,
     provider: invocation.target,
     jobId,
     cwd: invocation.cwd,
-    sourceBearing: modeSendsSelectedSource(invocation.mode),
+    sourceBearing,
+    env: process.env,
   });
   let workloadLease = null;
   if (workloadAdmission.ok) {
+    assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing);
     workloadLease = workloadAdmission.lease;
   } else {
     const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);

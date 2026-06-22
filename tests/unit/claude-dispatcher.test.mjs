@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -19,6 +19,10 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const MOCK = path.join(REPO_ROOT, "tests/smoke/claude-mock.mjs");
 
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
+
+function assertSourceMatches(source, pattern, message) {
+  assert.ok(pattern.test(source), message);
+}
 
 function writeExecutable(dir, name, source) {
   const bin = path.join(dir, name);
@@ -679,4 +683,21 @@ test("_internal.isUuidV4: accepts/rejects expected cases", () => {
   assert.equal(_internal.isUuidV4("not-a-uuid"), false);
   // v1 UUID (time-based) should be rejected — Claude requires v4.
   assert.equal(_internal.isUuidV4("550e8400-e29b-11d4-a716-446655440000"), false);
+});
+
+test("claude source-bearing admission uses canonical facts, CLAUDE_CONFIG_DIR identity, and fail-loud lease invariant", () => {
+  const source = readFileSync(path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"), "utf8");
+
+  assertSourceMatches(source, /CONCURRENCY_FACTS/, "missing CONCURRENCY_FACTS import/use");
+  assertSourceMatches(source, /resolveConcurrencyAdmission/, "missing resolveConcurrencyAdmission import/use");
+  assertSourceMatches(source, /resolveClaudeConfigDir/, "missing claude config resolver");
+  assertSourceMatches(source, /CLAUDE_CONFIG_DIR/, "missing CLAUDE_CONFIG_DIR override");
+  assertSourceMatches(source, /\.claude/, "missing ~/.claude fallback");
+  assertSourceMatches(source, /realpathSync/, "missing realpathSync identity");
+  assertSourceMatches(source, /sharedStateIdentity/, "missing sharedStateIdentity");
+  assertSourceMatches(source, /CONCURRENCY_FACTS\[[^\]]+\]\?\.\[[^\]]+\]/, "missing fail-closed fact lookup");
+  assertSourceMatches(source, /providerWorkloadBlockedExecution/, "missing providerWorkloadBlockedExecution failure path");
+  assertSourceMatches(source, /acquireProviderWorkloadLease\(\{\s*\.\.\.admissionContext/s, "missing admission context spread into lease");
+  assertSourceMatches(source, /workloadAdmission\.ok[\s\S]{0,100}workloadAdmission\.lease\s*==\s*null/, "missing null-lease invariant");
+  assertSourceMatches(source, /source-bearing admission returned no workload lease/, "missing fail-loud invariant message");
 });

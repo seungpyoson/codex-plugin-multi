@@ -38,6 +38,26 @@ function workloadTest(name, fn) {
   test(name, SKIP_WORKLOAD_ACQUIRE_UNDER_DARWIN_SANDBOX, fn);
 }
 
+test("provider workload lease test mode can acquire when current process proof is sandboxed", () => {
+  const { root, env } = tempEnv();
+  const lease = acquireProviderWorkloadLease({
+    concurrencyKey: "test-mode-current-process",
+    limit: 1,
+    lockRoot: root,
+    jobId: "job-test-mode",
+    cwd: "/tmp/w",
+    sourceBearing: true,
+    env: { ...env, RELAY_WORKLOAD_TEST_MODE: "1" },
+  });
+  try {
+    assert.equal(lease.ok, true);
+    assert.ok(lease.lease);
+  } finally {
+    if (lease.lease) releaseProviderWorkloadLease(lease.lease);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function ctx(over = {}) {
   return {
     concurrencyKey: "k",

@@ -80,6 +80,7 @@ function runCompanion(args, { cwd, env = {}, dataDir } = {}) {
       CLAUDE_BINARY: MOCK,
       CLAUDE_PLUGIN_DATA: dd,
       RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+      RELAY_WORKLOAD_TEST_MODE: "1",
       ...env,
     },
   });

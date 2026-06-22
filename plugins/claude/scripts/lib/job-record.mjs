@@ -621,20 +621,19 @@ function normalizeProviderAccountIdentity(input) {
 
 function normalizeProviderWorkloadDiagnostic(input, redactText = (value) => value) {
   if (!input || typeof input !== "object") return null;
-  const holderInput = input.holder && typeof input.holder === "object" ? input.holder : null;
-  const holder = holderInput ? {
-    provider: typeof holderInput.provider === "string" ? redactText(holderInput.provider) : null,
-    job_id: typeof holderInput.job_id === "string" ? redactText(holderInput.job_id) : null,
-    pid: Number.isSafeInteger(holderInput.pid) ? holderInput.pid : null,
-    hostname: typeof holderInput.hostname === "string" ? redactText(holderInput.hostname) : null,
-    cwd: typeof holderInput.cwd === "string" ? redactText(holderInput.cwd) : null,
-    started_at: typeof holderInput.started_at === "string" ? redactText(holderInput.started_at) : null,
-    lock_file: typeof holderInput.lock_file === "string" ? redactText(holderInput.lock_file) : null,
+  // §8/§9: a blocked provider-workload diagnostic is a disclosure surface — it carries
+  // counts only ({active_count, limit}). The blocking job's holder identity
+  // (job_id/provider/pid/host/cwd/lock_file) must never be persisted or returned: it is a
+  // cross-job info-disclosure vector for source-bearing reviews, and belongs in debug logs only.
+  const capInput = input.capacity && typeof input.capacity === "object" ? input.capacity : null;
+  const capacity = capInput ? {
+    active_count: Number.isSafeInteger(capInput.active_count) ? capInput.active_count : null,
+    limit: Number.isSafeInteger(capInput.limit) ? capInput.limit : null,
   } : null;
 
   return {
     reason: typeof input.reason === "string" ? redactText(input.reason) : null,
-    holder,
+    capacity,
   };
 }
 

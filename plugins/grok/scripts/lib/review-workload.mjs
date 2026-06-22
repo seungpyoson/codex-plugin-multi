@@ -102,6 +102,19 @@ function blockResult(key, capacity, reason = "active_same_provider_job") {
   });
 }
 
+function captureCurrentPidInfo(env = process.env) {
+  try {
+    return capturePidInfo(process.pid);
+  } catch (error) {
+    if (!env?.RELAY_WORKLOAD_TEST_MODE) throw error;
+    return {
+      pid: process.pid,
+      starttime: `test-mode:${process.pid}`,
+      argv0: process.argv?.[0] || "node",
+    };
+  }
+}
+
 function gateOwnerFile(gateDir) {
   return join(gateDir, GATE_OWNER_FILE);
 }
@@ -333,7 +346,7 @@ export function acquireProviderWorkloadLease({
 
   let pidInfo;
   try {
-    pidInfo = capturePidInfo(process.pid);
+    pidInfo = captureCurrentPidInfo(env);
   } catch {
     return blockResult(key, { active_count: 0, limit }, "unverifiable_current_process");
   }
