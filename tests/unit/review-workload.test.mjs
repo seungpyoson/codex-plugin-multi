@@ -251,6 +251,20 @@ test("provider workload lease publishes a complete payload atomically", () => {
   assert.match(source, /linkSync\(/, "lease publication should atomically link a complete candidate file");
 });
 
+test("provider workload gate owner records full liveness identity for reclaim (pid-reuse + boot-id)", () => {
+  // The gate owner must persist the SAME identity a slot does. The reclaim tests above pre-seed an
+  // owner with starttime/argv0/boot_id, so they exercise the READ/classify path but not the
+  // production WRITE. If acquireProviderWorkloadGate stops writing these, a crashed gate owner
+  // becomes unreclaimable: classifyHolder skips the null starttime/argv0 checks (a reused pid reads
+  // "alive") and a missing boot_id defeats stale-boot reclaim. This guards that write side.
+  const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
+  const gateWrite = source.match(/writeGateOwner\(gateDir,\s*\{[\s\S]*?\}\)/);
+  assert.ok(gateWrite, "writeGateOwner payload literal not found");
+  assert.match(gateWrite[0], /\bstarttime:/, "gate owner must record starttime (PID-reuse detection)");
+  assert.match(gateWrite[0], /\bargv0:/, "gate owner must record argv0 (PID-reuse detection)");
+  assert.match(gateWrite[0], /\bboot_id:/, "gate owner must record boot_id (stale-boot reclaim)");
+});
+
 test("source-bearing acquisition requires an explicit concurrencyKey", () => {
   assert.throws(
     () => acquireProviderWorkloadLease({
