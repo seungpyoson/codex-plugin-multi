@@ -1790,11 +1790,11 @@ test("T7.4 / §21.3.2: prompt sidecar is deleted after worker consumes it", asyn
     // After the worker consumed the prompt, the sidecar must be gone.
     assert.equal(existsSync(path.join(jobDir, "prompt.txt")), false,
       "§21.3.1: prompt sidecar must be deleted after worker consumes it");
-    // Settle: meta.json flips to terminal BEFORE upsertJob writes state.json
-    // and BEFORE writeSidecar emits stdout.log/stderr.log. Without this
-    // wait, the recursive cleanup races the worker's tail writes and Linux
-    // CI flakes with `ENOTEMPTY` on rmdir of state/<subdir>/.
-    await new Promise((r) => setTimeout(r, 250));
+    // meta.json flips to terminal BEFORE upsertJob writes state.json and
+    // BEFORE writeSidecar emits stdout.log/stderr.log. Wait for the worker
+    // process to exit so cleanup() does not race those tail writes and flake
+    // with ENOTEMPTY on rmdir of state/<subdir>/.
+    await waitForProcessExit(ev.pid);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -1996,6 +1996,10 @@ test("run --background: active job is visible as running and can be cancelled", 
           "default status (no --all) must include cancelled jobs");
       }
     }
+    // Barrier: wait for the worker process to fully exit before cleanup so the
+    // recursive rmSync does not race its post-terminal tail writes (lease
+    // release, sidecar removal) and flake with ENOTEMPTY.
+    await waitForProcessExit(launched.pid, CLAUDE_SMOKE_POLL_TIMEOUT_MS);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -2073,6 +2077,9 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
     assert.ok(terminal, `job did not finalize after cancel; last status seen=${lastStatusSeen}`);
     assert.equal(terminal.status, "cancelled",
       `cancel-marker must force status=cancelled even when target trapped SIGTERM and exited 0; got ${JSON.stringify(terminal)}`);
+    // Barrier: ensure the worker process is gone before cleanup so the
+    // recursive rmSync does not race its post-terminal tail writes (ENOTEMPTY).
+    await waitForProcessExit(launched.pid, CLAUDE_SMOKE_POLL_TIMEOUT_MS);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -2138,6 +2145,9 @@ process.kill = (pid, signal) => {
     assert.equal(cancelRes.status, 0, cancelRes.stderr);
     assert.equal(cancel.status, "already_dead");
     assert.equal(cancel.pid, running.pid_info.pid);
+    // Barrier: ensure the worker process is gone before cleanup so the
+    // recursive rmSync does not race its post-terminal tail writes (ENOTEMPTY).
+    await waitForProcessExit(launched.pid, CLAUDE_SMOKE_POLL_TIMEOUT_MS);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -2326,7 +2336,9 @@ test("continue --job --background reuses the parent Claude project cwd", async (
     assert.equal(continued.status, "completed");
     assert.equal(continued.parent_job_id, parent.job_id);
     assert.equal(continued.runtime_diagnostics.child_cwd, parentRecord.runtime_diagnostics.child_cwd);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // Wait for the background continue worker to exit before cleanup so the
+    // recursive rmSync does not race its tail writes and flake with ENOTEMPTY.
+    await waitForProcessExit(launched.pid);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -2582,6 +2594,7 @@ process.exit(0);
         (candidate) => candidate.status === "completed" || candidate.status === "failed",
         "background unapproved API continuation did not finalize",
       );
+      await waitForProcessExit(launched.pid);
     }
     assert.equal(unapproved.status, 2, unapproved.stderr || unapproved.stdout);
     const record = JSON.parse(unapproved.stdout);
@@ -4649,6 +4662,12 @@ process.exit(0);
     assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(existsSync(targetLaunchedPath), false);
+    // The cancelled record is durable before the worker finishes its tail
+    // writes (lease release, sidecar removal, lifecycle flush). Wait for the
+    // worker process to exit so cleanup() does not race a live writer and
+    // flake with ENOTEMPTY — same barrier the sibling preflight-rejection
+    // test above uses.
+    await waitForProcessExit(launched.pid);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -5257,6 +5276,9 @@ process.exit(0);
     assert.equal(Object.hasOwn(record.review_metadata.audit_manifest, "approval_token"), false);
     assert.doesNotMatch(JSON.stringify(record), new RegExp(request.approval_token.value),
       "approved JobRecord must not persist the approval token");
+    // Wait for the worker process to exit before cleanup so the recursive
+    // rmSync does not race its post-terminal tail writes (ENOTEMPTY).
+    await waitForProcessExit(launched.pid);
   } finally {
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
@@ -5289,6 +5311,7 @@ test("background api_key source-bearing review without approval fails before pro
         (candidate) => candidate.status === "completed" || candidate.status === "failed",
         "background unapproved API run did not finalize",
       );
+      await waitForProcessExit(launched.pid);
     }
     assert.equal(run.status, 2, run.stderr || run.stdout);
     const record = JSON.parse(run.stdout);

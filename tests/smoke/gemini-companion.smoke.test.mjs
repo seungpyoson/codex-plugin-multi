@@ -112,6 +112,25 @@ function rmTree(target) {
   }
 }
 
+// A background worker keeps writing into its data dir (lease release, sidecar
+// removal, lifecycle jsonl flush) AFTER its terminal JobRecord is durable.
+// Tests must wait for the worker PROCESS to exit before rmTree, or the
+// recursive removal races those tail writes and flakes with ENOTEMPTY.
+async function waitForProcessExit(pid, timeoutMs = 5000) {
+  if (!Number.isInteger(pid)) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`worker process ${pid} did not exit`);
+}
+
 function assertPreflightSafetyFields(result) {
   assert.equal(result.target_spawned, false);
   assert.equal(result.selected_scope_sent_to_provider, false);
@@ -262,6 +281,8 @@ test("gemini custom-review background: launched event and terminal JobRecord", a
       disclosure: "Selected source content was sent to Gemini CLI for external review.",
     });
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
+    // Barrier: wait for the worker process to exit before cleanup (ENOTEMPTY race).
+    await waitForProcessExit(launched.pid);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -509,6 +530,8 @@ test("gemini rescue background: active job appears in default status", async () 
       if (!terminal) await new Promise((resolve) => setTimeout(resolve, 100));
     }
     assert.ok(terminal, "background job did not finish before cleanup");
+    // Barrier: wait for the worker process to exit before cleanup (ENOTEMPTY race).
+    await waitForProcessExit(launched.pid, GEMINI_SMOKE_POLL_TIMEOUT_MS);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -584,6 +607,8 @@ test("gemini cancel: signals a running background job (issue #22 sub-task 1)", a
         assert.equal(cancel.pid, running.pid_info.pid);
       }
     }
+    // Barrier: wait for the worker process to exit before cleanup (ENOTEMPTY race).
+    await waitForProcessExit(launched.pid, GEMINI_SMOKE_POLL_TIMEOUT_MS);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -951,6 +976,8 @@ test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not comple
     assert.ok(terminal, "job did not finalize after cancel");
     assert.equal(terminal.status, "cancelled",
       `cancel-marker must force status=cancelled even when target trapped SIGTERM; got ${JSON.stringify(terminal)}`);
+    // Barrier: wait for the worker process to exit before cleanup (ENOTEMPTY race).
+    await waitForProcessExit(launched.pid, GEMINI_SMOKE_POLL_TIMEOUT_MS);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1015,6 +1042,8 @@ process.kill = (pid, signal) => {
     assert.equal(cancelRes.status, 0, cancelRes.stderr);
     assert.equal(cancel.status, "already_dead");
     assert.equal(cancel.pid, running.pid_info.pid);
+    // Barrier: wait for the worker process to exit before cleanup (ENOTEMPTY race).
+    await waitForProcessExit(launched.pid, GEMINI_SMOKE_POLL_TIMEOUT_MS);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -1379,6 +1408,8 @@ test("gemini continue background: launched event and resumed terminal JobRecord"
     assert.ok(fx, "worker never wrote stdout.log");
     assert.equal(fx.t7_resume_id, prior.gemini_session_id);
     assert.equal("prompt" in meta, false, "full prompt must not appear on JobRecord");
+    // Barrier: wait for the worker process to exit before cleanup (ENOTEMPTY race).
+    await waitForProcessExit(launched.pid);
   } finally {
     rmTree(first.dataDir);
     rmTree(cwd);
@@ -1430,6 +1461,8 @@ test("gemini _run-worker refuses terminal JobRecord without overwriting it", asy
     assert.equal(after.status, "completed");
     assert.match(after.result, /Mock Gemini response\./);
     assert.equal(after.gemini_session_id, GEMINI_SESSION_ID);
+    // Barrier: wait for the worker process to exit before cleanup (ENOTEMPTY race).
+    await waitForProcessExit(launched.pid);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -3524,6 +3557,8 @@ test("gemini approval-request token unlocks matching background api_key source-b
     assert.equal(terminal.review_metadata.audit_manifest.source_send_approval_required, true);
     assert.equal(terminal.review_metadata.audit_manifest.source_send_approval_state, "approved");
     assert.doesNotMatch(approval.stdout + launched.stdout + JSON.stringify(terminal), /secret-test-value/);
+    // Barrier: wait for the worker process to exit before cleanup (ENOTEMPTY race).
+    await waitForProcessExit(launchEvent.pid);
   } finally {
     rmTree(approval.dataDir);
     rmTree(cwd);
