@@ -3975,17 +3975,42 @@ const ROOT2_PAD = [
 // coverage gate satisfied. targetBuildReviewAuditManifest is the per-module
 // entry point; `name` is appended to every assert message for per-copy attribution.
 
-test("root2 detector1: handling-praise reviews do not flag permission_blocked", async () => {
-  const cases = [
+test("root2 detector1: code-handling praise with a permission literal conservatively flags permission_blocked (suppressor reverted -> #238)", async () => {
+  // The a2a7be1 isPermissionHandlingPraiseLine suppressor was REVERTED: its enumerated un-suppression
+  // guard leaked, letting a genuinely permission-blocked APPROVE pass CLEAN (5 reproductions: cross-line
+  // "read", third-person, "can not", U+FF07 glyph, "my open"). Post-revert any line carrying a permission
+  // LITERAL flags permission_blocked (== main behavior) — failing toward flagging. Reviews that merely
+  // PRAISE the code's EACCES handling are now over-flagged: an ACCEPTED false positive (SAFE direction);
+  // the precision goal (don't flag code-praise) is deferred to the Way-2 advisory disposition in #238.
+  const FLAGS = [
     "Verdict: Approve\nThe new code correctly handles EACCES when it cannot read the optional config file: it catches the error, logs a warning, and falls back to documented defaults.",
     "Verdict: Approve\nThe writer correctly catches EPERM thrown by fs.writeSync and surfaces a typed error to the caller instead of crashing.",
     "Verdict: Approve\nThe diff returns a clear 'permission denied' message to the API client when the user lacks the scope, which is the right behavior.",
-    // GUARD REGRESSION: reviewed-process subject must stay unflagged after Edit 1b.
     "Verdict: Approve\nWhen the process cannot read the optional cache file it raises EACCES; the new code catches the error and falls back gracefully, which is the correct behavior.",
+  ];
+  // No permission LITERAL present -> NOT a permission_blocked signal: we do not over-flag every mention
+  // of error handling, only lines carrying EACCES/EPERM/"permission denied".
+  const CLEAN = [
+    "Verdict: Approve\nThe loader gracefully handles missing-file errors and falls back to defaults, which is the right behavior; I inspected the selected source and confirmed it is correct.",
   ];
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
-    for (const result of cases) {
+    for (const result of FLAGS) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: "src/example.js", text: "export const value = 1;\n" }],
+        result: `${result}\n${ROOT2_PAD}`,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"),
+        true,
+        `[${name}] permission_blocked should be present (conservative) for: ${result}`,
+      );
+      assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true for: ${result}`);
+    }
+    for (const result of CLEAN) {
       const manifest = targetBuildReviewAuditManifest({
         prompt: "rendered prompt",
         sourceFiles: [{ path: "src/example.js", text: "export const value = 1;\n" }],
@@ -3996,9 +4021,8 @@ test("root2 detector1: handling-praise reviews do not flag permission_blocked", 
       assert.equal(
         manifest.review_quality.semantic_failure_reasons.includes("permission_blocked"),
         false,
-        `[${name}] permission_blocked should be absent for: ${result}`,
+        `[${name}] no permission literal -> permission_blocked absent for: ${result}`,
       );
-      assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] failed_review_slot should be false for: ${result}`);
     }
   }
 });
@@ -4484,8 +4508,9 @@ const PERM_PAD = [
 
 test("root2 detector1: reviewer-process blocks (contraction/paraphrase/unicode) still flag permission_blocked", async () => {
   // Reviewer-found false-negatives (Kimi/GPT). Each carries a permission literal AND a genuine
-  // first-person read-block; handling-praise must NOT suppress it. (No-literal blocks are a
-  // separate, pre-existing raising-detector gap tracked in #238, not asserted here.)
+  // first-person read-block. After the praise-suppressor revert (#238) any permission literal flags
+  // permission_blocked, so these flag a fortiori (the suppressor that previously hid them is gone).
+  // (No-literal blocks remain a pre-existing raising-detector gap tracked in #238, not asserted here.)
   const FLAG = [
     "Verdict: APPROVE\nThe code correctly handles EACCES. I couldn't inspect the actual file due to the error.",
     "Verdict: APPROVE\nThe code correctly handles permission denied. I wasn't able to inspect the source.",
@@ -4495,23 +4520,12 @@ test("root2 detector1: reviewer-process blocks (contraction/paraphrase/unicode) 
     "Verdict: APPROVE\nPermission denied handling falls back well, yet I lacked access to verify against the real file.",
     "Verdict: APPROVE\nThe review attempt hit EACCES permission denied opening src/auth.js; the code correctly handles EACCES by falling back.",
   ];
-  // Pure code-handling praise that names the artifact / observes no findings must STAY suppressed.
-  const CLEAN = [
-    "Verdict: APPROVE\nThe code correctly handles EACCES by falling back to defaults, which is the right behavior.",
-    "Verdict: APPROVE\nThe loader correctly handles EACCES when it cannot read the source file, returning a clear typed error.",
-    "Verdict: APPROVE\nI inspected the selected source and confirmed the code correctly handles EACCES on the config read.",
-    "Verdict: APPROVE\nI did not see any issues; EACCES is handled correctly by the loader and falls back cleanly.",
-  ];
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
     for (const body of FLAG) {
       const m = target({ prompt: "p", sourceFiles: [{ path: "src/auth.js", text: "export const value = 1;\n" }], result: `${body}\n${PERM_PAD}`, status: "completed", errorCode: null });
       assert.equal(m.review_quality.semantic_failure_reasons.includes("permission_blocked"), true, `[${name}] permission_blocked should be present for: ${body}`);
       assert.equal(m.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true for: ${body}`);
-    }
-    for (const body of CLEAN) {
-      const m = target({ prompt: "p", sourceFiles: [{ path: "src/config-loader.js", text: "export const value = 1;\n" }], result: `${body}\n${PERM_PAD}`, status: "completed", errorCode: null });
-      assert.equal(m.review_quality.failed_review_slot, false, `[${name}] code-handling praise must stay clean for: ${body}`);
     }
   }
 });
@@ -4563,12 +4577,17 @@ test("root2 detector3: praise/confirmation reusing defect vocabulary flags shall
 // locus, so the dismissal regex is the load-bearing classifier.
 test("root2 detector3 F2: passive + every pre-split should-not dismissal flags shallow_output (split-identity)", async () => {
   const SHOULD_NOT_CANON = [
-    // F2 passive reassurance (the dropped alternative + its impact-verb family)
+    // F2 passive reassurance — EVERY impact participle in IMPACT_REASSURANCE_NEG (all 9, was 5/10).
     "should not be affected",
     "should not be impacted",
     "should not be touched",
     "should not be altered",
     "should not be disturbed",
+    "should not be changed",
+    "should not be disrupted",
+    "should not be noticeable",
+    "should not be visible",
+    "should not be a factor",
     // pre-split copular reassurance
     "should not be a problem",
     "should not be an issue",
@@ -4594,6 +4613,77 @@ test("root2 detector3 F2: passive + every pre-split should-not dismissal flags s
       const result = `Verdict: APPROVE\nfoo() ${tail}`;
       const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
       assert.equal(m.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] should-not dismissal must flag shallow_output: ${tail}`);
+    }
+  }
+});
+
+// --- PR #237 review round 2 (GLM/GPT/Claude): fixes verified through buildReviewAuditManifest ---
+
+// B1 revert reproductions. The a2a7be1 permission-praise suppressor let a GENUINELY blocked APPROVE
+// pass CLEAN whenever a line also praised the code's EACCES handling, because its enumerated
+// un-suppression guard missed: a cross-line "read" block, a third-person block, two-word "can not",
+// a fullwidth-apostrophe (U+FF07) glyph, and "my open". All five carry a permission literal, so after
+// the revert they flag permission_blocked (== main). Fails if the suppressor is ever re-introduced.
+test("root2 detector1: genuinely-blocked APPROVE with EACCES handling-praise flags permission_blocked (suppressor-revert regressions)", async () => {
+  const PAD = [
+    "The structured review body has normal sections and enough neutral detail to clear the shallow length threshold.",
+    "Base and head metadata were considered while keeping blocking and non-blocking sections separate here.",
+    "This padding is neutral and carries no permission, inspection, or defect trigger wording of its own.",
+  ].join("\n");
+  const FLAG = [
+    ["The code correctly handles EACCES by falling back to a typed error on line 7.",
+      "I could not read the selected source file, so I am approving based on the diff alone."].join("\n"),
+    "The handler correctly handles EACCES, but the sandbox prevented inspection so the selected source was never opened during this review.",
+    "I can not read the selected source due to EACCES, yet the code correctly handles EACCES and degrades gracefully.",
+    "The code correctly handles EACCES by falling back, but I couldn＇t inspect the selected source.",
+    "The loader hit EACCES on my open of the selected source; since the code correctly handles EACCES I am approving anyway.",
+  ];
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
+    for (const body of FLAG) {
+      const result = `Verdict: APPROVE\nBlocking findings\n- None.\n${body}\n${PAD}`;
+      const m = target({ prompt: "p", sourceFiles: [{ path: "src/auth.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
+      assert.equal(m.review_quality.semantic_failure_reasons.includes("permission_blocked"), true, `[${name}] permission_blocked must be present for: ${body}`);
+      assert.equal(m.review_quality.failed_review_slot, true, `[${name}] failed_review_slot must be true for: ${body}`);
+    }
+  }
+});
+
+// hasDefectCue four-way split oracle: each DEFECT_CUE_* alternative, used ALONE next to a code locus,
+// must register a concrete finding (looks_shallow:false). If a future "behavior-identical" split drops
+// any alternative, the corresponding case flips to shallow and this fails (the MAJOR test-gap closed).
+test("root2 detector3: hasDefectCue split-identity — every defect-cue alternative escapes shallow alone", async () => {
+  const CUES = [
+    "uses a global instead of the injected client",
+    "mutates the array rather than copying it",
+    "should return the count",
+    "fails to close the handle",
+    "does not free the slot",
+    "has an off-by-one",
+    "has a null deref",
+    "has a use-after-free",
+    "has a race condition",
+    "can overflow",
+    "can underflow",
+    "is incorrect",
+    "returns the wrong index",
+    "uses the wrong order",
+    "subtracts one too many",
+    "adds to the wrong bucket",
+    "drops the last element",
+    "leaks the buffer",
+    "swallows the error",
+    "throws on empty input",
+    "is never called",
+    "is never awaited",
+    "is never closed",
+  ];
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
+    for (const cue of CUES) {
+      const result = `Verdict: REQUEST CHANGES\nnextPage() ${cue}.`;
+      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
+      assert.equal(m.review_quality.looks_shallow, false, `[${name}] defect cue must register a concrete finding: ${cue}`);
     }
   }
 });
