@@ -78,6 +78,25 @@ const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
 // to main().catch. One CLI invocation per process, so a set-once latch is sufficient.
 let sourceSentToTarget = false;
 
+// Read/query commands (status/result/cancel) inspect an existing job's persisted state — they
+// spawn no target and transmit nothing, so a bare top-level "not_sent" on their error envelopes
+// is misleading (the job's real disclosure is nested at external_review.source_content_transmission
+// on the record). They omit the field (#240). EVERY other command keeps disclosing: run carries
+// the honest sent/not_sent, and continue/resume fail-closes with "not_sent" to assert that no
+// source was resent. Fail-safe — the default is to DISCLOSE; only this explicit read set omits.
+const DISCLOSURE_OMITTING_COMMANDS = new Set(["status", "result", "cancel"]);
+let commandOmitsErrorDisclosure = false;
+
+// Disclosure field for the top-level error sinks (fail / main().catch). Omitted only for the
+// read/query commands above; the latch overrides so a genuinely-sent source is ALWAYS disclosed
+// (never the dangerous under-warning direction).
+function errorSinkDisclosure() {
+  if (commandOmitsErrorDisclosure && !sourceSentToTarget) {
+    return {};
+  }
+  return { source_content_transmission: sourceSentToTarget ? "sent" : "not_sent" };
+}
+
 const ROUTE_CAPABILITIES = Object.freeze({
   source_packet: Object.freeze({
     max_bytes: AGY_SOURCE_PACKET_MAX_BYTES,
@@ -1488,7 +1507,8 @@ function fail(code, message, details = {}) {
     error_message: message,
     // Honor whether the target already received the source (see sourceSentToTarget):
     // a post-spawn failure reaching this generic sink must not falsely report not_sent.
-    source_content_transmission: sourceSentToTarget ? "sent" : "not_sent",
+    // Read/query commands omit the field entirely (errorSinkDisclosure, #240).
+    ...errorSinkDisclosure(),
     ...details,
   });
   process.exit(1);
@@ -1611,6 +1631,8 @@ function cancel(rest) {
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  // Read/query commands omit the error-envelope disclosure; every other command discloses (#240).
+  commandOmitsErrorDisclosure = DISCLOSURE_OMITTING_COMMANDS.has(command);
   if (command === "doctor" || command === "setup") {
     doctor(rest);
     return;
@@ -1652,7 +1674,8 @@ main().catch((error) => {
     status: "failed",
     error_code: "agy_companion_error",
     error_message: error.message,
-    source_content_transmission: sourceSentToTarget ? "sent" : "not_sent",
+    // See fail()/errorSinkDisclosure: read/query commands omit; the latch overrides (#240).
+    ...errorSinkDisclosure(),
   });
   process.exit(1);
 });
