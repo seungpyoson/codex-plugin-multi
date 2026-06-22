@@ -40,8 +40,15 @@ function cleanup(...paths) {
   for (const p of paths) rmSync(p, { recursive: true, force: true });
 }
 
-async function loadFreshScope(provider, label) {
-  return import(`${scopeHref(provider)}?${provider}-${label}=${Date.now()}`);
+async function loadFreshScope(provider) {
+  // Import the canonical module (no cache-busting query). A single shared
+  // instance per provider accumulates every test's branch hits into one V8
+  // coverage shape, which the coverage gate reports faithfully. Per-test
+  // cache-busting fragments that signal across many instances, and the gate's
+  // shape-selection merge keeps only one — silently dropping branches that
+  // other instances covered. The per-test fs monkeypatches still apply because
+  // they mutate the live fs binding via syncBuiltinESMExports().
+  return import(scopeHref(provider));
 }
 
 // Swap a just-inspected regular file the moment its destination directory is
@@ -86,7 +93,7 @@ for (const provider of SCOPE_PROVIDERS) {
         symlinkSync(outsideSecret, victim);
       });
 
-      const { populateScope } = await loadFreshScope(provider, "toctou");
+      const { populateScope } = await loadFreshScope(provider);
       assert.throws(
         () => populateScope(profile("custom"), src, tgt, { scopePaths: ["nested/victim.txt"] }),
         /unsafe_symlink|scope_population_failed/,
@@ -118,7 +125,7 @@ for (const provider of SCOPE_PROVIDERS) {
         symlinkSync(inRoot, victim);
       });
 
-      const { populateScope } = await loadFreshScope(provider, "eloop");
+      const { populateScope } = await loadFreshScope(provider);
       assert.throws(
         () => populateScope(profile("custom"), src, tgt, { scopePaths: ["nested/victim.txt"] }),
         /unsafe_symlink|scope_population_failed/,
@@ -146,7 +153,7 @@ for (const provider of SCOPE_PROVIDERS) {
       // fd-based copy's tmp-file creation fails and the run terminates closed.
       restore = onTargetDirCreated(targetDir, () => chmodSync(targetDir, 0o500));
 
-      const { populateScope } = await loadFreshScope(provider, "copyfail");
+      const { populateScope } = await loadFreshScope(provider);
       assert.throws(
         () => populateScope(profile("custom"), src, tgt, { scopePaths: ["nested/victim.txt"] }),
         /scope_population_failed|cannot copy/,
@@ -175,7 +182,7 @@ for (const provider of SCOPE_PROVIDERS) {
       // Delete the racer after lstat but before realpath → ENOENT skip (return).
       restore = onTargetDirCreated(path.join(tgt, "vanish"), () => unlinkSync(racer));
 
-      const { populateScope } = await loadFreshScope(provider, "enoent");
+      const { populateScope } = await loadFreshScope(provider);
       // The raced-away file is skipped silently; the surviving file still copies.
       populateScope(profile("custom"), src, tgt, {
         scopePaths: ["vanish/racer.txt", "stays/keeper.txt"],
@@ -199,7 +206,7 @@ for (const provider of SCOPE_PROVIDERS) {
       writeFileSync(large, "");
       truncateSync(large, (8 * 1024 * 1024) + 1);
 
-      const { populateScope } = await loadFreshScope(provider, "file-cap");
+      const { populateScope } = await loadFreshScope(provider);
       assert.throws(
         () => populateScope(profile("custom"), src, tgt, { scopePaths: ["large.bin"] }),
         /scope_file_too_large/,
@@ -207,6 +214,98 @@ for (const provider of SCOPE_PROVIDERS) {
       assert.equal(existsSync(path.join(tgt, "large.bin")), false);
       assert.throws(() => readFileSync(path.join(tgt, "large.bin")), /ENOENT/);
     } finally {
+      cleanup(root);
+    }
+  });
+
+  test(`${provider} populateScope refuses a regular file that becomes a directory mid-copy`, POSIX_ONLY, async () => {
+    const root = mkdtempSync(path.join(tmpdir(), `${provider}-scope-nonfile-`));
+    const src = path.join(root, "src");
+    const tgt = path.join(root, "tgt");
+    const victim = path.join(src, "nested", "victim.txt");
+    let restore = () => {};
+    try {
+      mkdirSync(path.dirname(victim), { recursive: true });
+      mkdirSync(tgt, { recursive: true });
+      writeFileSync(victim, "safe source\n", "utf8");
+
+      // After lstat sees a regular file but before the copy opens it, replace
+      // the file with an in-root directory. realpath + isInsidePath still pass
+      // and the O_NOFOLLOW open of a directory succeeds, so only the fstat
+      // regular-file check stops the copier from snapshotting a directory fd.
+      restore = onTargetDirCreated(path.join(tgt, "nested"), () => {
+        unlinkSync(victim);
+        mkdirSync(victim);
+      });
+
+      const { populateScope } = await loadFreshScope(provider);
+      assert.throws(
+        () => populateScope(profile("custom"), src, tgt, { scopePaths: ["nested/victim.txt"] }),
+        /unsafe_symlink|scope_population_failed/,
+      );
+      assert.equal(existsSync(path.join(tgt, "nested", "victim.txt")), false);
+    } finally {
+      restore();
+      cleanup(root);
+    }
+  });
+
+  test(`${provider} populateScope fails closed when a file becomes unreadable mid-copy`, POSIX_ONLY, async () => {
+    const root = mkdtempSync(path.join(tmpdir(), `${provider}-scope-eacces-`));
+    const src = path.join(root, "src");
+    const tgt = path.join(root, "tgt");
+    const victim = path.join(src, "nested", "victim.txt");
+    let restore = () => {};
+    try {
+      mkdirSync(path.dirname(victim), { recursive: true });
+      mkdirSync(tgt, { recursive: true });
+      writeFileSync(victim, "safe source\n", "utf8");
+
+      // Strip read permission after lstat/realpath (which need only parent
+      // search bits) but before the O_RDONLY open, so the open fails EACCES — a
+      // non-ENOENT/non-ELOOP error the copier must surface as a population
+      // failure rather than silently skip.
+      restore = onTargetDirCreated(path.join(tgt, "nested"), () => chmodSync(victim, 0o000));
+
+      const { populateScope } = await loadFreshScope(provider);
+      assert.throws(
+        () => populateScope(profile("custom"), src, tgt, { scopePaths: ["nested/victim.txt"] }),
+        /scope_population_failed/,
+      );
+      assert.equal(existsSync(path.join(tgt, "nested", "victim.txt")), false);
+    } finally {
+      restore();
+      try { chmodSync(victim, 0o600); } catch { /* best effort */ }
+      cleanup(root);
+    }
+  });
+
+  test(`${provider} populateScope fails closed when a file path becomes unresolvable mid-copy`, POSIX_ONLY, async () => {
+    const root = mkdtempSync(path.join(tmpdir(), `${provider}-scope-noresolve-`));
+    const src = path.join(root, "src");
+    const tgt = path.join(root, "tgt");
+    const parent = path.join(src, "nested");
+    const victim = path.join(parent, "victim.txt");
+    let restore = () => {};
+    try {
+      mkdirSync(parent, { recursive: true });
+      mkdirSync(tgt, { recursive: true });
+      writeFileSync(victim, "safe source\n", "utf8");
+
+      // Drop the search bit on the parent directory after lstat but before
+      // realpath, so realpathSync fails EACCES (a non-ENOENT resolve error).
+      // The copier must surface this as a population failure, not a skip.
+      restore = onTargetDirCreated(path.join(tgt, "nested"), () => chmodSync(parent, 0o000));
+
+      const { populateScope } = await loadFreshScope(provider);
+      assert.throws(
+        () => populateScope(profile("custom"), src, tgt, { scopePaths: ["nested/victim.txt"] }),
+        /scope_population_failed/,
+      );
+      assert.equal(existsSync(path.join(tgt, "nested", "victim.txt")), false);
+    } finally {
+      restore();
+      try { chmodSync(parent, 0o700); } catch { /* best effort */ }
       cleanup(root);
     }
   });
