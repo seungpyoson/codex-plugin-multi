@@ -116,6 +116,12 @@ function assertSchemaAllowsValue(root, schema, value, label) {
   if (resolved.enum) {
     assert.equal(resolved.enum.includes(value), true, `${label} enum mismatch`);
   }
+  if (typeof resolved.minLength === "number" && typeof value === "string") {
+    assert.equal(value.length >= resolved.minLength, true, `${label} minLength mismatch`);
+  }
+  if (typeof resolved.minimum === "number" && typeof value === "number") {
+    assert.equal(value >= resolved.minimum, true, `${label} minimum mismatch`);
+  }
   if (resolved.additionalProperties === false && value && typeof value === "object" && !Array.isArray(value)) {
     assertOnlyKeys(value, Object.keys(resolved.properties ?? {}), label);
   }
@@ -1069,6 +1075,38 @@ test("concurrency budget section mirrors CONCURRENCY_FACTS exactly (declarative 
   assert.equal(find("deepseek", "direct_api").limit, 4);
   assert.equal(find("glm", "direct_api").limit, 4);
   assert.equal(find("custom", "direct_api").limit, 1);
+});
+
+test("provider parity concurrency budget rows validate against the concurrency_fact schema", () => {
+  const schema = readRepoJson("docs/contracts/provider-parity-table.schema.json");
+  const table = readRepoJson("docs/provider-parity-table.json");
+  const concurrencyFact = schema.$defs.concurrency_fact;
+
+  table.concurrency_budget.forEach((row, index) => {
+    assertSchemaAllowsValue(schema, concurrencyFact, row, `concurrency_budget[${index}]`);
+  });
+
+  assert.throws(
+    () => assertSchemaAllowsValue(schema, concurrencyFact, {
+      provider: "deepseek",
+      route: "direct_api",
+      category: "stateless",
+      limit: 0,
+      limit_env: null,
+    }, "concurrency_budget.invalid_limit"),
+    /minimum/,
+  );
+  assert.throws(
+    () => assertSchemaAllowsValue(schema, concurrencyFact, {
+      provider: "deepseek",
+      route: "direct_api",
+      category: "stateless",
+      limit: 1,
+      limit_env: null,
+      holder: { pid: 123 },
+    }, "concurrency_budget.invalid_extra"),
+    /unsupported keys/,
+  );
 });
 
 

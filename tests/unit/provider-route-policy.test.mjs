@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2129,6 +2129,44 @@ test("two shared_state concurrency admissions for the same dir produce the same 
   assert.ok(!b.concurrencyKey.startsWith("alias-b."));
 });
 
+test("shared_state concurrency admission keys symlink-equivalent paths by directory identity, not path string", (t) => {
+  const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-real-"));
+  const linkRoot = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-link-root-"));
+  const symlinkPath = path.join(linkRoot, "shared-state-link");
+  const otherDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-other-"));
+  t.after(() => {
+    rmSync(sharedStateDir, { recursive: true, force: true });
+    rmSync(linkRoot, { recursive: true, force: true });
+    rmSync(otherDir, { recursive: true, force: true });
+  });
+  symlinkSync(sharedStateDir, symlinkPath, "dir");
+
+  const real = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "alias-real",
+    route: "subscription",
+  });
+  const linked = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: symlinkPath,
+    provider: "alias-link",
+    route: "subscription",
+  });
+  const other = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: otherDir,
+    provider: "alias-other",
+    route: "subscription",
+  });
+
+  assert.equal(real.concurrencyKey, linked.concurrencyKey);
+  assert.notEqual(real.concurrencyKey, other.concurrencyKey);
+});
+
 test("kimi source-bearing route facts are derived from mode classification", () => {
   const source = readFileSync(path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs"), "utf8");
 
@@ -2257,6 +2295,26 @@ test("DeepSeek and GLM stateless routes admit limit 4; env caps lower but never 
     assert.equal(resolveConcurrencyAdmission(args({ [limitEnv]: "2" })).limit, 2, `${provider} env lowers`);
     // Env cannot raise above the fact limit.
     assert.equal(resolveConcurrencyAdmission(args({ [limitEnv]: "10" })).limit, 4, `${provider} env cannot raise`);
+  }
+});
+
+test("DeepSeek and GLM stateless routes ignore malformed or zero env caps and keep declared limit 4", () => {
+  for (const [provider, route, limitEnv] of [
+    ["deepseek", "direct_api", "RELAY_DEEPSEEK_CONCURRENCY_LIMIT"],
+    ["glm", "direct_api", "RELAY_GLM_CONCURRENCY_LIMIT"],
+  ]) {
+    const fact = providerRoutePolicy.CONCURRENCY_FACTS[provider][route];
+    for (const badValue of ["0", "-1", "1.5", "abc", ""]) {
+      const admission = resolveConcurrencyAdmission({
+        category: fact.category,
+        declaredLimit: fact.limit,
+        limitEnv: fact.limit_env,
+        provider,
+        route,
+        env: { [limitEnv]: badValue },
+      });
+      assert.equal(admission.limit, 4, `${provider} must ignore malformed env cap ${JSON.stringify(badValue)}`);
+    }
   }
 });
 
