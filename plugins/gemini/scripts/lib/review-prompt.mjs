@@ -1162,7 +1162,7 @@ function lineDeniesSelectedSourceInspection(line, selectedSource) {
   if (isSelectedSourceInspectionMechanicsDiscussionLine(lower)) return false;
   if (isNegatedSelectedSourceInspectionAnalysisLine(lower)) return false;
   if (isLocalFileScopeBoundaryLine(lower)) return false;
-  if (isOutOfScopeInspectionGapLine(lower, selectedSource, false) && !mentionsSelectedSourceGeneric(lower)) return false;
+  if (isOutOfScopeInspectionGapLine(lower) && !mentionsSelectedSourceGeneric(lower)) return false;
   if (!includesAny(lower, ["did not inspect", "not inspected", "could not inspect", "unable to inspect"])) {
     return false;
   }
@@ -1206,9 +1206,15 @@ function isSelectedSourceInspectionMechanicsDiscussionLine(lower) {
   ]);
 }
 
-function isOutOfScopeInspectionGapLine(lower, selectedSource = null, selectedSourceInspected = false) {
+// A could-not-inspect line is suppressed ONLY when the reviewer EXPLICITLY marks it
+// out of scope. Inferring out-of-scope from "a foreign file is named + the selected
+// source was (claimed) inspected" was tried (PR #237) and reverted: any text-based
+// inspection signal is spoofable, and the only non-spoofable alternative (named file
+// is provably not in the packet) silently suppresses a no-engagement APPROVE, which
+// breaks the fail-toward-flagging invariant. The explicit marker is the contract.
+function isOutOfScopeInspectionGapLine(lower) {
   if (!includesAny(lower, ["could not inspect", "unable to inspect", "not inspected", "not reviewed"])) return false;
-  if (includesAny(lower, [
+  return includesAny(lower, [
     "out of scope",
     "outside the packet",
     "outside of the packet",
@@ -1222,41 +1228,7 @@ function isOutOfScopeInspectionGapLine(lower, selectedSource = null, selectedSou
     "not part of this packet",
     "not supplied",
     "not included in the prompt",
-  ])) return true;
-  // Foreign-path branch: a could-not-inspect gap attributed to a concrete file
-  // that is NOT the selected source is an out-of-scope gap, not a denial that the
-  // selected source itself was reviewed. Suppress ONLY when the line names such a
-  // foreign path, does not generically deny the selected source, does not name the
-  // selected path, AND the review independently proves the selected source WAS
-  // inspected. When in doubt, fall through to false so the line stays flaggable.
-  if (mentionsSelectedSourceGeneric(lower)) return false;
-  if (mentionsSelectedSourcePath(lower, selectedSource)) return false;
-  if (!selectedSourceInspected) return false;
-  return namesNonSelectedFileGapLine(lower, selectedSource);
-}
-
-// Multi-dot filenames (webpack.config.js, index.test.ts) must tokenize whole, else a basename
-// denial of a dir-prefixed selected source is mis-read as a foreign file and wrongly suppressed,
-// letting a genuine not_reviewed denial bypass the gate. The optional (?:\.seg){0,8} group carries
-// the interior dotted segments before the final extension. Every quantifier is UPPER-BOUNDED
-// (segments {1,128}/{1,64}, depth {0,32}/{0,8}, ext {1,6}) so the token scan stays linear-time
-// (S5852 / ReDoS-safe) — do NOT relax these back to *,+.
-const NON_SELECTED_FILE_TOKEN_RE = /(?:^|[\s`'"([{,;:])((?:[a-z0-9_-]{1,128}\/){0,32}[a-z0-9_-]{1,128}(?:\.[a-z0-9_-]{1,64}){0,8}\.[a-z0-9]{1,6})(?=$|[\s`'")\]}.,;:])/g;
-function namesNonSelectedFileGapLine(lower, selectedSource) {
-  const selectedPaths = (selectedSource?.files ?? [])
-    .map((file) => String(file?.path ?? "").toLowerCase())
-    .filter(Boolean);
-  NON_SELECTED_FILE_TOKEN_RE.lastIndex = 0;
-  let match = NON_SELECTED_FILE_TOKEN_RE.exec(lower);
-  while (match !== null) {
-    const path = match[1];
-    const isSelected = selectedPaths.some((selected) => (
-      selected === path || selected.endsWith(`/${path}`) || path.endsWith(`/${selected}`)
-    ));
-    if (!isSelected) return true;
-    match = NON_SELECTED_FILE_TOKEN_RE.exec(lower);
-  }
-  return false;
+  ]);
 }
 
 function isPriorReviewCommentsGapLine(lower) {
@@ -1335,14 +1307,10 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
         && !isPermissionFailureExampleLine(unmarkedLower)
     );
   });
-  const selectedSourceInspected = mentionsSelectedSourceInspection(
-    normalizeReviewSearchText(text).toLowerCase(),
-    selectedSource,
-  );
   const semanticText = semanticLines
     .filter((line) => {
       const lower = unmarkReviewText(line).toLowerCase();
-      return !isOutOfScopeInspectionGapLine(lower, selectedSource, selectedSourceInspected)
+      return !isOutOfScopeInspectionGapLine(lower)
         && !isPriorReviewCommentsGapLine(lower);
     })
     .join("\n")
@@ -1444,6 +1412,11 @@ function isNegatedPermissionBlockLine(line) {
   );
 }
 
+// Used only by the tiny-source concise-review exemption (conciseTinyReview). This is a best-effort
+// signal, NOT a security gate: a text inspection claim is spoofable, so it must never be used to
+// SUPPRESS a not_reviewed flag (that was the reverted PR #237 foreign-path branch). Here it only
+// grants a length exemption to an already-structured review of a <512-byte source, where a false
+// claim buys nothing material.
 function mentionsSelectedSourceInspection(lowerText, selectedSource) {
   if (!includesAny(lowerText, SELECTED_SOURCE_INSPECTION_VERBS)) return false;
   return mentionsSelectedSourcePath(lowerText, selectedSource);
@@ -1505,6 +1478,11 @@ const CONCRETE_FINDING_PRAISE = /\bas (?:expected|intended|designed|documented|p
 const DISMISSAL_NEGATED_DEFECT_A = /\b(?:no|not|never|none|without)\b(?: \w+){0,2} (?:issues?|problems?|bugs?|concerns?)\b/i;
 const DISMISSAL_NEGATED_DEFECT_B = /\b(?:no|not|never|none|without)\b(?: \w+){0,2} (?:defects?|regressions?|blockers?|off-by-one)\b/i;
 const DISMISSAL_SHOULD_NOT = /\bshould not (?:be (?:an? )?(?:problem|issue|concern|blocker|big deal)|cause|regress|matter|break|hurt|harm|affect)\b/i;
+// PASSIVE/copular reassurance: "X should not be affected/impacted/touched/...". The active branch
+// above handles "should not <verb>"; the past-participle impact words are a distinct surface that the
+// a5c2868 regex split dropped ("be affected"), letting a hand-wave APPROVE pass as a concrete finding.
+// Kept as a separate small pattern so the split-identity property test below pins every alternative.
+const DISMISSAL_SHOULD_NOT_PASSIVE = /\bshould not be (?:affected|impacted|touched|altered|changed|disturbed|disrupted|noticeable|visible|a factor)\b/i;
 const DISMISSAL_NOTHING = /\bnothing (?:wrong|concerning|of concern|problematic|improper|improperly|amiss|untoward|alarming|broken|to (?:flag|note|fix|report))\b/i;
 const DISMISSAL_ABSENCE = /\bmissing nothing\b|\bdoes not appear\b/i;
 const DISMISSAL_NO_X = /\bno (?:concerns?|issues?|problems?|blockers?|objections?)\b/i;
@@ -1518,6 +1496,7 @@ function clauseIsDismissal(clause) {
   return DISMISSAL_NEGATED_DEFECT_A.test(clause)
     || DISMISSAL_NEGATED_DEFECT_B.test(clause)
     || DISMISSAL_SHOULD_NOT.test(clause)
+    || DISMISSAL_SHOULD_NOT_PASSIVE.test(clause)
     || DISMISSAL_NOTHING.test(clause)
     || DISMISSAL_ABSENCE.test(clause)
     || DISMISSAL_NO_X.test(clause)

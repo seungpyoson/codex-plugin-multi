@@ -4060,60 +4060,56 @@ test("root2 detector1: long structured APPROVE with reviewer-subject read-denial
 
 // Detector 2 — not_reviewed --------------------------------------------------
 
-test("root2 detector2: foreign-path inspection gaps with proven selected-source inspection do not flag", async () => {
-  const cases = [
-    {
-      selected: "cart.js",
-      result: [
-        "Verdict: APPROVE",
-        "Blocking findings",
-        "- None.",
-        "Non-blocking concerns",
-        "- The supplied cart.js diff was fully reviewed and the arithmetic is correct.",
-        "- I could not inspect the upstream caller in routes.js, but the diff is internally consistent.",
-        ROOT2_PAD,
-      ].join("\n"),
-    },
-    {
-      selected: "src/auth/login.js",
-      result: [
-        "Verdict: APPROVE",
-        "Blocking findings",
-        "- None.",
-        "Non-blocking concerns",
-        "- The selected source src/auth/login.js was fully inspected; the token comparison is constant-time.",
-        "- I was unable to inspect middleware/session.js, so its interaction is noted as a gap.",
-        ROOT2_PAD,
-      ].join("\n"),
-    },
-    {
-      selected: "src/order/process.js",
-      result: [
-        "Verdict: REQUEST CHANGES",
-        "Blocking findings",
-        "- I reviewed the full supplied source src/order/process.js and the rounding is wrong.",
-        "Non-blocking concerns",
-        "- I could not inspect config/defaults.json, but the bug is determinable from the diff.",
-        ROOT2_PAD,
-      ].join("\n"),
-    },
+// PR #237 added a "foreign-path" suppression branch that cleared a not_reviewed gap when the review
+// named a file outside the packet AND (claimed to have) inspected the selected source. It was REVERTED:
+// every text-based inspection signal is spoofable, and the only non-spoofable gate (named file is
+// provably not in the packet) silently passes a no-engagement APPROVE — both break fail-toward-flagging.
+// The contract is now main's: a could-not-inspect gap is suppressed ONLY when the reviewer EXPLICITLY
+// marks it out of scope. This pins BOTH directions of that contract through the composed manifest path.
+test("root2 detector2: a foreign-file gap flags not_reviewed unless EXPLICITLY marked out of scope", async () => {
+  const base = (gapLine) => [
+    "Verdict: APPROVE",
+    "Blocking findings",
+    "- None.",
+    "Non-blocking concerns",
+    "- The supplied cart.js diff was fully reviewed and the arithmetic is correct.",
+    `- ${gapLine}`,
+    ROOT2_PAD,
+  ].join("\n");
+  // No explicit marker -> the gap FLAGS (conservative, safe direction), even though the review claims
+  // to have inspected the selected source. A spoofable inspection claim must NOT buy suppression.
+  const FLAG = [
+    "I could not inspect the upstream caller in routes.js, but the diff is internally consistent.",
+    "I was unable to inspect middleware/session.js, so its interaction is noted as a gap.",
+  ];
+  // Explicit out-of-scope marker -> the same gap is suppressed (clean). The marker is the contract.
+  const SUPPRESS = [
+    "I could not inspect routes.js, which is out of scope for this packet; the supplied diff was fully reviewed.",
+    "I could not inspect middleware/session.js, which is not part of this packet; the supplied diff was fully reviewed.",
   ];
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
-    for (const { selected, result } of cases) {
+    for (const gapLine of FLAG) {
       const manifest = targetBuildReviewAuditManifest({
         prompt: "rendered prompt",
-        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
-        result,
+        sourceFiles: [{ path: "cart.js", text: "export const value = 1;\n" }],
+        result: base(gapLine),
         status: "completed",
         errorCode: null,
       });
-      assert.equal(
-        manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"),
-        false,
-        `[${name}] not_reviewed should be absent for selected=${selected}`,
-      );
-      assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] failed_review_slot should be false for selected=${selected}`);
+      assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true, `[${name}] unmarked foreign-file gap must flag not_reviewed: ${gapLine}`);
+      assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] unmarked foreign-file gap must be failed_review_slot: ${gapLine}`);
+    }
+    for (const gapLine of SUPPRESS) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: "cart.js", text: "export const value = 1;\n" }],
+        result: base(gapLine),
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), false, `[${name}] explicitly out-of-scope gap must stay suppressed: ${gapLine}`);
+      assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] explicitly out-of-scope gap must be clean: ${gapLine}`);
     }
   }
 });
@@ -4134,7 +4130,7 @@ test("root2 detector2: not-reviewed verdict still flags not_reviewed", async () 
 });
 
 test("root2 detector2: generic selected-source denial still flags not_reviewed", async () => {
-  // mentionsSelectedSourceGeneric true -> foreign-path branch bails.
+  // Generic "selected source ... not inspected" denial with no explicit out-of-scope marker -> flags.
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
     const manifest = targetBuildReviewAuditManifest({
@@ -4155,7 +4151,7 @@ test("root2 detector2: generic selected-source denial still flags not_reviewed",
 });
 
 test("root2 detector2: self-referential could-not-inspect of the selected path still flags", async () => {
-  // mentionsSelectedSourcePath true -> foreign-path branch bails.
+  // A denial naming the selected path itself, with no explicit out-of-scope marker -> flags.
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
     const manifest = targetBuildReviewAuditManifest({
@@ -4176,8 +4172,7 @@ test("root2 detector2: self-referential could-not-inspect of the selected path s
 });
 
 test("root2 detector2: hyphenated pass-through prose with no file token still flags", async () => {
-  // No file token -> namesNonSelectedFileGapLine false -> foreign-path branch
-  // returns false -> the bare "could not inspect" substring fires not_reviewed.
+  // A bare "could not inspect" with no explicit out-of-scope marker fires not_reviewed.
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
     const manifest = targetBuildReviewAuditManifest({
@@ -4197,9 +4192,8 @@ test("root2 detector2: hyphenated pass-through prose with no file token still fl
 });
 
 test("root2 detector2: foreign-path gap WITHOUT proven selected-source inspection still flags", async () => {
-  // ADVERSARIAL GUARD REGRESSION: names only a foreign path, no generic token,
-  // and NEVER applies an inspection verb to the selected path -> selectedSourceInspected
-  // false -> Edit 2a's `if (!selectedSourceInspected) return false;` blocks suppression.
+  // ADVERSARIAL: a hand-wave APPROVE that names a foreign file and rests the approval on the commit
+  // message, with no explicit out-of-scope marker, must flag not_reviewed (conservative reverted path).
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
     const manifest = targetBuildReviewAuditManifest({
@@ -4432,86 +4426,6 @@ test("root2 detector3: long-but-realistic call loci still escape the shallow fla
   }
 });
 
-test("root2 detector2: multi-dot selected-source basename denial still flags not_reviewed (PR #237 comment 1)", async () => {
-  // Regression: NON_SELECTED_FILE_TOKEN_RE must tokenize multi-dot filenames whole. Otherwise a
-  // basename denial of a directory-prefixed multi-dot SELECTED source is mis-read as a foreign-file
-  // gap and wrongly suppressed, letting a genuine selected-source denial bypass not_reviewed. Both
-  // directions: the selected-source basename denial MUST flag; a genuine foreign multi-dot gap with
-  // proven selected inspection MUST stay suppressed (the safe direction is not over-corrected).
-  const FLAG = [
-    {
-      selected: "config/webpack.config.js",
-      result: [
-        "Verdict: APPROVE",
-        "Blocking findings",
-        "- None.",
-        "Non-blocking concerns",
-        "- The selected source config/webpack.config.js was fully inspected; the structure is valid.",
-        "- I could not inspect webpack.config.js override defaults, so that path is a gap.",
-        ROOT2_PAD,
-      ].join("\n"),
-    },
-    {
-      selected: "src/index.test.ts",
-      result: [
-        "Verdict: APPROVE",
-        "Blocking findings",
-        "- None.",
-        "Non-blocking concerns",
-        "- The selected source src/index.test.ts was fully inspected; the assertions are sound.",
-        "- I was unable to inspect index.test.ts fixtures, so that remains a gap.",
-        ROOT2_PAD,
-      ].join("\n"),
-    },
-  ];
-  const SUPPRESS = [
-    {
-      selected: "src/app.js",
-      result: [
-        "Verdict: APPROVE",
-        "Blocking findings",
-        "- None.",
-        "Non-blocking concerns",
-        "- The selected source src/app.js was fully inspected; the handler is correct.",
-        "- I could not inspect webpack.config.js, but the diff is internally consistent.",
-        ROOT2_PAD,
-      ].join("\n"),
-    },
-  ];
-  for (const [name, file] of REVIEW_PROMPT_MODULES) {
-    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
-    for (const { selected, result } of FLAG) {
-      const manifest = targetBuildReviewAuditManifest({
-        prompt: "rendered prompt",
-        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
-        result,
-        status: "completed",
-        errorCode: null,
-      });
-      assert.equal(
-        manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"),
-        true,
-        `[${name}] not_reviewed should be present for multi-dot selected=${selected}`,
-      );
-      assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true for multi-dot selected=${selected}`);
-    }
-    for (const { selected, result } of SUPPRESS) {
-      const manifest = targetBuildReviewAuditManifest({
-        prompt: "rendered prompt",
-        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
-        result,
-        status: "completed",
-        errorCode: null,
-      });
-      assert.equal(
-        manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"),
-        false,
-        `[${name}] a genuine foreign multi-dot gap must stay suppressed for selected=${selected}`,
-      );
-    }
-  }
-});
-
 test("root2 detector3: negation-bearing defect cues do not mis-flag concrete reviews as shallow (PR #237 comment 2)", async () => {
   // Regression: valid defect cues that contain negation words ("never called", "should not",
   // "does not free") must not trip CONCRETE_FINDING_NEGATION when they carry a real call locus.
@@ -4604,8 +4518,13 @@ test("root2 detector1: reviewer-process blocks (contraction/paraphrase/unicode) 
 
 test("root2 detector3: praise/confirmation reusing defect vocabulary flags shallow_output; real findings stay clean", async () => {
   // Reviewer/sweep-found false-negatives (decidable subset): "should not <defect-noun>",
-  // "<cue> as expected/promised", LGTM. Surface-undecidable residual ("throws sensibly",
-  // hedges) is tracked in #238 for Way-2 advisory disposition, not asserted here.
+  // "<cue> as expected/promised", LGTM, and the passive "should not be affected" family (F2, below).
+  // The positive-sentiment praise subclass ("throws sensibly", "drops cleanly", "throws a helpful
+  // error") is SURFACE-UNDECIDABLE — it is token-identical to a real finding ("cleanly drops the
+  // final page"), so a keyword classifier cannot separate them without flagging correct reviews;
+  // a 76-case adversarial sweep disproved the lexicon approach (14 FPs + unbounded synonym leaks).
+  // That subclass, and the off-lexicon dismissal tail ("harmless"/"benign"/"no real risk"), are
+  // tracked in #236/#238 for the Way-2 advisory-disposition redesign, not patched by enumeration.
   const FLAG = [
     "Verdict: APPROVE\nfoo() should not be a problem",
     "Verdict: APPROVE\nparseConfig() should not cause issues",
@@ -4632,6 +4551,49 @@ test("root2 detector3: praise/confirmation reusing defect vocabulary flags shall
     for (const result of CLEAN) {
       const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
       assert.equal(m.review_quality.looks_shallow, false, `[${name}] real finding must stay clean for: ${result}`);
+    }
+  }
+});
+
+// F2 + split-identity. The a5c2868 "behavior-identical" regex split silently dropped the passive
+// "should not be affected" dismissal alternative, so a hand-wave APPROVE passed as a concrete
+// finding (UNSAFE). This test pins the passive family AND enumerates a canonical phrase for every
+// pre-split DISMISSAL_SHOULD_NOT alternative, so a future split cannot silently narrow a dismissal
+// again (the root cause that let F2 ship). Each phrase co-locates a "should not" cue with a code
+// locus, so the dismissal regex is the load-bearing classifier.
+test("root2 detector3 F2: passive + every pre-split should-not dismissal flags shallow_output (split-identity)", async () => {
+  const SHOULD_NOT_CANON = [
+    // F2 passive reassurance (the dropped alternative + its impact-verb family)
+    "should not be affected",
+    "should not be impacted",
+    "should not be touched",
+    "should not be altered",
+    "should not be disturbed",
+    // pre-split copular reassurance
+    "should not be a problem",
+    "should not be an issue",
+    "should not be a concern",
+    "should not be a blocker",
+    "should not be a big deal",
+    // pre-split active branches
+    "should not cause problems",
+    "should not cause trouble",
+    "should not create problems",
+    "should not introduce a regression",
+    "should not regress",
+    "should not matter",
+    "should not break",
+    "should not hurt",
+    "should not harm",
+    "should not affect anything",
+    "should not affect the output",
+  ];
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
+    for (const tail of SHOULD_NOT_CANON) {
+      const result = `Verdict: APPROVE\nfoo() ${tail}`;
+      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
+      assert.equal(m.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] should-not dismissal must flag shallow_output: ${tail}`);
     }
   }
 });
