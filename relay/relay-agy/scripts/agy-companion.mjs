@@ -96,6 +96,12 @@ function errorSinkDisclosure() {
   return resolveErrorSinkDisclosure({ commandOmitsErrorDisclosure, sourceSentToTarget });
 }
 
+// Diagnostic commands (doctor / preflight) invoke AGY for readiness or run a local scope dry-run
+// only — they NEVER spawn the review target with the source packet, so their disclosure is a
+// structural constant, NOT the latch-aware error-sink decision (resolveErrorSinkDisclosure). One
+// home for that constant so the invariant ("this command transmits no source") cannot drift.
+const NON_TRANSMITTING_DISCLOSURE = Object.freeze({ source_content_transmission: "not_sent" });
+
 const ROUTE_CAPABILITIES = Object.freeze({
   source_packet: Object.freeze({
     max_bytes: AGY_SOURCE_PACKET_MAX_BYTES,
@@ -163,7 +169,7 @@ function doctor(rest) {
       ready: false,
       error_code: "not_found",
       error_message: result.error.message,
-      source_content_transmission: "not_sent",
+      ...NON_TRANSMITTING_DISCLOSURE,
     });
     process.exit(1);
   }
@@ -173,7 +179,7 @@ function doctor(rest) {
       ready: false,
       error_code: "not_ready",
       error_message: String(result.stderr ?? "").trim() || "agy models failed",
-      source_content_transmission: "not_sent",
+      ...NON_TRANSMITTING_DISCLOSURE,
     });
     process.exit(1);
   }
@@ -183,7 +189,7 @@ function doctor(rest) {
     ready: true,
     status: "ok",
     models,
-    source_content_transmission: "not_sent",
+    ...NON_TRANSMITTING_DISCLOSURE,
   });
 }
 
@@ -945,7 +951,6 @@ function cmdPreflight(rest) {
       target: "agy",
       mode: mode ?? null,
       cwd,
-      source_content_transmission: "not_sent",
       ...preflightSafetyFields(),
       disclosure_note: preflightDisclosure(PROVIDER_DISPLAY),
     });
@@ -987,7 +992,7 @@ function cmdPreflight(rest) {
       scope: profile.scope,
       scope_base: resolvedScopeBase,
       scope_paths: resolvedScopePaths,
-      source_content_transmission: "not_sent",
+      ...NON_TRANSMITTING_DISCLOSURE,
       ...summary,
       ...preflightSafetyFields(),
       disclosure_note: preflightDisclosure(PROVIDER_DISPLAY),
@@ -1006,7 +1011,7 @@ function cmdPreflight(rest) {
       scope: profile.scope,
       scope_base: resolvedScopeBase,
       scope_paths: resolvedScopePaths,
-      source_content_transmission: "not_sent",
+      ...NON_TRANSMITTING_DISCLOSURE,
       error,
       error_message: e.message,
       ...preflightSafetyFields(),
@@ -1030,7 +1035,7 @@ async function run(rest) {
   });
   const mode = options.mode;
   if (!["review", "adversarial-review", "custom-review"].includes(mode)) {
-    printJson({ target: "agy", status: "failed", error_code: "bad_mode", source_content_transmission: "not_sent" });
+    printJson({ target: "agy", status: "failed", error_code: "bad_mode", ...errorSinkDisclosure() });
     process.exit(1);
   }
   if (options.background) {
@@ -1504,11 +1509,13 @@ function fail(code, message, details = {}) {
     error_code: code,
     message,
     error_message: message,
+    ...details,
     // Honor whether the target already received the source (see sourceSentToTarget):
     // a post-spawn failure reaching this generic sink must not falsely report not_sent.
-    // Read/query commands omit the field entirely (errorSinkDisclosure, #240).
+    // Read/query commands omit the field entirely (errorSinkDisclosure, #240). Spread LAST so the
+    // latch-driven decision is authoritative — a stray source_content_transmission in details can
+    // never override it (never the dangerous under-warning direction).
     ...errorSinkDisclosure(),
-    ...details,
   });
   process.exit(1);
 }
