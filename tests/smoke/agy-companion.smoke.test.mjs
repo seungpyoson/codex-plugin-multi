@@ -1086,13 +1086,19 @@ function parseJsonStream(raw) {
   return objs;
 }
 
-// PR #218 round-2 HIGH (source-disclosure INVERSION): a git-binary policy rejection raised
-// by a POST-spawn workspace re-resolution — e.g. a mid-run .git boundary topology change
-// that moves the RELAY_GIT_BINARY override inside a new workspace boundary so the cached
-// resolveGitBinary key misses and re-validation throws — used to escape cmdRun to
-// main().catch -> fail(), which hard-coded source_content_transmission:"not_sent". That is
-// a FALSE disclosure: the source was already delivered to the target at execve. The
-// companion now latches "source sent" on spawn and discloses SENT for any post-spawn fail.
+// PR #218 round-2 HIGH (source-disclosure INVERSION) + round-3 (escape finalization):
+// a git-binary policy rejection raised by a POST-spawn workspace re-resolution — e.g. a
+// mid-run .git boundary topology change that moves the RELAY_GIT_BINARY override inside a
+// new workspace boundary so the cached resolveGitBinary key misses and re-validation throws.
+// Round-2: that throw used to escape run() to main().catch -> fail(), which hard-coded
+// source_content_transmission:"not_sent" — a FALSE disclosure (the source was already
+// delivered to the target at execve). Round-3: run() now catches the escape and finalizes a
+// terminal JobRecord through the SAME buildJobRecord path as an in-band post-run rejection,
+// so the foreground converges with the durable record instead of leaking the source-bearing
+// worktree or orphaning a queued record (see tests/unit/agy-run-git-policy-escape.test.mjs).
+// classifyExecution reclassifies the post-spawn git_binary_rejected (pidInfo present) to the
+// content-received agy_error catch-all; disclosure resolves SENT and the git-policy cause
+// stays in error_message. Pre-spawn (no pidInfo) still discloses NOT_SENT (next test).
 test("agy post-spawn git_binary_rejected (mid-run .git topology change) discloses SENT, not a false not_sent", () => {
   const realGit = resolveRealGit();
   assert.ok(realGit, "a real git binary must be resolvable for this test");
@@ -1132,7 +1138,11 @@ test("agy post-spawn git_binary_rejected (mid-run .git topology change) disclose
     try {
       assert.equal(existsSync(capturePath), true, "the mock AGY must have received the source prompt (proves the source was sent)");
       const terminal = parseJsonStream(stdout).at(-1);
-      assert.equal(terminal.error_code ?? terminal.external_review?.error_code, "git_binary_rejected");
+      assert.equal(terminal.status, "failed", "the post-spawn escape must finalize a terminal failed record, not orphan a queued one");
+      assert.equal(terminal.error_code ?? terminal.external_review?.error_code, "agy_error",
+        "classifyExecution reclassifies post-spawn git_binary_rejected (pidInfo present) to the content-received agy_error catch-all");
+      assert.ok(terminal.error_message && terminal.error_message.length > 0,
+        "the git-binary policy cause must remain visible in error_message after reclassification");
       const disclosure = terminal.source_content_transmission ?? terminal.external_review?.source_content_transmission;
       assert.equal(disclosure, "sent", "a post-spawn failure after the source was sent must disclose SENT, never not_sent");
     } finally {

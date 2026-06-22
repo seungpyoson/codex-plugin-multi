@@ -697,6 +697,31 @@ export function writeJobFile(cwd, jobId, payload) {
   return jobFile;
 }
 
+// Git-free durable write of a single job-record meta file to an ALREADY-RESOLVED
+// absolute path. Mirrors writeJobFile()'s atomic tmp+rename, but deliberately
+// skips resolveStateDir()/resolveWorkspaceRoot() (which re-invoke git to locate
+// the workspace root). The run() escape-finalizer uses this when a mid-run
+// git-binary policy change has made the workspace root unresolvable, so a
+// terminal record can still land at the path that was resolved while git was
+// healthy. reconcileActiveJobs() then heals state.json from this meta on the next
+// command. Path validation already happened when the caller resolved the path via
+// resolveJobFile() (assertSafeJobId), so this primitive trusts the absolute path.
+export function writeJobRecordToFile(jobFile, payload) {
+  if (typeof jobFile !== "string" || !jobFile) {
+    throw new Error("writeJobRecordToFile: jobFile must be a non-empty string");
+  }
+  fs.mkdirSync(path.dirname(jobFile), { recursive: true });
+  const tmpFile = `${jobFile}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    fs.renameSync(tmpFile, jobFile);
+  } catch (e) {
+    try { fs.unlinkSync(tmpFile); } catch { /* already gone */ }
+    throw e;
+  }
+  return jobFile;
+}
+
 export function readJobFile(jobFile) {
   // Accepts either the absolute path produced by resolveJobFile() or a
   // (cwd, jobId) pair via readJobFileById. For the raw-path form, we

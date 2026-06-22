@@ -51,6 +51,7 @@ import {
   resolveJobsDir,
   upsertJob,
   writeJobFile,
+  writeJobRecordToFile,
 } from "./lib/state.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
 import { populateScope } from "./lib/scope.mjs";
@@ -415,6 +416,27 @@ function gitIdentityForInvocation(invocation) {
   };
 }
 
+// gitIdentityForInvocation() that tolerates a wedged git binary. Used only by the
+// run() escape-finalizer, where a mid-run git-binary policy change is the reason
+// we are finalizing: re-resolving identity would throw the same policy error.
+// Returns an honest "unavailable" identity rather than fabricating commit metadata.
+// Non-policy errors still propagate (they are real bugs, not the degraded path).
+function tolerantGitIdentity(invocation) {
+  try {
+    return gitIdentityForInvocation(invocation);
+  } catch (error) {
+    if (!isGitBinaryPolicyError(error)) throw error;
+    return {
+      remote: null,
+      branch: "HEAD",
+      baseRef: invocation.scope_base ?? null,
+      baseCommit: null,
+      headRef: "HEAD",
+      headCommit: null,
+    };
+  }
+}
+
 function mutationDetectionFailure(error, context = null) {
   const stderr = String(error?.stderr ?? "").trim().split("\n").find(Boolean);
   const message = stderr ?? String(error?.message || error).split("\n").find(Boolean) ?? "unknown error";
@@ -636,12 +658,15 @@ function buildInvocation({
   };
 }
 
-function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, result, status, errorCode, pidInfo = null }) {
+function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, result, status, errorCode, pidInfo = null, gitIdentity = null }) {
   const sourceContentTransmission = sourceContentTransmissionForExecution({ status, errorCode, pidInfo });
   return buildReviewAuditManifest({
     prompt: promptText,
     sourceFiles: selectedFiles,
-    git: gitIdentityForInvocation(invocation),
+    // The escape-finalizer passes a precomputed (git-tolerant) identity because
+    // gitIdentityForInvocation() re-invokes git, which is the very thing that is
+    // wedged on that path. All other callers resolve identity inline as before.
+    git: gitIdentity ?? gitIdentityForInvocation(invocation),
     request: {
       provider: "agy",
       model: invocation.model,
@@ -739,9 +764,20 @@ function sourcePacketRuntimeDiagnosticsForManifest(manifest, base = null) {
   return Object.keys(diagnostics).length > 0 ? diagnostics : null;
 }
 
-function persistRecord(workspaceRoot, record) {
-  writeJobFile(workspaceRoot, record.job_id, record);
-  upsertJob(workspaceRoot, record);
+function persistRecord(workspaceRoot, record, { fallbackJobFile = null } = {}) {
+  try {
+    writeJobFile(workspaceRoot, record.job_id, record);
+    upsertJob(workspaceRoot, record);
+  } catch (error) {
+    // A mid-run git-binary policy change can make resolveWorkspaceRoot() throw,
+    // so writeJobFile()/upsertJob() can no longer locate this job's state dir.
+    // When the caller supplied a path resolved while git was healthy, land the
+    // terminal meta record there git-free; reconcileActiveJobs() heals state.json
+    // from it on the next command. Without a fallback (or for non-policy errors)
+    // the original failure still propagates.
+    if (!fallbackJobFile || !isGitBinaryPolicyError(error)) throw error;
+    writeJobRecordToFile(fallbackJobFile, record);
+  }
 }
 
 function executionForRecord({ status, pidInfo = null, parsed = null, exitCode = null, endedAt = null, reviewAuditManifest, selectedFiles }) {
@@ -1037,280 +1073,410 @@ async function run(rest) {
     source_packet_override_source: invocation.source_packet_override_source,
   });
   persistRecord(invocation.workspace_root, queuedRecord);
+  // Pre-resolve the durable job-record path while git is still healthy. A mid-run
+  // RELAY_GIT_BINARY topology change can make resolveWorkspaceRoot() throw a git
+  // policy error, after which resolveStateDir()/persistRecord() can no longer
+  // locate this job's state dir. Caching the path lets the escape-finalizer land a
+  // terminal record git-free instead of orphaning a stuck `queued` record.
+  let resolvedJobFile = null;
+  try {
+    resolvedJobFile = resolveJobFile(invocation.workspace_root, jobId);
+  } catch { /* entry-time git failure is surfaced by the guards below */ }
   let containment = null;
   let selectedFiles = [];
   let promptText;
+  // Hoisted so the escape-finalizer (the catch below) can read whatever progress
+  // the run made before a post-setup throw escaped.
+  let sidecarPrompt = null;
+  let mutationContext = null;
+  let execution = null;
+  // Single guaranteed finalization for the whole containment-holding body: any
+  // throw that escapes the inner handlers (e.g. a post-spawn git_binary_rejected
+  // from consumeCancelMarker / buildAuditManifest / persistRecord under a mid-run
+  // .git topology change) must still tear down the source-bearing worktree and
+  // converge the durable record + disclosure — never leak, never orphan.
   try {
-    containment = setupContainment(profile, cwd);
-    populateScope(profile, cwd, containment.path, {
-      scopeBase: invocation.scope_base,
-      scopePaths: invocation.scope_paths,
-      workspaceRoot,
-    }, containment);
-    selectedFiles = selectedFilesForPrompt({
-      cwd,
-      workspaceRoot,
-      scope,
-      scopeBase: invocation.scope_base,
-      scopePaths: invocation.scope_paths,
-      containmentPath: containment.path,
-    });
-    promptText = promptFor({
-      userPrompt,
-      selectedFiles,
-      mode,
-      cwd,
-      scope,
-      scopeBase: invocation.scope_base,
-      scopePaths: invocation.scope_paths,
-    });
-  } catch (error) {
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    persistAndPrintScopeFailure(invocation, lifecycleEvents, error);
-  }
-  let sidecarPrompt;
-  try {
-    writePromptSidecar(jobsDir(workspaceRoot), jobId, promptText);
-    sidecarPrompt = consumePromptSidecar(jobsDir(workspaceRoot), jobId) ?? promptText;
-  } catch (error) {
-    try { consumePromptSidecar(jobsDir(workspaceRoot), jobId); } catch { /* best-effort prompt sidecar cleanup */ }
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, "prompt_sidecar_failed", error, {
-      promptText,
-      selectedFiles,
-      timeoutMs,
-    });
-  }
-  let mutationContext;
-  try {
-    mutationContext = prepareMutationContext(invocation);
-  } catch (error) {
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, "git_binary_rejected", error, {
-      promptText: sidecarPrompt,
-      selectedFiles,
-      timeoutMs,
-    });
-  }
-
-  if (consumeCancelMarker(workspaceRoot, jobId)) {
-    const reviewAuditManifest = buildAuditManifest({
-      promptText: sidecarPrompt,
-      selectedFiles,
-      timeoutMs,
-      invocation,
-      result: "",
-      status: "cancelled",
-      errorCode: null,
-      pidInfo: null,
-    });
-    const cancelledRecord = buildJobRecord(
-      invocation,
-      executionForRecord({
-        status: "cancelled",
-        pidInfo: null,
-        parsed: null,
-        exitCode: null,
-        endedAt: new Date().toISOString(),
-        reviewAuditManifest,
+    try {
+      containment = setupContainment(profile, cwd);
+      populateScope(profile, cwd, containment.path, {
+        scopeBase: invocation.scope_base,
+        scopePaths: invocation.scope_paths,
+        workspaceRoot,
+      }, containment);
+      selectedFiles = selectedFilesForPrompt({
+        cwd,
+        workspaceRoot,
+        scope,
+        scopeBase: invocation.scope_base,
+        scopePaths: invocation.scope_paths,
+        containmentPath: containment.path,
+      });
+      promptText = promptFor({
+        userPrompt,
         selectedFiles,
-      }),
-      mutationContext.mutations,
-    );
-    persistRecord(invocation.workspace_root, cancelledRecord);
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    printLifecycleJson(cancelledRecord, lifecycleEvents);
-    process.exit(0);
-  }
-
-  const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, sidecarPrompt, containment.path);
-  if (sourcePacketPreflight) {
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    const errorRecord = buildJobRecord(invocation, {
-      exitCode: sourcePacketPreflight.exitCode,
-      endedAt: sourcePacketPreflight.endedAt,
-      parsed: sourcePacketPreflight.parsed,
-      pidInfo: null,
-      agySessionId: null,
-      errorMessage: sourcePacketPreflight.errorMessage,
-      reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
-      runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
-      ...redactionFieldsForPrompt(sidecarPrompt),
-    }, mutationContext.mutations);
-    persistRecord(invocation.workspace_root, errorRecord);
-    printLifecycleJson(errorRecord, lifecycleEvents);
-    process.exit(2);
-  }
-
-  const readinessFailure = agyReadinessPreflight({
-    binary,
-    model: options.model ?? null,
-  });
-  if (readinessFailure) {
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, readinessFailure.code, readinessFailure.error, {
-      promptText: sidecarPrompt,
-      selectedFiles,
-      timeoutMs,
-    });
-  }
-  printLifecycleJson(
-    externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation, null)),
-    lifecycleEvents,
-  );
-
-  let execution;
-  try {
-    execution = await spawnAgy(
-      profile,
-      {
-        binary,
-        cwd: containment.path,
-        env: process.env,
-        includeDirPath: containment.path,
-        model: options.model ?? null,
-        promptText: sidecarPrompt,
+        mode,
+        cwd,
+        scope,
+        scopeBase: invocation.scope_base,
+        scopePaths: invocation.scope_paths,
+      });
+    } catch (error) {
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      persistAndPrintScopeFailure(invocation, lifecycleEvents, error);
+    }
+    try {
+      writePromptSidecar(jobsDir(workspaceRoot), jobId, promptText);
+      sidecarPrompt = consumePromptSidecar(jobsDir(workspaceRoot), jobId) ?? promptText;
+    } catch (error) {
+      try { consumePromptSidecar(jobsDir(workspaceRoot), jobId); } catch { /* best-effort prompt sidecar cleanup */ }
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, "prompt_sidecar_failed", error, {
+        promptText,
+        selectedFiles,
         timeoutMs,
-        onSpawn: (pidInfo) => {
-          // The target has spawned: the source packet is now delivered via --print argv.
-          // Latch SENT for the top-level error sinks (see sourceSentToTarget).
-          sourceSentToTarget = true;
-          writeRunningRecord(invocation, pidInfo, mutationContext.mutations, {
-            promptText: sidecarPrompt,
-            selectedFiles,
-            timeoutMs,
-          });
-        },
-      },
-    );
-  } catch (error) {
-    execution = {
-      exitCode: null,
-      signal: null,
-      timedOut: false,
-      endedAt: new Date().toISOString(),
-      stdout: "",
-      stderr: "",
-      agySessionId: null,
-      pidInfo: null,
-      parsed: { ok: false, reason: "spawn_failed", error: error.message, result: null },
-      errorMessage: error.message,
-      retryCount: 0,
-    };
-  }
-  const cancelRequested = consumeCancelMarker(invocation.workspace_root, invocation.job_id);
-  if (cancelRequested) {
-    const reviewAuditManifest = buildAuditManifest({
-      promptText: sidecarPrompt,
-      selectedFiles,
-      timeoutMs,
-      invocation,
-      result: "",
-      status: "cancelled",
-      errorCode: null,
-    });
-    const cancelledRecord = buildJobRecord(
-      invocation,
-      executionForRecord({
-        status: "cancelled",
-        pidInfo: execution.pidInfo ?? null,
-        parsed: null,
-        exitCode: execution.exitCode ?? null,
-        endedAt: execution.endedAt ?? new Date().toISOString(),
-        reviewAuditManifest,
+      });
+    }
+    try {
+      mutationContext = prepareMutationContext(invocation);
+    } catch (error) {
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, "git_binary_rejected", error, {
+        promptText: sidecarPrompt,
         selectedFiles,
-      }),
-      mutationContext.mutations,
+        timeoutMs,
+      });
+    }
+
+    if (consumeCancelMarker(workspaceRoot, jobId)) {
+      const reviewAuditManifest = buildAuditManifest({
+        promptText: sidecarPrompt,
+        selectedFiles,
+        timeoutMs,
+        invocation,
+        result: "",
+        status: "cancelled",
+        errorCode: null,
+        pidInfo: null,
+      });
+      const cancelledRecord = buildJobRecord(
+        invocation,
+        executionForRecord({
+          status: "cancelled",
+          pidInfo: null,
+          parsed: null,
+          exitCode: null,
+          endedAt: new Date().toISOString(),
+          reviewAuditManifest,
+          selectedFiles,
+        }),
+        mutationContext.mutations,
+      );
+      persistRecord(invocation.workspace_root, cancelledRecord);
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      printLifecycleJson(cancelledRecord, lifecycleEvents);
+      process.exit(0);
+    }
+
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, sidecarPrompt, containment.path);
+    if (sourcePacketPreflight) {
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: sourcePacketPreflight.exitCode,
+        endedAt: sourcePacketPreflight.endedAt,
+        parsed: sourcePacketPreflight.parsed,
+        pidInfo: null,
+        agySessionId: null,
+        errorMessage: sourcePacketPreflight.errorMessage,
+        reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
+        ...redactionFieldsForPrompt(sidecarPrompt),
+      }, mutationContext.mutations);
+      persistRecord(invocation.workspace_root, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
+
+    const readinessFailure = agyReadinessPreflight({
+      binary,
+      model: options.model ?? null,
+    });
+    if (readinessFailure) {
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, readinessFailure.code, readinessFailure.error, {
+        promptText: sidecarPrompt,
+        selectedFiles,
+        timeoutMs,
+      });
+    }
+    printLifecycleJson(
+      externalReviewLaunchedEvent(invocation, externalReviewForInvocation(invocation, null)),
+      lifecycleEvents,
     );
-    persistRecord(invocation.workspace_root, cancelledRecord);
-    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-    printLifecycleJson(cancelledRecord, lifecycleEvents);
-    process.exit(0);
-  }
-  const preliminarilyCompleted = execution.parsed.ok
-    && execution.exitCode === 0
-    && hasSubstantiveReview(execution.parsed.result ?? "");
-  let parsed = preliminarilyCompleted
-    ? execution.parsed
-    : {
-      ...execution.parsed,
-      ok: false,
-      reason: execution.parsed.reason ?? "review_not_completed",
-      error: execution.parsed.error ?? "AGY did not produce a substantive review verdict",
-      result: null,
-    };
-  let recordStatus = preliminarilyCompleted ? "completed" : "failed";
-  let recordErrorCode = preliminarilyCompleted ? null : (parsed.reason ?? execution.parsed.reason ?? "review_not_completed");
-  let reviewAuditManifest = buildAuditManifest({
-    promptText: sidecarPrompt,
-    selectedFiles,
-    timeoutMs,
-    invocation,
-    result: preliminarilyCompleted ? (parsed.result ?? "") : "",
-    status: recordStatus,
-    errorCode: recordErrorCode,
-    pidInfo: execution.pidInfo ?? null,
-  });
-  let postRunPolicyError = null;
-  try {
-    recordPostRunMutations(invocation, mutationContext);
-  } catch (error) {
-    if (isGitBinaryPolicyError(error)) {
-      postRunPolicyError = error;
-      parsed = {
-        ...parsed,
+
+    try {
+      execution = await spawnAgy(
+        profile,
+        {
+          binary,
+          cwd: containment.path,
+          env: process.env,
+          includeDirPath: containment.path,
+          model: options.model ?? null,
+          promptText: sidecarPrompt,
+          timeoutMs,
+          onSpawn: (pidInfo) => {
+            // The target has spawned: the source packet is now delivered via --print argv.
+            // Latch SENT for the top-level error sinks (see sourceSentToTarget).
+            sourceSentToTarget = true;
+            writeRunningRecord(invocation, pidInfo, mutationContext.mutations, {
+              promptText: sidecarPrompt,
+              selectedFiles,
+              timeoutMs,
+            });
+          },
+        },
+      );
+    } catch (error) {
+      execution = {
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        endedAt: new Date().toISOString(),
+        stdout: "",
+        stderr: "",
+        agySessionId: null,
+        pidInfo: null,
+        parsed: { ok: false, reason: "spawn_failed", error: error.message, result: null },
+        errorMessage: error.message,
+        retryCount: 0,
+      };
+    }
+    const cancelRequested = consumeCancelMarker(invocation.workspace_root, invocation.job_id);
+    if (cancelRequested) {
+      const reviewAuditManifest = buildAuditManifest({
+        promptText: sidecarPrompt,
+        selectedFiles,
+        timeoutMs,
+        invocation,
+        result: "",
+        status: "cancelled",
+        errorCode: null,
+      });
+      const cancelledRecord = buildJobRecord(
+        invocation,
+        executionForRecord({
+          status: "cancelled",
+          pidInfo: execution.pidInfo ?? null,
+          parsed: null,
+          exitCode: execution.exitCode ?? null,
+          endedAt: execution.endedAt ?? new Date().toISOString(),
+          reviewAuditManifest,
+          selectedFiles,
+        }),
+        mutationContext.mutations,
+      );
+      persistRecord(invocation.workspace_root, cancelledRecord);
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      printLifecycleJson(cancelledRecord, lifecycleEvents);
+      process.exit(0);
+    }
+    const preliminarilyCompleted = execution.parsed.ok
+      && execution.exitCode === 0
+      && hasSubstantiveReview(execution.parsed.result ?? "");
+    let parsed = preliminarilyCompleted
+      ? execution.parsed
+      : {
+        ...execution.parsed,
         ok: false,
-        reason: "git_binary_rejected",
-        error: error?.message ?? String(error),
+        reason: execution.parsed.reason ?? "review_not_completed",
+        error: execution.parsed.error ?? "AGY did not produce a substantive review verdict",
         result: null,
       };
-      recordStatus = "failed";
-      recordErrorCode = "git_binary_rejected";
-    } else {
-      mutationContext.mutations.push(mutationDetectionFailure(error));
-    }
-  }
-  reviewAuditManifest = withMutationReviewFailure(reviewAuditManifest, mutationContext.mutations);
-  const reviewCompleted = !postRunPolicyError
-    && preliminarilyCompleted
-    && reviewAuditManifest.review_quality?.failed_review_slot !== true;
-  if (!reviewCompleted) {
-    parsed = {
-      ...parsed,
-      ok: false,
-      reason: parsed.reason ?? "review_not_completed",
-      error: parsed.error ?? "AGY did not produce a usable review under the shared review-quality contract",
-      result: null,
-    };
-    recordStatus = "failed";
-    recordErrorCode = parsed.reason ?? "review_not_completed";
-    reviewAuditManifest = buildAuditManifest({
+    let recordStatus = preliminarilyCompleted ? "completed" : "failed";
+    let recordErrorCode = preliminarilyCompleted ? null : (parsed.reason ?? execution.parsed.reason ?? "review_not_completed");
+    let reviewAuditManifest = buildAuditManifest({
       promptText: sidecarPrompt,
       selectedFiles,
       timeoutMs,
       invocation,
-      result: "",
+      result: preliminarilyCompleted ? (parsed.result ?? "") : "",
       status: recordStatus,
       errorCode: recordErrorCode,
       pidInfo: execution.pidInfo ?? null,
     });
+    let postRunPolicyError = null;
+    try {
+      recordPostRunMutations(invocation, mutationContext);
+    } catch (error) {
+      if (isGitBinaryPolicyError(error)) {
+        postRunPolicyError = error;
+        parsed = {
+          ...parsed,
+          ok: false,
+          reason: "git_binary_rejected",
+          error: error?.message ?? String(error),
+          result: null,
+        };
+        recordStatus = "failed";
+        recordErrorCode = "git_binary_rejected";
+      } else {
+        mutationContext.mutations.push(mutationDetectionFailure(error));
+      }
+    }
     reviewAuditManifest = withMutationReviewFailure(reviewAuditManifest, mutationContext.mutations);
-  }
-  const record = buildJobRecord(invocation, {
-    ...execution,
-    parsed,
-    reviewAuditManifest,
-    runtimeDiagnostics: sourcePacketRuntimeDiagnosticsForManifest(
+    const reviewCompleted = !postRunPolicyError
+      && preliminarilyCompleted
+      && reviewAuditManifest.review_quality?.failed_review_slot !== true;
+    if (!reviewCompleted) {
+      parsed = {
+        ...parsed,
+        ok: false,
+        reason: parsed.reason ?? "review_not_completed",
+        error: parsed.error ?? "AGY did not produce a usable review under the shared review-quality contract",
+        result: null,
+      };
+      recordStatus = "failed";
+      recordErrorCode = parsed.reason ?? "review_not_completed";
+      reviewAuditManifest = buildAuditManifest({
+        promptText: sidecarPrompt,
+        selectedFiles,
+        timeoutMs,
+        invocation,
+        result: "",
+        status: recordStatus,
+        errorCode: recordErrorCode,
+        pidInfo: execution.pidInfo ?? null,
+      });
+      reviewAuditManifest = withMutationReviewFailure(reviewAuditManifest, mutationContext.mutations);
+    }
+    const record = buildJobRecord(invocation, {
+      ...execution,
+      parsed,
       reviewAuditManifest,
-      execution.runtimeDiagnostics ?? null,
-    ),
-    sourceFilesForRedaction: sourceFilesForRedaction(selectedFiles),
-    sourceRedactionRequired: true,
-  }, mutationContext.mutations);
-  persistRecord(invocation.workspace_root, record);
-  if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
-  printLifecycleJson(record, lifecycleEvents);
-  process.exit(record.status === "completed" ? 0 : 1);
+      runtimeDiagnostics: sourcePacketRuntimeDiagnosticsForManifest(
+        reviewAuditManifest,
+        execution.runtimeDiagnostics ?? null,
+      ),
+      sourceFilesForRedaction: sourceFilesForRedaction(selectedFiles),
+      sourceRedactionRequired: true,
+    }, mutationContext.mutations);
+    persistRecord(invocation.workspace_root, record);
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    printLifecycleJson(record, lifecycleEvents);
+    process.exit(record.status === "completed" ? 0 : 1);
+  } catch (escapeError) {
+    // Guaranteed teardown: a source-bearing containment worktree must never leak
+    // into os.tmpdir, no matter where the body threw. cleanup() is best-effort and
+    // idempotent (a path an inner handler already removed just ENOENTs here).
+    if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+    // The confirmed escape class: a mid-run RELAY_GIT_BINARY topology change makes a
+    // post-setup git call (consumeCancelMarker / buildAuditManifest / persistRecord)
+    // throw git_binary_rejected straight out of run(). Finalize a terminal record
+    // git-free so the job converges to failed instead of orphaning as queued; the
+    // pidInfo-aware classifier discloses SENT post-spawn, NOT_SENT pre-spawn.
+    if (isGitBinaryPolicyError(escapeError)) {
+      finalizeRunGitPolicyEscape({
+        escapeError,
+        invocation,
+        lifecycleEvents,
+        execution,
+        sidecarPrompt,
+        selectedFiles,
+        timeoutMs,
+        mutations: mutationContext?.mutations ?? [],
+        resolvedJobFile,
+      });
+      return;
+    }
+    // Non-policy escapes are real bugs: let main().catch surface them, but only
+    // after the worktree above has been reclaimed.
+    throw escapeError;
+  }
+}
+
+// Escape-path finalizer for a mid-run git-binary policy rejection thrown out of
+// run()'s body. The normal terminal-record machinery re-invokes git (via
+// resolveWorkspaceRoot in persistRecord and gitIdentityForInvocation in
+// buildAuditManifest) — exactly what is wedged here — so this path lands the
+// record at the pre-resolved job file (git-free) and supplies a git-tolerant
+// identity. Disclosure is NOT hand-computed: the record carries parsed.reason
+// "git_binary_rejected" plus the captured pidInfo, so the shared classifyExecution()
+// applies the same structural invariant as the in-band post-run rejection —
+// target spawned (pidInfo present) ⇒ SENT, pre-spawn ⇒ NOT_SENT.
+function finalizeRunGitPolicyEscape({
+  escapeError,
+  invocation,
+  lifecycleEvents,
+  execution,
+  sidecarPrompt,
+  selectedFiles,
+  timeoutMs,
+  mutations,
+  resolvedJobFile,
+}) {
+  const message = escapeError?.message ?? String(escapeError);
+  const pidInfo = execution?.pidInfo ?? null;
+  try {
+    const reviewAuditManifest = buildAuditManifest({
+      promptText: sidecarPrompt,
+      selectedFiles,
+      timeoutMs,
+      invocation,
+      result: "",
+      status: "failed",
+      errorCode: "git_binary_rejected",
+      pidInfo,
+      // The wedged binary is why we are finalizing; resolving identity inline
+      // would re-throw the same policy error. buildJobRecord re-derives the
+      // manifest's disclosure from the classified code, so SENT/NOT_SENT stays
+      // governed by pidInfo, not by this placeholder errorCode.
+      gitIdentity: tolerantGitIdentity(invocation),
+    });
+    // Build the terminal record the SAME way the in-band post-run git rejection does when
+    // the target spawned: spread the real execution so runtime_diagnostics
+    // (source_packet_policy) and raw_output byte counts are preserved, not dropped — full
+    // record-level parity with the in-band path, not just status/error_code/disclosure.
+    // Pre-spawn (no execution) mirrors persistAndPrintPreSpawnFailure's synthetic
+    // executionForRecord (no runtime diagnostics — there was no execution). Either way the
+    // shared classifyExecution governs disclosure (pidInfo present ⇒ SENT, else NOT_SENT).
+    const recordExecution = execution
+      ? {
+        ...execution,
+        parsed: {
+          ...execution.parsed,
+          ok: false,
+          reason: "git_binary_rejected",
+          error: message,
+          result: null,
+        },
+        reviewAuditManifest,
+        runtimeDiagnostics: sourcePacketRuntimeDiagnosticsForManifest(
+          reviewAuditManifest,
+          execution.runtimeDiagnostics ?? null,
+        ),
+        sourceFilesForRedaction: sourceFilesForRedaction(selectedFiles),
+        sourceRedactionRequired: true,
+      }
+      : executionForRecord({
+        status: "failed",
+        pidInfo: null,
+        parsed: { ok: false, reason: "git_binary_rejected", error: message, result: null },
+        exitCode: null,
+        endedAt: new Date().toISOString(),
+        reviewAuditManifest,
+        selectedFiles,
+      });
+    const record = buildJobRecord(invocation, recordExecution, mutations);
+    persistRecord(invocation.workspace_root, record, { fallbackJobFile: resolvedJobFile });
+    printLifecycleJson(record, lifecycleEvents);
+    process.exit(1);
+  } catch {
+    // Doubly degraded: even the git-free terminal write failed (e.g. the resolved
+    // job dir is gone). Emit an honest minimal failure envelope so the caller never
+    // hangs or sees a phantom success. fail() discloses via the sourceSentToTarget
+    // latch, and the containment worktree was already reclaimed by run()'s catch.
+    fail("git_binary_rejected", message, { target: "agy" });
+  }
 }
 
 function fail(code, message, details = {}) {
