@@ -29,7 +29,7 @@ import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { verifyPidInfo } from "./lib/identity.mjs";
-import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
+import { buildJobRecord, externalReviewForInvocation, resolveErrorSinkDisclosure } from "./lib/job-record.mjs";
 import { sourceContentTransmissionForExecution } from "./lib/external-review.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import {
@@ -87,14 +87,13 @@ let sourceSentToTarget = false;
 const DISCLOSURE_OMITTING_COMMANDS = new Set(["status", "result", "cancel"]);
 let commandOmitsErrorDisclosure = false;
 
-// Disclosure field for the top-level error sinks (fail / main().catch). Omitted only for the
-// read/query commands above; the latch overrides so a genuinely-sent source is ALWAYS disclosed
-// (never the dangerous under-warning direction).
+// Disclosure field for the top-level error sinks (fail / main().catch). The decision (and its
+// full truth table / rationale) is the single-source resolveErrorSinkDisclosure in lib/job-record.mjs,
+// beside classifyExecution; this just feeds it the two runtime flags so the fail() and main().catch
+// sinks cannot drift. Read/query commands omit; the latch overrides so a genuinely-sent source is
+// ALWAYS disclosed (never the dangerous under-warning direction).
 function errorSinkDisclosure() {
-  if (commandOmitsErrorDisclosure && !sourceSentToTarget) {
-    return {};
-  }
-  return { source_content_transmission: sourceSentToTarget ? "sent" : "not_sent" };
+  return resolveErrorSinkDisclosure({ commandOmitsErrorDisclosure, sourceSentToTarget });
 }
 
 const ROUTE_CAPABILITIES = Object.freeze({
