@@ -28,6 +28,7 @@ import {
 import * as providerRoutePolicy from "../../scripts/lib/provider-route-policy.mjs";
 import { REVIEW_PROMPT_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
 import { buildReviewAuditManifest } from "../../scripts/lib/review-prompt.mjs";
+import { PRE_TARGET_NOT_SENT_ERROR_CODES } from "../../scripts/lib/external-review.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -2147,4 +2148,86 @@ test("kimi source-bearing route facts are derived from mode classification", () 
     source,
     /\.\.\.subscriptionRouteFacts\(\{\s*sourceBearing:\s*modeSendsSelectedSource\(priorModeName\)\s*\}\)/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Task 5 (#234 §7): resend-guard regression — pin HEAD behaviour so a future
+// change cannot silently auto-resend a not-sent (admission-blocked) attempt, nor
+// over-relax a genuinely-sent post-transmission failure. Drives the public
+// evaluateSourcePacketPolicy entrypoint (the composed path), not private helpers.
+// The sent-fact must win first: not_sent ⇒ no gate, even when status:"failed".
+// ---------------------------------------------------------------------------
+
+const RESEND_GUARD_BASE_INPUT = Object.freeze({
+  provider: "kimi",
+  mode: "custom-review",
+  routeStep: "subscription",
+  providerCapabilities: Object.freeze({ subscription: { source_packet: { max_bytes: 64 } } }),
+  selectedSource: selectedSourceFixture(8),
+  sourceBearing: true,
+});
+
+test("admission-blocked retry never requires resend — every PRE_TARGET_NOT_SENT code stays not_sent (§7)", () => {
+  // provider_workload_blocked (the #234 admission block) must be in the swept set, or the
+  // regression has no teeth — this is the exact code a concurrency block produces.
+  assert.ok(
+    PRE_TARGET_NOT_SENT_ERROR_CODES.has("provider_workload_blocked"),
+    "provider_workload_blocked must be a pre-target not-sent code",
+  );
+  for (const code of PRE_TARGET_NOT_SENT_ERROR_CODES) {
+    const previousAttempt = {
+      status: "failed",
+      error_code: code,
+      source_content_transmission: "not_sent",
+      selected_source: selectedSourceFixture(8),
+    };
+    const result = evaluateSourcePacketPolicy({ ...RESEND_GUARD_BASE_INPUT, previousAttempt });
+    // The source was never sent, so the sent-fact gate cannot fire — regardless of error code
+    // or status:"failed". A retry of the SAME packet is allowed without confirmation.
+    assert.equal(result.resend_confirmation_required, false, `code ${code} must not require resend`);
+    assert.notEqual(result.source_packet_action, "resend_confirmation_required", `code ${code} must not gate`);
+    assert.equal(result.source_send_allowed, true, `code ${code} must allow the retry to send`);
+  }
+});
+
+test("a genuinely-sent post-transmission failure STILL requires resend — no over-relaxation (§7)", () => {
+  // Representative SOURCE_SEND_BLOCKING_FAILURES (module-private in provider-route-policy.mjs):
+  // post-send failures that MUST keep gating after the not_sent relaxation, under both the
+  // definitely-sent and ambiguous (may_be_sent) transmission states.
+  for (const code of ["timeout", "usage_limited", "review_not_completed", "review_quality_failed", "invalid_verdict", "model_capacity"]) {
+    for (const transmission of ["sent", "may_be_sent"]) {
+      const previousAttempt = {
+        error_code: code,
+        source_content_transmission: transmission,
+        selected_source: selectedSourceFixture(8),
+      };
+      const result = evaluateSourcePacketPolicy({ ...RESEND_GUARD_BASE_INPUT, previousAttempt });
+      assert.equal(result.resend_confirmation_required, true, `sent ${code}/${transmission} must require resend`);
+      assert.equal(result.source_packet_action, "resend_confirmation_required", `sent ${code}/${transmission} must gate`);
+      assert.equal(result.source_send_allowed, false, `sent ${code}/${transmission} must block auto-send`);
+    }
+  }
+  // The generic status:"failed" path (any failure) with a sent packet also gates.
+  const statusFailed = evaluateSourcePacketPolicy({
+    ...RESEND_GUARD_BASE_INPUT,
+    previousAttempt: { status: "failed", source_content_transmission: "sent", selected_source: selectedSourceFixture(8) },
+  });
+  assert.equal(statusFailed.resend_confirmation_required, true);
+});
+
+test("record disagreement (source_sent:true + not_sent) gates conservatively, never silently sends (§7)", () => {
+  // A record whose explicit source_sent flag contradicts its not_sent transmission must resolve
+  // toward "was sent" (gate), never fall through to a plain auto-send.
+  const result = evaluateSourcePacketPolicy({
+    ...RESEND_GUARD_BASE_INPUT,
+    previousAttempt: {
+      status: "failed",
+      source_sent: true,
+      source_content_transmission: "not_sent",
+      selected_source: selectedSourceFixture(8),
+    },
+  });
+  assert.equal(result.resend_confirmation_required, true, "disagreement must gate, not silently send");
+  assert.equal(result.source_packet_action, "resend_confirmation_required");
+  assert.equal(result.source_send_allowed, false);
 });
