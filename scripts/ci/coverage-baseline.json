@@ -191,9 +191,9 @@
       "functions": 100
     },
     "plugins/claude/scripts/lib/identity.mjs": {
-      "lines": 48.45,
-      "branches": 55.56,
-      "functions": 83.33
+      "lines": 96.61,
+      "branches": 86.67,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/job-record.mjs": {
       "lines": 90,
@@ -351,9 +351,9 @@
       "functions": 100
     },
     "plugins/gemini/scripts/lib/identity.mjs": {
-      "lines": 25.77,
-      "branches": 0,
-      "functions": 83.33
+      "lines": 96.61,
+      "branches": 86.67,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/job-record.mjs": {
       "lines": 82.76,
@@ -596,9 +596,9 @@
       "functions": 100
     },
     "plugins/kimi/scripts/lib/identity.mjs": {
-      "lines": 59.32,
-      "branches": 80,
-      "functions": 60
+      "lines": 96.61,
+      "branches": 86.67,
+      "functions": 100
     },
     "plugins/kimi/scripts/lib/job-record.mjs": {
       "lines": 44.97,

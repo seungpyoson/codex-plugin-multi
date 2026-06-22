@@ -210,6 +210,13 @@ const VERBATIM_FILES = [
   "external-review.mjs",
   "time.mjs",
   "usage-limit.mjs",
+  // identity.mjs is now a thin re-export shim (capturePidInfo lives in the
+  // shared process-identity.mjs); newJobId/attachPidCapture/verifyPidInfo carry
+  // no provider-specific logic, so all three companions must stay byte-identical.
+  // Guarded across the full companion set (claude/gemini/kimi) — previously this
+  // file was only guarded across claude/gemini, which let Task 1 (#234) diverge
+  // the kimi copy undetected.
+  "identity.mjs",
 ];
 
 const CLAUDE_GEMINI_VERBATIM_FILES = [
@@ -217,7 +224,6 @@ const CLAUDE_GEMINI_VERBATIM_FILES = [
   "provider-env.mjs",
   "reconcile.mjs",
   "git-env.mjs",
-  "identity.mjs",
 ];
 
 test("lib/companion-common.mjs: plugin packaging copies match the canonical shared source", () => {
