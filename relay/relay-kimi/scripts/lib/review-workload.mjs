@@ -285,7 +285,12 @@ function enumerateSlotFiles(root, slug) {
   return slots;
 }
 
-function inspectSlot(slot, env) {
+// `capture` is an optional liveness-capture seam threaded through from
+// acquireProviderWorkloadLease. In production it is undefined, so classifyHolder falls back
+// to its default (capturePidInfo) — zero behavior change. Tests inject a capture that throws
+// `capture_error` to drive a holder deterministically down the `unverifiable` branch on every
+// platform (an invalid pid would classify as `dead`, never exercising the boot-id reclaim).
+function inspectSlot(slot, env, capture) {
   const state = readHolderState(slot.file);
   if (!state.present) return { occupied: false, reclaimed: false };
   const holder = state.holder;
@@ -293,7 +298,7 @@ function inspectSlot(slot, env) {
     return { occupied: true, reclaimed: false };
   }
 
-  const classification = classifyHolder(holder, env);
+  const classification = classifyHolder(holder, env, capture);
   if (classification === "dead") {
     return { occupied: !removeInactiveHolder(slot.file, holder), reclaimed: true };
   }
@@ -324,6 +329,7 @@ export function acquireProviderWorkloadLease({
   cwd = process.cwd(),
   sourceBearing = true,
   env = process.env,
+  capture,
 } = {}) {
   if (sourceBearing !== true) return Object.freeze({ ok: true, lease: null });
 
@@ -379,7 +385,7 @@ export function acquireProviderWorkloadLease({
       let activeCount = 0;
       const occupiedIndices = new Set();
       for (const slot of slots) {
-        const result = inspectSlot(slot, env);
+        const result = inspectSlot(slot, env, capture);
         if (!result.occupied) continue;
         activeCount += 1;
         occupiedIndices.add(slot.index);
