@@ -41,8 +41,9 @@
 
 import { execFileSync } from "node:child_process";
 import {
-  mkdirSync, copyFileSync, chmodSync,
+  mkdirSync, chmodSync,
   statSync, lstatSync, realpathSync, unlinkSync, openSync, closeSync,
+  fstatSync, readSync, writeSync, renameSync, constants,
   readdirSync, rmSync,
 } from "node:fs";
 import path from "node:path";
@@ -53,6 +54,8 @@ import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./git-binary.m
 
 const VALID_SCOPES = new Set(["working-tree", "staged", "branch-diff", "head", "custom"]);
 const MAX_GIT_SYMLINK_HOPS = 40;
+const AGY_MAX_LIVE_FILE_BYTES = 8 * 1024 * 1024;
+const COPY_BUFFER_BYTES = 64 * 1024;
 const OBJECT_PURE_GIT_CONFIG = [
   "--no-replace-objects",
   "-c", "core.fsmonitor=false",
@@ -132,6 +135,10 @@ function scopePopulationFailed(message) {
   throw new Error(`scope_population_failed: ${message}`);
 }
 
+function scopeFileTooLarge(rel, size, maxBytes = AGY_MAX_LIVE_FILE_BYTES) {
+  throw new Error(`scope_file_too_large: ${rel} is ${size} bytes; max ${maxBytes}`);
+}
+
 function scopeEmpty(message) {
   throw new Error(`scope_empty: ${message}`);
 }
@@ -169,6 +176,78 @@ function chmodGitMode(dst, mode) {
     else scopePopulationFailed(`unsupported git file mode ${mode} for ${dst}`);
   } catch (err) {
     scopePopulationFailed(`cannot chmod git file ${dst}: ${err.message}`);
+  }
+}
+
+function liveFileOpenFlags() {
+  return constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+}
+
+function writeAllSync(fd, buffer, offset, length) {
+  let written = 0;
+  while (written < length) {
+    written += writeSync(fd, buffer, offset + written, length - written);
+  }
+}
+
+function copyFileDescriptorToPath(inputFd, dst, rel, sourceMode) {
+  const tmpFile = `${dst}.${process.pid}.${Date.now()}.tmp`;
+  let outputFd = null;
+  let renamed = false;
+  try {
+    outputFd = openSync(tmpFile, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_EXCL, sourceMode & 0o777);
+    const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
+    while (true) {
+      const bytesRead = readSync(inputFd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      writeAllSync(outputFd, buffer, 0, bytesRead);
+    }
+    closeSync(outputFd);
+    outputFd = null;
+    chmodSync(tmpFile, sourceMode & 0o777);
+    renameSync(tmpFile, dst);
+    renamed = true;
+  } catch (err) {
+    try { if (outputFd !== null) closeSync(outputFd); } catch { /* preserve original */ }
+    if (!renamed) {
+      try { unlinkSync(tmpFile); } catch { /* already gone */ }
+    }
+    scopePopulationFailed(`cannot copy ${rel}: ${err.message}`);
+  }
+}
+
+function copyLiveRegularFile(src, dst, rel, sourceRoot) {
+  let resolved;
+  try {
+    resolved = realpathSync(src);
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    scopePopulationFailed(`cannot resolve ${rel}: ${err.message}`);
+  }
+  if (!isInsidePath(sourceRoot, resolved)) {
+    unsafeSymlink(rel, "changed to resolve outside source root");
+  }
+
+  let inputFd;
+  try {
+    inputFd = openSync(src, liveFileOpenFlags());
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    if (err?.code === "ELOOP") unsafeSymlink(rel, "changed to a symlink during copy");
+    scopePopulationFailed(`cannot open ${rel}: ${err.message}`);
+  }
+
+  try {
+    const stat = fstatSync(inputFd);
+    if (!stat.isFile()) {
+      unsafeSymlink(rel, "changed to a non-regular file during copy");
+    }
+    if (stat.size > AGY_MAX_LIVE_FILE_BYTES) {
+      scopeFileTooLarge(rel, stat.size);
+    }
+    copyFileDescriptorToPath(inputFd, dst, rel, stat.mode);
+  } finally {
+    try { closeSync(inputFd); } catch { /* already closed */ }
   }
 }
 
@@ -268,22 +347,14 @@ function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot, ignored = null) {
     if (!resolvedStat.isFile()) {
       unsafeSymlink(rel, "does not resolve to a regular file");
     }
-    try {
-      copyFileSync(resolved, dst);
-    } catch (err) {
-      scopePopulationFailed(`cannot copy ${rel}: ${err.message}`);
-    }
+    copyLiveRegularFile(resolved, dst, rel, sourceRoot);
     return;
   }
   if (lst.isDirectory()) {
     mkdirSync(dst, { recursive: true });
     return;
   }
-  try {
-    copyFileSync(src, dst);
-  } catch (err) {
-    scopePopulationFailed(`cannot copy ${rel}: ${err.message}`);
-  }
+  copyLiveRegularFile(src, dst, rel, sourceRoot);
 }
 
 function gitScopeContext(sourceCwd, workspaceRoot = null) {

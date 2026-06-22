@@ -12,12 +12,30 @@ const ACCOUNT_PAYMENT_TOKEN_PATTERNS = Object.freeze([
   /\bcs_test_[A-Za-z0-9]{6,}/gi,
   /\bcs_live_[A-Za-z0-9]{6,}/gi,
 ]);
+const SECRET_PREFIX_PATTERNS = Object.freeze([
+  /sk-or-v\d+-[a-zA-Z\d]{20,}/g,
+  /sk-ant-api\d+-[a-zA-Z\d_-]{20,}/g,
+  /sk-[a-zA-Z\d]{20,}/g,
+  /AKIA[0-9A-Z]{16}/g,
+  /AIza[0-9A-Za-z_-]{35}/g,
+  /glpat-[a-zA-Z0-9_-]{20,}/g,
+  /gh[pousr]_[a-zA-Z0-9]{36}/g,
+  /github_pat_\w{20,}/g,
+  /xoxb-\d{10,}-\d{10,}-[A-Za-z0-9-]{20,}/g,
+]);
 const PAYMENT_PREFIXED_TOKEN_RE = /\b(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_([A-Za-z0-9]{5,})/gi;
 const JWT_SHAPED_TOKEN_RE = /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{3,}\b/g;
 const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const PLAN_ID_RE = /\bplan_id=[^\s,;|)]+/gi;
 const BEARER_RE = /\bBearer\s+[^\s,;|)]+/gi;
 const TOKEN_RE = /\bToken\s+[^\s,;|)]+/gi;
+const PEM_PRIVATE_KEY_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
+const BASE64_SECRET_ASSIGNMENT_RE = /(\b(?:base64[_-]?(?:secret|token|key)|(?:secret|token|key)[_-]?base64)\s*[:=]\s*)[A-Za-z0-9+/]{32,}={0,2}\b/gi;
+const AUTHORIZATION_HEADER_JSON = /"Authorization"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
+const AUTHORIZATION_HEADER_SINGLE_QUOTED = /'Authorization'\s*:\s*'(?:[^'\\]|\\.)*'/gi;
+const COOKIE_HEADER_JSON = /"(Cookie|Set-Cookie)"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
+const COOKIE_HEADER_SINGLE_QUOTED = /'(Cookie|Set-Cookie)'\s*:\s*'(?:[^'\\]|\\.)*'/gi;
+const COOKIE_HEADER_BARE = /^(Cookie|Set-Cookie):[^\r\n]*/gim;
 const AUTHORIZATION_HEADER = "authorization:";
 
 const MIN_SOURCE_MATCH_CHARS = 16;
@@ -47,9 +65,9 @@ function isAuthorizationTokenTerminator(ch) {
   return !ch || ch === "\n" || ch === "\r" || isHorizontalWhitespace(ch) || ch === "," || ch === ";" || ch === "|" || ch === ")";
 }
 
-function scanAuthorizationTokenEnd(value, cursor) {
+function scanHeaderLineEnd(value, cursor) {
   let index = cursor;
-  while (index < value.length && !isAuthorizationTokenTerminator(value[index])) {
+  while (index < value.length && value[index] !== "\n" && value[index] !== "\r") {
     index += 1;
   }
   return index;
@@ -76,20 +94,31 @@ function redactAuthorizationHeaders(value) {
       continue;
     }
 
-    let tokenEnd = scanAuthorizationTokenEnd(value, tokenStart);
-    const scheme = value.slice(tokenStart, tokenEnd).toLowerCase();
-    if ((scheme === "bearer" || scheme === "token") && isHorizontalWhitespace(value[tokenEnd])) {
-      let credentialStart = tokenEnd;
-      while (isHorizontalWhitespace(value[credentialStart])) credentialStart += 1;
-      if (credentialStart < value.length && !isAuthorizationTokenTerminator(value[credentialStart])) {
-        tokenEnd = scanAuthorizationTokenEnd(value, credentialStart);
-      }
-    }
+    const tokenEnd = scanHeaderLineEnd(value, tokenStart);
 
     out += `${value.slice(cursor, start)}Authorization: ${REDACTED}`;
     cursor = tokenEnd;
   }
   return out + value.slice(cursor);
+}
+
+function redactCookieHeaders(value) {
+  return value
+    .replace(COOKIE_HEADER_BARE, (_match, name) => `${name}: ${REDACTED}`)
+    .replace(AUTHORIZATION_HEADER_JSON, `"Authorization":"${REDACTED}"`)
+    .replace(AUTHORIZATION_HEADER_SINGLE_QUOTED, `'Authorization':'${REDACTED}'`)
+    .replace(COOKIE_HEADER_JSON, (_match, name) => `"${name}":"${REDACTED}"`)
+    .replace(COOKIE_HEADER_SINGLE_QUOTED, (_match, name) => `'${name}':'${REDACTED}'`);
+}
+
+function redactKnownSecretShapes(value) {
+  let out = value;
+  for (const pattern of SECRET_PREFIX_PATTERNS) {
+    out = out.replace(pattern, REDACTED);
+  }
+  out = out.replace(PEM_PRIVATE_KEY_RE, REDACTED);
+  out = out.replace(BASE64_SECRET_ASSIGNMENT_RE, `$1${REDACTED}`);
+  return out;
 }
 
 function redactPaymentPrefixedToken(match, body) {
@@ -234,9 +263,11 @@ export function buildPrivacyRedactor({
     let out = normalizeText(value);
     for (const secret of secrets) out = out.split(secret).join(REDACTED);
     out = redactAuthorizationHeaders(out);
+    out = redactCookieHeaders(out);
     out = out.replace(BEARER_RE, "Bearer [REDACTED]");
     out = out.replace(TOKEN_RE, "Token [REDACTED]");
     out = out.replace(JWT_SHAPED_TOKEN_RE, REDACTED);
+    out = redactKnownSecretShapes(out);
     out = redactAccountPaymentTokens(out);
     out = out.replace(PLAN_ID_RE, REDACTED);
     out = out.replace(EMAIL_RE, REDACTED);

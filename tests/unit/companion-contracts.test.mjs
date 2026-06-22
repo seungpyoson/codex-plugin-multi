@@ -10,6 +10,18 @@ function readRepoFile(rel) {
   return readFileSync(path.join(REPO_ROOT, rel), "utf8");
 }
 
+function functionSource(source, name, rel) {
+  const match = new RegExp(`function ${name}[\\s\\S]*?\\n}`).exec(source);
+  assert.ok(match, `${rel}: missing ${name} helper`);
+  return match[0];
+}
+
+function sidecarDirectorySource(source, block, rel) {
+  return block.includes("prepareSidecarJobDirectory")
+    ? functionSource(source, "prepareSidecarJobDirectory", rel)
+    : block;
+}
+
 test("companion sidecar writes use sibling tmp files, rename, and private directories", () => {
   for (const rel of [
     "plugins/claude/scripts/claude-companion.mjs",
@@ -22,8 +34,9 @@ test("companion sidecar writes use sibling tmp files, rename, and private direct
     assert.ok(match, `${rel}: missing writeSidecar helper`);
     assert.match(match[0], /renameSync/, `${rel}: writeSidecar must rename a tmp file into place`);
     assert.match(match[0], /\.tmp/, `${rel}: writeSidecar must write a sibling tmp file`);
-    assert.match(match[0], /mode:\s*0o700/, `${rel}: writeSidecar must create private job dirs`);
-    assert.match(match[0], /chmodSync\(dir,\s*0o700\)/, `${rel}: writeSidecar must tighten existing job dirs`);
+    const dirSource = sidecarDirectorySource(source, match[0], rel);
+    assert.match(dirSource, /mode:\s*0o700/, `${rel}: writeSidecar must create private job dirs`);
+    assert.match(dirSource, /chmodSync\(dir,\s*0o700\)/, `${rel}: writeSidecar must tighten existing job dirs`);
   }
 });
 
@@ -64,8 +77,9 @@ test("runtime-options sidecar writes use private directories where supported", (
     const source = readRepoFile(rel);
     const match = /function writeRuntimeOptionsSidecar[\s\S]*?\n}/.exec(source);
     assert.ok(match, `${rel}: missing writeRuntimeOptionsSidecar helper`);
-    assert.match(match[0], /mode:\s*0o700/, `${rel}: runtime-options sidecar must create private job dirs`);
-    assert.match(match[0], /chmodSync\(dir,\s*0o700\)/, `${rel}: runtime-options sidecar must tighten existing job dirs`);
+    const dirSource = sidecarDirectorySource(source, match[0], rel);
+    assert.match(dirSource, /mode:\s*0o700/, `${rel}: runtime-options sidecar must create private job dirs`);
+    assert.match(dirSource, /chmodSync\(dir,\s*0o700\)/, `${rel}: runtime-options sidecar must tighten existing job dirs`);
   }
 });
 

@@ -1,3 +1,10 @@
+const BOOLEAN_FALSE_VALUES = new Set(["false", "0", "no", "off", ""]);
+
+function parseBooleanOptionValue(inlineValue) {
+  if (inlineValue === undefined) return true;
+  return !BOOLEAN_FALSE_VALUES.has(String(inlineValue).toLowerCase());
+}
+
 export function parseArgs(argv, config = {}) {
   const valueOptions = new Set(config.valueOptions ?? []);
   const booleanOptions = new Set(config.booleanOptions ?? []);
@@ -32,7 +39,7 @@ export function parseArgs(argv, config = {}) {
       const key = aliasMap[rawKey] ?? rawKey;
 
       if (booleanOptions.has(key)) {
-        options[key] = inlineValue === undefined ? true : inlineValue !== "false";
+        options[key] = parseBooleanOptionValue(inlineValue);
         continue;
       }
 

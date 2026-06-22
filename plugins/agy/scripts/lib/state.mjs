@@ -560,6 +560,12 @@ function saveStateUnlocked(cwd, state) {
   const tmpFile = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
   try {
     fs.writeFileSync(tmpFile, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+    const fd = fs.openSync(tmpFile, "r");
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmpFile, stateFile);
   } catch (e) {
     // If rename failed (cross-device, permissions), clean up the tmp so we

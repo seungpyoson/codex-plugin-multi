@@ -461,7 +461,7 @@ function realpathOrResolve(target) {
   }
 }
 
-function assertRealJobDirectory(jobsDir, dir) {
+export function assertRealJobDirectory(jobsDir, dir) {
   const stat = lstatSync(dir);
   if (stat.isSymbolicLink()) {
     throw new Error(`${dir} is not a real directory inside jobsDir`);

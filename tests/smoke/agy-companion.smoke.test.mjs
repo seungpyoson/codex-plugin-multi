@@ -55,7 +55,7 @@ function writeAgyCaptureMock(dir) {
     "const addDirReal = addDir ? realpathSync.native(addDir) : null;",
     "const promptIndex = args.indexOf('--print');",
     "const prompt = promptIndex >= 0 ? args[promptIndex + 1] : '';",
-    "if (process.env.AGY_CAPTURE_OUT) writeFileSync(process.env.AGY_CAPTURE_OUT, JSON.stringify({ cwd: process.cwd(), addDir, addDirReal, args, prompt }) + '\\n');",
+    "if (process.env.RELAY_TEST_CAPTURE_OUT) writeFileSync(process.env.RELAY_TEST_CAPTURE_OUT, JSON.stringify({ cwd: process.cwd(), addDir, addDirReal, args, prompt }) + '\\n');",
     "const file = /BEGIN AGY FILE \\d+: ([^\\n]+)/.exec(prompt)?.[1] || 'selected source';",
     "console.log('Verdict: APPROVE');",
     "console.log('Blocking findings');",
@@ -73,7 +73,7 @@ function writeAgySpawnCountingMock(dir) {
     "#!/usr/bin/env node",
     "const { appendFileSync } = require('node:fs');",
     "const args = process.argv.slice(2);",
-    "if (process.env.AGY_SPAWN_COUNT_OUT) appendFileSync(process.env.AGY_SPAWN_COUNT_OUT, JSON.stringify({ args }) + '\\n');",
+    "if (process.env.RELAY_TEST_SPAWN_COUNT_OUT) appendFileSync(process.env.RELAY_TEST_SPAWN_COUNT_OUT, JSON.stringify({ args }) + '\\n');",
     "if (args[0] === 'models') { console.log('verified-local-model'); process.exit(0); }",
     "console.log('Verdict: APPROVE');",
     "console.log('Blocking findings');",
@@ -94,7 +94,7 @@ function writeAgyAuthFailureMock(dir) {
     "if (args[0] === 'models') { console.log('verified-local-model'); process.exit(0); }",
     "const promptIndex = args.indexOf('--print');",
     "const prompt = promptIndex >= 0 ? args[promptIndex + 1] : '';",
-    "if (process.env.AGY_CAPTURE_OUT) appendFileSync(process.env.AGY_CAPTURE_OUT, JSON.stringify({ args, prompt }) + '\\n');",
+    "if (process.env.RELAY_TEST_CAPTURE_OUT) appendFileSync(process.env.RELAY_TEST_CAPTURE_OUT, JSON.stringify({ args, prompt }) + '\\n');",
     "console.error('login required');",
     "process.exit(1);",
     "",
@@ -131,7 +131,7 @@ function writeAgyMutatingMock(dir) {
     "const { join } = require('node:path');",
     "const args = process.argv.slice(2);",
     "if (args[0] === 'models') { console.log('verified-local-model'); process.exit(0); }",
-    "const mutationRoot = process.env.AGY_MUTATION_TARGET || process.cwd();",
+    "const mutationRoot = process.env.RELAY_TEST_MUTATION_TARGET || process.cwd();",
     "writeFileSync(join(mutationRoot, 'agy-mutated.txt'), 'AGY target wrote to source workspace\\n', 'utf8');",
     "console.log('Verdict: APPROVE');",
     "console.log('Blocking findings');",
@@ -307,7 +307,7 @@ test("agy preflight validates scoped review setup without launching target or se
   const { base, changedFileName } = fixtureBranchDiffRepo(cwd);
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["preflight", "--mode", "review", "--binary", binary, "--cwd", cwd, "--scope-base", base],
-    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+    { cwd, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
@@ -380,7 +380,7 @@ test("agy review fails the review slot when the target mutates source workspace 
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode", "review", "--foreground", "--lifecycle-events", "jsonl",
      "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review mutation detection"],
-    { cwd, env: { AGY_MUTATION_TARGET: cwd } },
+    { cwd, env: { RELAY_TEST_MUTATION_TARGET: cwd } },
   );
   try {
     assert.equal(status, 1, `exit ${status}: ${stderr}`);
@@ -441,7 +441,7 @@ test("agy custom-review rejects over-budget source packets before AGY launch", (
     ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
      "--binary", binary, "--cwd", cwd, "--scope-paths", "large.txt", "--timeout-ms", "12345",
      "--", "review large packet"],
-    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+    { cwd, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
   );
   try {
     assert.equal(status, 2, `exit ${status}: ${stderr}\n${stdout}`);
@@ -460,6 +460,8 @@ test("agy custom-review rejects over-budget source packets before AGY launch", (
     assert.equal(policy.source_content_transmission, "not_sent");
     assert.equal(record.review_metadata.audit_manifest.request.timeout_ms, 12345);
     assert.equal(record.review_metadata.audit_manifest.source_content_transmission, "not_sent");
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, false);
+    assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "not_required");
     assert.equal(record.review_metadata.audit_manifest.packet_recovery.reason, "source_packet_too_large");
   } finally {
     rmTree(dataDir);
@@ -476,7 +478,7 @@ test("agy custom-review keeps resume_without_source_resend disabled and continue
     ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
      "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt",
      "--resume-without-source-resend", "--", "review with agy no-resend divergence"],
-    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+    { cwd, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}\n${stdout}`);
@@ -518,7 +520,7 @@ test("agy run reads prompt text from --prompt-file instead of treating the flag 
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
      "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt", "--prompt-file", promptFile],
-    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+    { cwd, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}\n${stdout}`);
@@ -600,7 +602,7 @@ test("agy custom-review blocks same-packet resend after a failed source-sent slo
   const first = runCompanion(
     ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
      "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt", "--", "seed queued record"],
-    { cwd, dataDir, env: { AGY_CAPTURE_OUT: capturePath } },
+    { cwd, dataDir, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
   );
   try {
     assert.equal(first.status, 0, `exit ${first.status}: ${first.stderr}`);
@@ -610,7 +612,7 @@ test("agy custom-review blocks same-packet resend after a failed source-sent slo
     const blocked = runCompanion(
       ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
        "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt", "--", "retry same packet"],
-      { cwd, dataDir, env: { AGY_CAPTURE_OUT: capturePath } },
+      { cwd, dataDir, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
     );
     assert.equal(blocked.status, 2, `exit ${blocked.status}: ${blocked.stderr}\n${blocked.stdout}`);
     assert.equal(existsSync(capturePath), false, "blocked resend must not spawn AGY");
@@ -626,7 +628,7 @@ test("agy custom-review blocks same-packet resend after a failed source-sent slo
       ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
        "--binary", binary, "--cwd", cwd, "--scope-paths", "selected.txt",
        "--resend-confirmation-approved", "--", "retry same packet confirmed"],
-      { cwd, dataDir, env: { AGY_CAPTURE_OUT: capturePath } },
+      { cwd, dataDir, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
     );
     assert.equal(confirmed.status, 0, `exit ${confirmed.status}: ${confirmed.stderr}\n${confirmed.stdout}`);
     const confirmedRecord = confirmed.stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
@@ -650,7 +652,7 @@ test("agy custom-review permits explicit large source packet override", () => {
     ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
      "--binary", binary, "--cwd", cwd, "--scope-paths", "large.txt",
      "--allow-large-source-packet", "--", "review large packet with explicit override"],
-    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+    { cwd, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}\n${stdout}`);
@@ -697,7 +699,7 @@ test("agy source-bearing review points target at scoped containment, not source 
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode", "review", "--foreground", "--lifecycle-events", "jsonl",
      "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review scoped add-dir"],
-    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+    { cwd, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
   );
   try {
     assert.equal(status, 0, `exit ${status}: ${stderr}`);
@@ -729,7 +731,7 @@ test("agy empty branch-diff fails closed before prompt fallback or target spawn"
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode", "review", "--foreground",
      "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review empty branch diff"],
-    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+    { cwd, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
   );
   try {
     assert.equal(status, 2, `exit ${status}: ${stderr}`);
@@ -787,6 +789,17 @@ test("agy run rejects invalid --timeout-ms before source transmission", () => {
     assert.equal(record.source_content_transmission, "not_sent");
     assert.match(record.error_message, /--timeout-ms must be a positive integer number of milliseconds/);
     assert.doesNotMatch(stdout + stderr, /selected source body/i);
+
+    const tooLarge = runCompanion(
+      ["run", "--mode", "review", "--foreground", "--timeout-ms", "2147483648",
+       "--binary", binary, "--cwd", cwd, "--", "review too-large timeout"],
+      { cwd },
+    );
+    assert.equal(tooLarge.status, 1);
+    const tooLargeRecord = JSON.parse(tooLarge.stdout);
+    assert.equal(tooLargeRecord.error_code, "bad_args");
+    assert.equal(tooLargeRecord.source_content_transmission, "not_sent");
+    assert.match(tooLargeRecord.error_message, /--timeout-ms must be between 1 and 2147483647 milliseconds/);
   } finally {
     rmTree(dataDir);
     rmTree(cwd);
@@ -878,7 +891,7 @@ test("agy source-bearing auth failure fails before source transmission", () => {
   const { stdout, stderr, status, dataDir } = runCompanion(
     ["run", "--mode", "review", "--foreground", "--lifecycle-events", "jsonl",
      "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review auth failure handling"],
-    { cwd, env: { AGY_CAPTURE_OUT: capturePath } },
+    { cwd, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
   );
   try {
     assert.equal(status, 1);
@@ -924,14 +937,11 @@ test("agy queued cancel marker exits before target spawn", async () => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "agy-pre-spawn-cancel-data-"));
   const binary = writeAgySpawnCountingMock(cwd);
   const countPath = path.join(cwd, "agy-spawn-count.txt");
-  const fifoPath = path.join(cwd, "slow-selected.pipe");
-  const mkfifo = spawnSync("mkfifo", [fifoPath], { encoding: "utf8" });
-  assert.equal(mkfifo.status, 0, mkfifo.stderr);
+  writeFileSync(path.join(cwd, "selected.txt"), "selected source body\n", "utf8");
 
   let stdout = "";
   let stderr = "";
   let closed = false;
-  let unblocked = false;
   const child = spawn("node", [
     COMPANION,
     "run",
@@ -945,7 +955,7 @@ test("agy queued cancel marker exits before target spawn", async () => {
     "--cwd",
     cwd,
     "--scope-paths",
-    "slow-selected.pipe",
+    "selected.txt",
     "--",
     "review queued cancel marker",
   ], {
@@ -953,7 +963,8 @@ test("agy queued cancel marker exits before target spawn", async () => {
     env: {
       ...process.env,
       AGY_PLUGIN_DATA: dataDir,
-      AGY_SPAWN_COUNT_OUT: countPath,
+      RELAY_TEST_SPAWN_COUNT_OUT: countPath,
+      RELAY_TEST_AGY_AFTER_QUEUE_DELAY_MS: "1000",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -993,15 +1004,6 @@ test("agy queued cancel marker exits before target spawn", async () => {
       job_id: queuedRecord.job_id,
     });
 
-    const writer = spawnSync("sh", [
-      "-c",
-      "printf 'selected source body\\n' > \"$1\"",
-      "sh",
-      fifoPath,
-    ], { encoding: "utf8", timeout: 5000 });
-    unblocked = true;
-    assert.equal(writer.status, 0, writer.stderr || writer.error?.message);
-
     const childResult = await waitForChildClose(closePromise, child);
     assert.equal(childResult.status, 0, `exit ${childResult.status} signal ${childResult.signal}: ${stderr}\n${stdout}`);
     assert.equal(existsSync(countPath), false, "pre-spawn cancel must not invoke AGY readiness or review target");
@@ -1013,9 +1015,6 @@ test("agy queued cancel marker exits before target spawn", async () => {
     assert.equal(finalMeta.status, "cancelled");
     assert.equal(finalMeta.pid_info, null);
   } finally {
-    if (!unblocked && existsSync(fifoPath)) {
-      spawnSync("sh", ["-c", "printf 'cleanup\\n' > \"$1\"", "sh", fifoPath], { timeout: 1000 });
-    }
     if (!closed) {
       child.kill("SIGKILL");
       await waitForChildClose(closePromise, child, 1000).catch(() => {});

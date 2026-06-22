@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { parseArgs, splitRawArgumentString } from "../../plugins/claude/scripts/lib/args.mjs";
+import { parseArgs as parseAgyArgs } from "../../plugins/agy/scripts/lib/args.mjs";
 
 test("parseArgs: long value option via --key value", () => {
   const { options, positionals } = parseArgs(
@@ -36,6 +37,28 @@ test("parseArgs: --key=false sets boolean to false", () => {
     booleanOptions: ["isolated"],
   });
   assert.equal(options.isolated, false);
+});
+
+test("AGY parseArgs: inline safety boolean false values disable the option", () => {
+  const falsyValues = ["false", "FALSE", "0", "no", "NO", "off", "OFF", ""];
+  for (const value of falsyValues) {
+    const { options } = parseAgyArgs([`--allow-large-source-packet=${value}`], {
+      booleanOptions: ["allow-large-source-packet"],
+    });
+    assert.equal(options["allow-large-source-packet"], false, `value ${JSON.stringify(value)} must parse false`);
+  }
+
+  for (const value of ["true", "TRUE", "1"]) {
+    const { options } = parseAgyArgs([`--allow-large-source-packet=${value}`], {
+      booleanOptions: ["allow-large-source-packet"],
+    });
+    assert.equal(options["allow-large-source-packet"], true, `value ${JSON.stringify(value)} must parse true`);
+  }
+
+  const { options } = parseAgyArgs(["--allow-large-source-packet"], {
+    booleanOptions: ["allow-large-source-packet"],
+  });
+  assert.equal(options["allow-large-source-packet"], true, "bare safety override remains explicit approval");
 });
 
 test("parseArgs: alias maps short to long", () => {

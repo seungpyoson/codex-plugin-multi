@@ -9,6 +9,7 @@ import {
   runCommandChecked,
   terminateProcessTree,
 } from "../../plugins/claude/scripts/lib/process.mjs";
+import { runCommand as runAgyCommand } from "../../plugins/agy/scripts/lib/process.mjs";
 
 test("runCommand: captures stdout, stderr, status, and command metadata", () => {
   const result = runCommand(process.execPath, [
@@ -33,6 +34,29 @@ test("runCommand: supports bounded spawnSync timeouts", () => {
 
   assert.equal(result.status, null);
   assert.equal(result.error?.code, "ETIMEDOUT");
+});
+
+test("AGY runCommand: Windows execution does not trust inherited SHELL", () => {
+  const previousShell = process.env.SHELL;
+  let captured = null;
+  try {
+    process.env.SHELL = "C:\\attacker\\relay-shell.cmd";
+    const result = runAgyCommand("git", ["status"], {
+      platform: "win32",
+      spawnSyncImpl(command, args, options) {
+        captured = { command, args, options };
+        return { status: 0, signal: null, stdout: "", stderr: "", error: null };
+      },
+    });
+
+    assert.equal(result.status, 0);
+    assert.equal(captured.command, "git");
+    assert.deepEqual(captured.args, ["status"]);
+    assert.equal(captured.options.shell, false);
+  } finally {
+    if (previousShell === undefined) delete process.env.SHELL;
+    else process.env.SHELL = previousShell;
+  }
 });
 
 test("runCommandChecked: returns successful result and throws formatted failures", () => {
