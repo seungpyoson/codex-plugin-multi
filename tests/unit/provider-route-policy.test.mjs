@@ -2231,3 +2231,44 @@ test("record disagreement (source_sent:true + not_sent) gates conservatively, ne
   assert.equal(result.source_packet_action, "resend_confirmation_required");
   assert.equal(result.source_send_allowed, false);
 });
+
+// ---------------------------------------------------------------------------
+// Task 7 (#234 D2): DeepSeek/GLM stateless routes admit bounded concurrency at
+// the default limit 4; the env cap can only LOWER it, never raise above 4.
+// ---------------------------------------------------------------------------
+
+test("DeepSeek and GLM stateless routes admit limit 4; env caps lower but never raise (#234 Task 7)", () => {
+  for (const [provider, route, limitEnv] of [
+    ["deepseek", "direct_api", "RELAY_DEEPSEEK_CONCURRENCY_LIMIT"],
+    ["glm", "direct_api", "RELAY_GLM_CONCURRENCY_LIMIT"],
+  ]) {
+    const fact = providerRoutePolicy.CONCURRENCY_FACTS[provider][route];
+    assert.equal(fact.category, "stateless", `${provider} must stay stateless`);
+    assert.equal(fact.limit, 4, `${provider} must default to limit 4`);
+    assert.equal(fact.limit_env, limitEnv, `${provider} must keep its env cap name`);
+
+    const args = (env) => ({
+      category: fact.category, declaredLimit: fact.limit, limitEnv: fact.limit_env,
+      provider, route, env,
+    });
+    // Default: resolves to 4.
+    assert.equal(resolveConcurrencyAdmission(args({})).limit, 4, `${provider} default limit`);
+    // Env cap lowers it.
+    assert.equal(resolveConcurrencyAdmission(args({ [limitEnv]: "2" })).limit, 2, `${provider} env lowers`);
+    // Env cannot raise above the fact limit.
+    assert.equal(resolveConcurrencyAdmission(args({ [limitEnv]: "10" })).limit, 4, `${provider} env cannot raise`);
+  }
+});
+
+test("custom direct_api stays single-flight (limit 1) — unknown endpoint capacity (#234 Task 7)", () => {
+  const fact = providerRoutePolicy.CONCURRENCY_FACTS.custom.direct_api;
+  assert.equal(fact.category, "stateless");
+  assert.equal(fact.limit, 1, "custom endpoints stay single-flight until proven");
+  assert.equal(
+    resolveConcurrencyAdmission({
+      category: fact.category, declaredLimit: fact.limit, limitEnv: fact.limit_env,
+      provider: "custom", route: "direct_api", env: {},
+    }).limit,
+    1,
+  );
+});

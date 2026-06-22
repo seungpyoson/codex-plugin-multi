@@ -162,12 +162,16 @@ export const CONCURRENCY_FACTS = freezeConcurrencyFacts({
     subscription_web: { category: "shared_state", limit: 1 },
   },
   deepseek: {
-    direct_api: { category: "stateless", limit: 1, limit_env: "RELAY_DEEPSEEK_CONCURRENCY_LIMIT" },
+    // Stateless direct API (pure fetch, no shared local state): bounded concurrency at the
+    // D2 default of 4. The env cap can only LOWER it (Math.min in resolveConcurrencyAdmission).
+    direct_api: { category: "stateless", limit: 4, limit_env: "RELAY_DEEPSEEK_CONCURRENCY_LIMIT" },
   },
   glm: {
-    direct_api: { category: "stateless", limit: 1, limit_env: "RELAY_GLM_CONCURRENCY_LIMIT" },
+    direct_api: { category: "stateless", limit: 4, limit_env: "RELAY_GLM_CONCURRENCY_LIMIT" },
   },
   custom: {
+    // A custom user-defined endpoint has unknown rate-limit/capacity, so it stays single-flight
+    // (limit 1) until a specific endpoint is proven; the env cap can only lower, never raise.
     direct_api: { category: "stateless", limit: 1, limit_env: "RELAY_CUSTOM_DIRECT_API_CONCURRENCY_LIMIT" },
   },
 });
