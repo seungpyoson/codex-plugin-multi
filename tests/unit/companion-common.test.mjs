@@ -556,6 +556,45 @@ test("writeFileAtomicDurable fsyncs file data before rename and cleans tmp on fa
   }
 });
 
+test("writeFileAtomicDurable surfaces a real directory-fsync I/O error but tolerates unsupported", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "companion-common-dirfsync-"));
+  const originalFsync = fs.fsyncSync;
+  const injectDirectoryFsyncError = (code) => {
+    fs.fsyncSync = function patchedFsync(fd) {
+      // Only the post-rename parent-directory fsync targets a directory fd; the
+      // mandatory data-file fsync must still run for the payload to be durable.
+      if (fs.fstatSync(fd).isDirectory()) {
+        const err = new Error(`injected ${code} on directory fsync`);
+        err.code = code;
+        throw err;
+      }
+      return originalFsync.call(this, fd);
+    };
+    syncBuiltinESMExports();
+  };
+  try {
+    // A genuine storage error on the directory fsync means the rename may not be
+    // crash-durable; it MUST surface rather than be silently swallowed.
+    injectDirectoryFsyncError("EIO");
+    assert.throws(
+      () => writeFileAtomicDurable(path.join(dir, "eio.json"), "payload\n"),
+      (err) => err?.code === "EIO",
+      "EIO on the directory fsync must propagate, not be swallowed",
+    );
+
+    // An "unsupported here" directory fsync stays best-effort: the data-file
+    // fsync already ran before the rename, so the write succeeds and persists.
+    injectDirectoryFsyncError("EINVAL");
+    const okTarget = path.join(dir, "ok.json");
+    writeFileAtomicDurable(okTarget, "payload\n");
+    assert.equal(readFileSync(okTarget, "utf8"), "payload\n");
+  } finally {
+    fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("assertRealJobDirectory fails closed when realpath is denied", () => {
   const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-realpath-jobs-"));
   const jobDir = path.join(jobsDir, "job-eacces");

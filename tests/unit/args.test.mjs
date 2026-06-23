@@ -107,6 +107,35 @@ test("AGY parseArgs: rejects ambiguous space-separated false after safety boolea
   assert.deepEqual(nextOption.positionals, ["--dry-run"]);
 });
 
+test("AGY parseArgs: the boolean-ambiguity guard never breaks the canonical positional path", () => {
+  // The documented way to pass a prompt (including a literal "no"/"off") is after
+  // the -- separator. The default-deny guard is intentional and kept universal so
+  // any future safety boolean is fail-closed by default rather than fail-open by
+  // omission; the guard must not touch the canonical -- positional path.
+  const foreground = parseAgyArgs(["--foreground", "--", "no"], {
+    booleanOptions: ["foreground", "background"],
+  });
+  assert.equal(foreground.options.foreground, true);
+  assert.deepEqual(foreground.positionals, ["no"]);
+
+  // A multi-word prompt that merely starts with a false-like word is unaffected
+  // (only a bare token exactly equal to a false-like value is ambiguous).
+  const phrase = parseAgyArgs(["--background", "no time to explain"], {
+    booleanOptions: ["foreground", "background"],
+  });
+  assert.equal(phrase.options.background, true);
+  assert.deepEqual(phrase.positionals, ["no time to explain"]);
+
+  // The safety-critical flag still rejects the genuinely ambiguous bare form —
+  // making the guard opt-in per flag (as proposed) would regress this to fail-open.
+  assert.throws(
+    () => parseAgyArgs(["--resend-confirmation-approved", "off"], {
+      booleanOptions: ["resend-confirmation-approved"],
+    }),
+    /Ambiguous boolean: use --resend-confirmation-approved=off to set false/,
+  );
+});
+
 test("parseArgs: alias maps short to long", () => {
   const { options } = parseArgs(["-m", "X"], {
     valueOptions: ["model"],

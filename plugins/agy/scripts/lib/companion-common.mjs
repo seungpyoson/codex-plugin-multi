@@ -464,17 +464,42 @@ export function realpathOrResolve(target) {
   }
 }
 
+// Directory fsync is genuinely unavailable on some platforms/filesystems
+// (Windows cannot fsync a directory handle; some network/virtual filesystems
+// reject it; a signal can interrupt it). Those outcomes stay best-effort. A
+// real storage error (EIO, ENOSPC, EROFS, an unexpected EBADF, …) means the
+// just-completed rename may not be crash-durable, so it MUST surface — swallowing
+// it would make this helper's durability contract silently false (fail loud).
+const TOLERABLE_DIR_FSYNC_CODES = new Set([
+  "EINVAL", // directory fd does not support fsync on this filesystem
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "ENOSYS",
+  "EISDIR", // platform rejects opening/fsyncing a directory handle (Windows)
+  "EPERM",
+  "EACCES",
+  "EINTR", // interrupted; the mandatory data-file fsync already completed
+]);
+
 function fsyncDirectoryBestEffort(dir) {
+  let dfd;
   try {
-    const dfd = fs.openSync(dir, "r");
-    try {
-      fs.fsyncSync(dfd);
-    } finally {
-      fs.closeSync(dfd);
+    dfd = fs.openSync(dir, "r");
+    fs.fsyncSync(dfd);
+  } catch (err) {
+    if (!TOLERABLE_DIR_FSYNC_CODES.has(err?.code)) {
+      throw err;
     }
-  } catch {
-    // Directory fsync is platform/filesystem dependent. The data file fsync
-    // above is mandatory; parent directory durability is best-effort.
+    // Tolerated: directory fsync is unsupported here or was interrupted. The
+    // mandatory data-file fsync ran before the rename, so the payload is durable.
+  } finally {
+    if (dfd !== undefined) {
+      try {
+        fs.closeSync(dfd);
+      } catch {
+        // fd already closed or never valid; nothing durable depends on close
+      }
+    }
   }
 }
 
