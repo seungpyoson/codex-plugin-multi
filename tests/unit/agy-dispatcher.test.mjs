@@ -8,6 +8,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const AGY_LIB = path.join(REPO_ROOT, "plugins/agy/scripts/lib/agy.mjs");
+const AGY_COMPANION = path.join(REPO_ROOT, "plugins/agy/scripts/agy-companion.mjs");
 
 const REVIEW_PROFILE = Object.freeze({
   name: "review",
@@ -73,6 +74,49 @@ test("buildAgyArgs: source-free doctor can omit model and sandbox", async () => 
   });
 
   assert.deepEqual(args, ["--print-timeout", "5s", "--print", "Reply with ok"]);
+});
+
+test("spawnAgy: clamps huge timeouts to the shared int32 timer bound", async () => {
+  const { MAX_TIMER_DELAY_MS, spawnAgy } = await loadAgy();
+  assert.equal(MAX_TIMER_DELAY_MS, 2147483647);
+  const companionSource = readFileSync(AGY_COMPANION, "utf8");
+  assert.match(
+    companionSource,
+    /import\s*\{[\s\S]*\bMAX_TIMER_DELAY_MS\b[\s\S]*\bspawnAgy\b[\s\S]*\}\s*from "\.\/lib\/agy\.mjs";/,
+    "AGY companion must import the timer bound from the setTimeout site",
+  );
+  assert.match(companionSource, /const MAX_REVIEW_TIMEOUT_MS = MAX_TIMER_DELAY_MS;/);
+
+  const dir = mkdtempSync(path.join(tmpdir(), "agy-huge-timeout-unit-"));
+  const warnings = [];
+  const onWarning = (warning) => warnings.push(warning);
+  process.on("warning", onWarning);
+  try {
+    const binary = writeExecutable(dir, "agy-huge-timeout", [
+      `#!${process.execPath}`,
+      `setTimeout(() => { console.log("AGY huge timeout complete"); }, 25);`,
+      "",
+    ].join("\n"));
+
+    const execution = await spawnAgy(REVIEW_PROFILE, {
+      binary,
+      cwd: dir,
+      env: process.env,
+      promptText: "source-bearing prompt",
+      timeoutMs: 2 ** 40,
+    });
+
+    assert.equal(execution.timedOut, false);
+    assert.equal(execution.parsed.ok, true);
+    assert.equal(
+      warnings.some((warning) => warning?.name === "TimeoutOverflowWarning"),
+      false,
+      "huge timeout must not overflow Node's timer delay",
+    );
+  } finally {
+    process.off("warning", onWarning);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("parseAgyResult: treats plain stdout as review text and classifies failures", async () => {
@@ -304,6 +348,49 @@ test("spawnAgy: clears SIGKILL fallback when timeout child exits after SIGTERM",
     globalThis.setTimeout = realSetTimeout;
     globalThis.clearTimeout = realClearTimeout;
     for (const handle of fallbackTimers) realClearTimeout(handle);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("spawnAgy: truncation clears SIGKILL fallback after prompt child closes", async () => {
+  const { spawnAgy } = await loadAgy();
+  const dir = mkdtempSync(path.join(tmpdir(), "agy-truncation-cleanup-unit-"));
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const realKill = process.kill;
+  const sigkillCalls = [];
+  globalThis.setTimeout = (callback, delay, ...args) =>
+    realSetTimeout(callback, delay === 2000 ? 25 : delay, ...args);
+  process.kill = function patchedKill(pid, signal) {
+    if (signal === "SIGKILL") sigkillCalls.push([pid, signal]);
+    return realKill.call(this, pid, signal);
+  };
+
+  try {
+    const binary = writeExecutable(dir, "agy-truncation-term-trap", [
+      `#!${process.execPath}`,
+      `process.on("SIGTERM", () => { process.exit(0); });`,
+      `process.stdout.write("o".repeat(256));`,
+      `setInterval(() => {}, 1000);`,
+      "",
+    ].join("\n"));
+
+    const execution = await spawnAgy(REVIEW_PROFILE, {
+      binary,
+      cwd: dir,
+      env: { ...process.env, AGY_MAX_CAPTURE_BYTES: "64" },
+      promptText: "source-bearing prompt",
+      timeoutMs: 10000,
+    });
+    await sleep(75);
+
+    assert.equal(execution.timedOut, false);
+    assert.equal(execution.truncated?.stdout, true);
+    assert.deepEqual(sigkillCalls, []);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+    process.kill = realKill;
     rmSync(dir, { recursive: true, force: true });
   }
 });

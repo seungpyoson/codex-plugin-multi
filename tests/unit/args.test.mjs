@@ -39,6 +39,21 @@ test("parseArgs: --key=false sets boolean to false", () => {
   assert.equal(options.isolated, false);
 });
 
+test("parseArgs: rejects ambiguous space-separated false after boolean flags", () => {
+  assert.throws(
+    () => parseArgs(["--resend-confirmation-approved", "no"], {
+      booleanOptions: ["resend-confirmation-approved"],
+    }),
+    /Ambiguous boolean: use --resend-confirmation-approved=no to set false/,
+  );
+
+  const nextOption = parseArgs(["--resend-confirmation-approved", "--dry-run"], {
+    booleanOptions: ["resend-confirmation-approved"],
+  });
+  assert.equal(nextOption.options["resend-confirmation-approved"], true);
+  assert.deepEqual(nextOption.positionals, ["--dry-run"]);
+});
+
 test("AGY parseArgs: inline safety boolean false values disable the option", () => {
   const falsyValues = ["false", "FALSE", "0", "no", "NO", "off", "OFF", ""];
   for (const value of falsyValues) {
@@ -61,12 +76,59 @@ test("AGY parseArgs: inline safety boolean false values disable the option", () 
   assert.equal(options["allow-large-source-packet"], true, "bare safety override remains explicit approval");
 });
 
+test("AGY parseArgs: rejects ambiguous space-separated false after safety boolean", () => {
+  assert.throws(
+    () => parseAgyArgs(["--resend-confirmation-approved", "no"], {
+      booleanOptions: ["resend-confirmation-approved"],
+    }),
+    /Ambiguous boolean: use --resend-confirmation-approved=no to set false/,
+  );
+
+  const inline = parseAgyArgs(["--resend-confirmation-approved=no"], {
+    booleanOptions: ["resend-confirmation-approved"],
+  });
+  assert.equal(inline.options["resend-confirmation-approved"], false);
+
+  const bare = parseAgyArgs(["--resend-confirmation-approved"], {
+    booleanOptions: ["resend-confirmation-approved"],
+  });
+  assert.equal(bare.options["resend-confirmation-approved"], true);
+
+  const positional = parseAgyArgs(["--resend-confirmation-approved", "review-now"], {
+    booleanOptions: ["resend-confirmation-approved"],
+  });
+  assert.equal(positional.options["resend-confirmation-approved"], true);
+  assert.deepEqual(positional.positionals, ["review-now"]);
+
+  const nextOption = parseAgyArgs(["--resend-confirmation-approved", "--dry-run"], {
+    booleanOptions: ["resend-confirmation-approved"],
+  });
+  assert.equal(nextOption.options["resend-confirmation-approved"], true);
+  assert.deepEqual(nextOption.positionals, ["--dry-run"]);
+});
+
 test("parseArgs: alias maps short to long", () => {
   const { options } = parseArgs(["-m", "X"], {
     valueOptions: ["model"],
     aliasMap: { m: "model" },
   });
   assert.equal(options.model, "X");
+});
+
+test("parseArgs: short boolean, fallback key, and missing short value branches", () => {
+  const { options } = parseArgs(["-v"], {
+    booleanOptions: ["verbose"],
+    aliasMap: { v: "verbose" },
+  });
+  assert.equal(options.verbose, true);
+
+  const { positionals } = parseArgs(["-z"], {});
+  assert.deepEqual(positionals, ["-z"]);
+
+  assert.throws(
+    () => parseArgs(["-m"], { valueOptions: ["model"], aliasMap: { m: "model" } }),
+    /Missing value for -m/,
+  );
 });
 
 test("parseArgs: throws on missing value", () => {

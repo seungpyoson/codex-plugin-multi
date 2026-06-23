@@ -183,6 +183,10 @@ function liveFileOpenFlags() {
   return constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
 }
 
+function sameFileIdentity(a, b) {
+  return a?.dev === b?.dev && a?.ino === b?.ino;
+}
+
 function writeAllSync(fd, buffer, offset, length) {
   let written = 0;
   while (written < length) {
@@ -197,9 +201,18 @@ function copyFileDescriptorToPath(inputFd, dst, rel, sourceMode) {
   try {
     outputFd = openSync(tmpFile, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_EXCL, sourceMode & 0o777);
     const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
+    let total = 0;
     while (true) {
-      const bytesRead = readSync(inputFd, buffer, 0, buffer.length, null);
+      const remaining = AGY_MAX_LIVE_FILE_BYTES + 1 - total;
+      if (remaining <= 0) {
+        scopeFileTooLarge(rel, total);
+      }
+      const bytesRead = readSync(inputFd, buffer, 0, Math.min(buffer.length, remaining), null);
       if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > AGY_MAX_LIVE_FILE_BYTES) {
+        scopeFileTooLarge(rel, total);
+      }
       writeAllSync(outputFd, buffer, 0, bytesRead);
     }
     closeSync(outputFd);
@@ -228,6 +241,14 @@ function copyLiveRegularFile(src, dst, rel, sourceRoot) {
     unsafeSymlink(rel, "changed to resolve outside source root");
   }
 
+  let beforeOpen;
+  try {
+    beforeOpen = lstatSync(src);
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    scopePopulationFailed(`cannot inspect ${rel}: ${err.message}`);
+  }
+
   let inputFd;
   try {
     inputFd = openSync(src, liveFileOpenFlags());
@@ -239,6 +260,9 @@ function copyLiveRegularFile(src, dst, rel, sourceRoot) {
 
   try {
     const stat = fstatSync(inputFd);
+    if (!sameFileIdentity(beforeOpen, stat)) {
+      unsafeSymlink(rel, "changed identity during copy");
+    }
     if (!stat.isFile()) {
       unsafeSymlink(rel, "changed to a non-regular file during copy");
     }

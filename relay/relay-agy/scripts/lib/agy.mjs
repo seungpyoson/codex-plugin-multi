@@ -9,6 +9,7 @@ import { usageLimitMessage } from "./usage-limit.mjs";
 // Default to 8 MiB per stream: large enough for normal AGY review output, bounded
 // enough to prevent runaway stdout/stderr from exhausting the companion process.
 const DEFAULT_AGY_MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
+export const MAX_TIMER_DELAY_MS = 2147483647;
 
 function assertProfile(profile) {
   if (!profile || typeof profile !== "object") {
@@ -131,8 +132,11 @@ export function parseAgyResult(stdout = "", stderr = "", options = {}) {
 function childPwdForCwd(cwd) {
   try {
     return realpathSync.native(cwd);
-  } catch {
-    return cwd;
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return cwd;
+    }
+    throw err;
   }
 }
 
@@ -255,10 +259,11 @@ export async function spawnAgy(profile, runtimeInputs = {}) {
     };
 
     if (timeoutMs > 0) {
+      const safeTimeout = Math.min(timeoutMs, MAX_TIMER_DELAY_MS);
       timer = setTimeout(() => {
         timedOut = true;
         terminateChildTree();
-      }, timeoutMs);
+      }, safeTimeout);
     }
 
     child.stdout.on("data", (chunk) => {

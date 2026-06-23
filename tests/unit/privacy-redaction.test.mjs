@@ -163,6 +163,22 @@ test("privacy redactor redacts entire Authorization values with spoofed timeout 
   ].join("\n"));
 });
 
+test("privacy redactor handles folded Authorization continuations through secret-shape passes", () => {
+  const redact = buildPrivacyRedactor();
+  const token = `sk-ant-api03-${"A".repeat(24)}`;
+  const out = redact.text(`Authorization: Bearer\n  ${token}`);
+
+  assert.doesNotMatch(out, new RegExp(token));
+  assert.match(out, /Authorization: \[REDACTED\]/);
+});
+
+test("privacy redactor keeps Authorization redaction line-oriented for generic folded diagnostics", () => {
+  const redact = buildPrivacyRedactor();
+  const out = redact.text("Authorization: Bearer\n  continued diagnostic line");
+
+  assert.equal(out, "Authorization: [REDACTED]\n  continued diagnostic line");
+});
+
 test("privacy redactor redacts public-prefix, PEM, and base64 secret shapes", () => {
   const redact = buildPrivacyRedactor();
 

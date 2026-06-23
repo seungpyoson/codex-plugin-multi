@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import fs, {
   chmodSync,
   existsSync,
+  appendFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -68,6 +69,21 @@ function onTargetDirCreated(targetDir, action) {
   syncBuiltinESMExports();
   return () => {
     fs.mkdirSync = originalMkdir;
+    syncBuiltinESMExports();
+  };
+}
+
+function withoutNoFollowForPath(file, action) {
+  const originalOpen = fs.openSync;
+  fs.openSync = function patchedOpen(target, flags, ...args) {
+    if (path.resolve(String(target)) === path.resolve(file) && typeof flags === "number") {
+      return originalOpen.call(this, target, flags & ~fs.constants.O_NOFOLLOW, ...args);
+    }
+    return originalOpen.call(this, target, flags, ...args);
+  };
+  syncBuiltinESMExports();
+  return () => {
+    fs.openSync = originalOpen;
     syncBuiltinESMExports();
   };
 }
@@ -133,6 +149,39 @@ for (const provider of SCOPE_PROVIDERS) {
       assert.equal(existsSync(path.join(tgt, "nested", "victim.txt")), false);
     } finally {
       restore();
+      cleanup(root);
+    }
+  });
+
+  test(`${provider} populateScope refuses an in-root symlink swap even when O_NOFOLLOW is unavailable`, POSIX_ONLY, async () => {
+    const root = mkdtempSync(path.join(tmpdir(), `${provider}-scope-identity-`));
+    const src = path.join(root, "src");
+    const tgt = path.join(root, "tgt");
+    const victim = path.join(src, "nested", "victim.txt");
+    const inRoot = path.join(src, "nested", "sibling.txt");
+    let restoreMkdir = () => {};
+    let restoreOpen = () => {};
+    try {
+      mkdirSync(path.dirname(victim), { recursive: true });
+      mkdirSync(tgt, { recursive: true });
+      writeFileSync(victim, "safe source\n", "utf8");
+      writeFileSync(inRoot, "in-root body\n", "utf8");
+
+      restoreMkdir = onTargetDirCreated(path.join(tgt, "nested"), () => {
+        unlinkSync(victim);
+        symlinkSync(inRoot, victim);
+      });
+      restoreOpen = withoutNoFollowForPath(victim, () => {});
+
+      const { populateScope } = await loadFreshScope(provider);
+      assert.throws(
+        () => populateScope(profile("custom"), src, tgt, { scopePaths: ["nested/victim.txt"] }),
+        /unsafe_symlink/,
+      );
+      assert.equal(existsSync(path.join(tgt, "nested", "victim.txt")), false);
+    } finally {
+      restoreOpen();
+      restoreMkdir();
       cleanup(root);
     }
   });
@@ -214,6 +263,40 @@ for (const provider of SCOPE_PROVIDERS) {
       assert.equal(existsSync(path.join(tgt, "large.bin")), false);
       assert.throws(() => readFileSync(path.join(tgt, "large.bin")), /ENOENT/);
     } finally {
+      cleanup(root);
+    }
+  });
+
+  test(`${provider} populateScope fails closed when a live file grows past the secure read cap`, async () => {
+    const root = mkdtempSync(path.join(tmpdir(), `${provider}-scope-grow-cap-`));
+    const src = path.join(root, "src");
+    const tgt = path.join(root, "tgt");
+    const victim = path.join(src, "growing.bin");
+    const originalRead = fs.readSync;
+    let appended = false;
+    try {
+      mkdirSync(src, { recursive: true });
+      mkdirSync(tgt, { recursive: true });
+      writeFileSync(victim, Buffer.alloc(1024, 0x61));
+      fs.readSync = function patchedRead(fd, buffer, offset, length, position) {
+        const bytesRead = originalRead.call(this, fd, buffer, offset, length, position);
+        if (!appended && bytesRead > 0) {
+          appended = true;
+          appendFileSync(victim, Buffer.alloc((8 * 1024 * 1024) + 1, 0x62));
+        }
+        return bytesRead;
+      };
+      syncBuiltinESMExports();
+
+      const { populateScope } = await loadFreshScope(provider);
+      assert.throws(
+        () => populateScope(profile("custom"), src, tgt, { scopePaths: ["growing.bin"] }),
+        /scope_file_too_large/,
+      );
+      assert.equal(existsSync(path.join(tgt, "growing.bin")), false);
+    } finally {
+      fs.readSync = originalRead;
+      syncBuiltinESMExports();
       cleanup(root);
     }
   });

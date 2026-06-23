@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename as basenamePath, dirname as dirnamePath, join as joinPath, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { parseArgs } from "./lib/args.mjs";
-import { buildAgyArgs, parseAgyResult, spawnAgy } from "./lib/agy.mjs";
+import { MAX_TIMER_DELAY_MS, buildAgyArgs, parseAgyResult, spawnAgy } from "./lib/agy.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import {
@@ -26,6 +26,7 @@ import {
   scopeBaseForOptions,
   summarizeScopeDirectory,
   runtimeOptionsSidecarPath as commonRuntimeOptionsSidecarPath,
+  writeFileAtomicDurable,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
@@ -61,7 +62,7 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const PROVIDER_DISPLAY = "Google Antigravity CLI";
 const DEFAULT_TIMEOUT_MS = 900000;
-const MAX_REVIEW_TIMEOUT_MS = 2147483647;
+const MAX_REVIEW_TIMEOUT_MS = MAX_TIMER_DELAY_MS;
 const READINESS_PREFLIGHT_TIMEOUT_MS = 30000;
 const READINESS_PREFLIGHT_PROMPT = "Reply with exactly: relay-agy-readiness";
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
@@ -320,7 +321,6 @@ function agySidecarPath(workspaceRoot, jobId, name) {
 function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
   prepareSidecarJobDirectory(workspaceRoot, file);
-  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
   const payload = {
     timeout_ms: options.timeout_ms,
   };
@@ -353,27 +353,13 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   if (typeof options.source_packet_override_source === "string" && options.source_packet_override_source.length > 0) {
     payload.source_packet_override_source = options.source_packet_override_source;
   }
-  try {
-    writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
-    try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
-    renameSync(tmpFile, file);
-  } catch (e) {
-    try { unlinkSync(tmpFile); } catch { /* already gone */ }
-    throw e;
-  }
+  writeFileAtomicDurable(file, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
   const file = agySidecarPath(workspaceRoot, jobId, name);
   prepareSidecarJobDirectory(workspaceRoot, file);
-  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    writeFileSync(tmpFile, contents ?? "", "utf8");
-    renameSync(tmpFile, file);
-  } catch (e) {
-    try { unlinkSync(tmpFile); } catch { /* already gone */ }
-    throw e;
-  }
+  writeFileAtomicDurable(file, contents ?? "");
 }
 
 function gitStatus(args, cwd, workspaceRoot = null) {

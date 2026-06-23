@@ -2,8 +2,8 @@
 // Edit scripts/lib/companion-common.mjs, then run
 // `node scripts/ci/sync-companion-common.mjs` to update plugin packaging copies.
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolve as resolvePath, sep } from "node:path";
+import fs, { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, resolve as resolvePath, sep } from "node:path";
 
 export const PING_PROMPT =
   "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
@@ -453,11 +453,57 @@ function enforcePrivateMode(target, mode) {
   }
 }
 
-function realpathOrResolve(target) {
+export function realpathOrResolve(target) {
   try {
     return realpathSync.native(target);
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return resolvePath(target);
+    }
+    throw err;
+  }
+}
+
+function fsyncDirectoryBestEffort(dir) {
+  try {
+    const dfd = fs.openSync(dir, "r");
+    try {
+      fs.fsyncSync(dfd);
+    } finally {
+      fs.closeSync(dfd);
+    }
   } catch {
-    return resolvePath(target);
+    // Directory fsync is platform/filesystem dependent. The data file fsync
+    // above is mandatory; parent directory durability is best-effort.
+  }
+}
+
+export function writeFileAtomicDurable(targetPath, data, { mode } = {}) {
+  const tmpFile = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+  let renamed = false;
+  try {
+    if (mode === undefined) {
+      fs.writeFileSync(tmpFile, data);
+    } else {
+      fs.writeFileSync(tmpFile, data, { mode });
+    }
+    const fd = fs.openSync(tmpFile, "r");
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (mode !== undefined) {
+      fs.chmodSync(tmpFile, mode);
+    }
+    fs.renameSync(tmpFile, targetPath);
+    renamed = true;
+    fsyncDirectoryBestEffort(dirname(targetPath));
+  } catch (err) {
+    if (!renamed) {
+      try { fs.unlinkSync(tmpFile); } catch { /* preserve original */ }
+    }
+    throw err;
   }
 }
 

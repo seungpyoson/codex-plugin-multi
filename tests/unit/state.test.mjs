@@ -399,6 +399,30 @@ test("AGY saveState: fsyncs the state tmp file before rename", () => {
   }
 });
 
+test("AGY readJobFile fails closed when realpath is denied", () => {
+  const dir = freshAgyStateDir();
+  const originalNative = fs.realpathSync.native;
+  try {
+    const jobFile = AgyState.writeJobFile(dir, "realpath-denied", { id: "realpath-denied" });
+    fs.realpathSync.native = function patchedRealpath(target) {
+      if (path.resolve(String(target)) === path.resolve(jobFile)) {
+        const error = new Error("state realpath denied");
+        error.code = "EACCES";
+        throw error;
+      }
+      return originalNative.call(this, target);
+    };
+
+    assert.throws(
+      () => AgyState.readJobFile(jobFile),
+      (err) => err?.code === "EACCES" && /state realpath denied/.test(err.message),
+    );
+  } finally {
+    fs.realpathSync.native = originalNative;
+    cleanupAgy(dir);
+  }
+});
+
 test("writeJobFile: removes sibling tmp file when final rename fails", () => {
   const dir = freshStateDir();
   const originalRename = fs.renameSync;
