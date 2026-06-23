@@ -21,6 +21,7 @@ Return the runtime output verbatim; do not hide failed or incomplete rescue work
 - `claude_session_id`
 - `gemini_session_id`
 - `kimi_session_id`
+- `agy_session_id`
 - `resume_chain`
 - `pid_info`
 - `mode`

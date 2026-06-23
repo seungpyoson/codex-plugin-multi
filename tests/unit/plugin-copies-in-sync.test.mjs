@@ -206,6 +206,7 @@ const VERBATIM_FILES = [
   "scope.mjs",
   "cancel-marker.mjs",
   "companion-common.mjs",
+  "reconcile.mjs",
   "external-model-failure-catalog.mjs",
   "external-model-failure-core.mjs",
   "external-review.mjs",
@@ -216,7 +217,6 @@ const VERBATIM_FILES = [
 const CLAUDE_GEMINI_VERBATIM_FILES = [
   "auth-selection.mjs",
   "provider-env.mjs",
-  "reconcile.mjs",
   "git-env.mjs",
 ];
 

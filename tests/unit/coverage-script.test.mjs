@@ -326,7 +326,7 @@ test("coverage gate discovers every packaged plugin lib directory", async () => 
     path.relative(resolve("."), file).split(path.sep).join("/")
   );
 
-  for (const plugin of ["claude", "gemini", "kimi", "api-reviewers"]) {
+  for (const plugin of ["claude", "gemini", "kimi", "agy", "api-reviewers"]) {
     assert.ok(
       files.some((file) => file.startsWith(`plugins/${plugin}/scripts/lib/`)),
       `coverage gate must walk plugins/${plugin}/scripts/lib`,

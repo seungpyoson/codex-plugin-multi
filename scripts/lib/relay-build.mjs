@@ -12,6 +12,11 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
+import {
+  RELAY_PROVIDER_DEFINITIONS,
+  RELAY_PROVIDER_ORDER,
+} from "./provider-plugin-definitions.mjs";
+
 const RELAY_REPOSITORY = "https://github.com/relay-org/relay";
 const RELAY_FOR_CLAUDE_MARKETPLACE = "relay-for-claude";
 const RELAY_SHARED_DIRECT_API_RUNTIME = "relay-api-reviewers";
@@ -19,36 +24,6 @@ const CODEX_DIRECT_API_RELAY_ENTRYPOINT_COMMAND_RE =
   /node "\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay-for-codex\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs"/g;
 const CODEX_DIRECT_API_RELAY_ENTRYPOINT_PATH_RE =
   /\$\{CODEX_HOME:-\$HOME\/\.codex\}\/plugins\/cache\/relay-for-codex\/relay-(?:deepseek|glm)\/[^/]+\/scripts\/api-reviewer\.mjs/g;
-const RELAY_PROVIDER_ORDER = Object.freeze(["gemini", "grok", "kimi", "glm", "deepseek"]);
-const RELAY_PROVIDER_DEFINITIONS = Object.freeze({
-  gemini: {
-    sourceProvider: "gemini",
-    commandPrefix: "gemini",
-    pluginDataEnv: "GEMINI_PLUGIN_DATA",
-    sessionIdEnv: "GEMINI_COMPANION_SESSION_ID",
-    synthesizeCustomReview: true,
-  },
-  grok: { sourceProvider: "grok", commandPrefix: "grok", pluginDataEnv: "GROK_PLUGIN_DATA" },
-  kimi: {
-    sourceProvider: "kimi",
-    commandPrefix: "kimi",
-    pluginDataEnv: "KIMI_PLUGIN_DATA",
-    sessionIdEnv: "KIMI_COMPANION_SESSION_ID",
-    synthesizeCustomReview: true,
-  },
-  glm: {
-    sourceProvider: "relay-glm",
-    commandPrefix: "glm",
-    pluginDataEnv: "API_REVIEWERS_PLUGIN_DATA",
-    description: "Delegate code reviews to GLM direct API from within Claude Code.",
-  },
-  deepseek: {
-    sourceProvider: "relay-deepseek",
-    commandPrefix: "deepseek",
-    pluginDataEnv: "API_REVIEWERS_PLUGIN_DATA",
-    description: "Delegate code reviews to DeepSeek direct API from within Claude Code.",
-  },
-});
 
 export function relayPluginName(provider) {
   return `relay-${provider}`;
@@ -215,7 +190,7 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
     join(pluginRoot, ".claude-plugin", "plugin.json"),
     renderClaudePluginManifest(readJson(join(sourceRoot, ".codex-plugin", "plugin.json")), {
       provider,
-      description: definition.description,
+      description: definition.claude.description,
     }),
   );
 
@@ -243,7 +218,7 @@ export function buildRelayPlugin({ provider, repoRoot = process.cwd(), outRoot =
       "utf8",
     );
   }
-  if (definition.synthesizeCustomReview) {
+  if (definition.claude.synthesizeCustomReview) {
     writeFileSync(
       join(commandsRoot, "custom-review.md"),
       renderClaudeCommandDoc(renderSynthesizedCustomReviewDoc(provider, definition)),

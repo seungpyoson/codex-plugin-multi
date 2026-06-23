@@ -11,12 +11,13 @@
     "url": "https://github.com/relay-org/relay.git"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.1.0"
   },
   "workspaces": [
     "plugins/claude",
     "plugins/gemini",
     "plugins/kimi",
+    "plugins/agy",
     "plugins/grok",
     "plugins/api-reviewers",
     "plugins/relay-glm",

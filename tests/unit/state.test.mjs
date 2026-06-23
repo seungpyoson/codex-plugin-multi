@@ -25,6 +25,7 @@ import {
 } from "../../plugins/claude/scripts/lib/state.mjs";
 import * as GeminiState from "../../plugins/gemini/scripts/lib/state.mjs";
 import * as KimiState from "../../plugins/kimi/scripts/lib/state.mjs";
+import * as AgyState from "../../plugins/agy/scripts/lib/state.mjs";
 
 // Node's test runner executes tests WITHIN a single file serially by default
 // (subtests only run concurrently under an explicit `test.describe` with
@@ -35,15 +36,18 @@ import * as KimiState from "../../plugins/kimi/scripts/lib/state.mjs";
 let INITIAL_CONFIG;
 let INITIAL_GEMINI_CONFIG;
 let INITIAL_KIMI_CONFIG;
+let INITIAL_AGY_CONFIG;
 before(() => {
   INITIAL_CONFIG = { ...getStateConfig() };
   INITIAL_GEMINI_CONFIG = { ...GeminiState.getStateConfig() };
   INITIAL_KIMI_CONFIG = { ...KimiState.getStateConfig() };
+  INITIAL_AGY_CONFIG = { ...AgyState.getStateConfig() };
 });
 afterEach(() => {
   configureState(INITIAL_CONFIG);
   GeminiState.configureState(INITIAL_GEMINI_CONFIG);
   KimiState.configureState(INITIAL_KIMI_CONFIG);
+  AgyState.configureState(INITIAL_AGY_CONFIG);
 });
 
 function freshStateDir() {
@@ -88,6 +92,21 @@ function freshKimiStateDir() {
 
 function cleanupKimi(dir) {
   delete process.env["KIMI_STATE_TEST_DATA"];
+  rmSync(dir, { recursive: true, force: true });
+}
+
+function freshAgyStateDir() {
+  const dir = mkdtempSync(path.join(tmpdir(), "agy-state-test-"));
+  process.env["AGY_STATE_TEST_DATA"] = dir;
+  AgyState.configureState({
+    pluginDataEnv: "AGY_STATE_TEST_DATA",
+    fallbackStateRootDir: path.join(dir, "fallback"),
+  });
+  return dir;
+}
+
+function cleanupAgy(dir) {
+  delete process.env["AGY_STATE_TEST_DATA"];
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -348,6 +367,59 @@ test("saveState: ignores unsafe stale ids and out-of-scope or directory logs", (
     assert.equal(fs.existsSync(directoryLog), true);
   } finally {
     cleanup(dir);
+  }
+});
+
+test("AGY saveState: fsyncs the state tmp file before rename", () => {
+  const dir = freshAgyStateDir();
+  const originalFsync = fs.fsyncSync;
+  const originalRename = fs.renameSync;
+  let fsyncCalls = 0;
+  let renamedBeforeFsync = false;
+  try {
+    fs.fsyncSync = function patchedFsync(fd) {
+      fsyncCalls += 1;
+      return originalFsync.call(this, fd);
+    };
+    fs.renameSync = function patchedRename(from, to) {
+      if (String(from).endsWith(".tmp") && String(to).endsWith("state.json")) {
+        renamedBeforeFsync = fsyncCalls === 0;
+      }
+      return originalRename.call(this, from, to);
+    };
+
+    AgyState.saveState(dir, { jobs: [{ id: "fsync-state", status: "queued" }] });
+
+    assert.equal(renamedBeforeFsync, false, "state tmp file must be fsynced before rename");
+    assert.ok(fsyncCalls > 0, "state save must call fsyncSync");
+  } finally {
+    fs.fsyncSync = originalFsync;
+    fs.renameSync = originalRename;
+    cleanupAgy(dir);
+  }
+});
+
+test("AGY readJobFile fails closed when realpath is denied", () => {
+  const dir = freshAgyStateDir();
+  const originalNative = fs.realpathSync.native;
+  try {
+    const jobFile = AgyState.writeJobFile(dir, "realpath-denied", { id: "realpath-denied" });
+    fs.realpathSync.native = function patchedRealpath(target) {
+      if (path.resolve(String(target)) === path.resolve(jobFile)) {
+        const error = new Error("state realpath denied");
+        error.code = "EACCES";
+        throw error;
+      }
+      return originalNative.call(this, target);
+    };
+
+    assert.throws(
+      () => AgyState.readJobFile(jobFile),
+      (err) => err?.code === "EACCES" && /state realpath denied/.test(err.message),
+    );
+  } finally {
+    fs.realpathSync.native = originalNative;
+    cleanupAgy(dir);
   }
 });
 

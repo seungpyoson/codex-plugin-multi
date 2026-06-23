@@ -68,7 +68,7 @@ test("Claude/Gemini/Kimi docs route explicit file scopes to custom-review before
 });
 
 test("external model contract docs are generated from one shared source", () => {
-  assert.equal(EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.length, 74);
+  assert.equal(EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.length, 89);
 
   const targetPaths = new Set();
   for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS) {
@@ -129,6 +129,31 @@ test("external model contract docs are generated from one shared source", () => 
       assert.doesNotMatch(rendered, /Bash\(api-reviewer:\*\)/, `${target.path} must not allow the removed api-reviewer shim`);
     }
   }
+});
+
+test("external model contract targets include AGY paths from shared provider metadata", () => {
+  const agyTargets = EXTERNAL_MODEL_CONTRACT_DOC_TARGETS
+    .filter((target) => target.provider?.plugin === "agy")
+    .map((target) => target.path)
+    .sort();
+
+  assert.deepEqual(agyTargets, [
+    "plugins/agy/commands/agy-adversarial-review.md",
+    "plugins/agy/commands/agy-cancel.md",
+    "plugins/agy/commands/agy-custom-review.md",
+    "plugins/agy/commands/agy-result.md",
+    "plugins/agy/commands/agy-review.md",
+    "plugins/agy/commands/agy-setup.md",
+    "plugins/agy/commands/agy-status.md",
+    "plugins/agy/skills/agy-adversarial-review/SKILL.md",
+    "plugins/agy/skills/agy-cancel/SKILL.md",
+    "plugins/agy/skills/agy-custom-review/SKILL.md",
+    "plugins/agy/skills/agy-delegation/SKILL.md",
+    "plugins/agy/skills/agy-result/SKILL.md",
+    "plugins/agy/skills/agy-review/SKILL.md",
+    "plugins/agy/skills/agy-setup/SKILL.md",
+    "plugins/agy/skills/agy-status/SKILL.md",
+  ]);
 });
 
 test("shared review contracts keep upstream-parity review-only guarantees", () => {
@@ -255,9 +280,14 @@ test("provider-specific external model contracts keep mechanical safety clauses"
       1,
       `${target.path} should not duplicate lifecycle rendering prose`,
     );
-    assert.match(rendered, /resend_confirmation_required/);
-    assert.match(rendered, /--resend-confirmation-approved/);
-    assert.match(rendered, /narrow the source packet/);
+    if (target.provider.workflows.includes("rescue")) {
+      assert.match(rendered, /resend_confirmation_required/);
+      assert.match(rendered, /--resend-confirmation-approved/);
+      assert.match(rendered, /narrow the source packet/);
+    } else {
+      assert.doesNotMatch(rendered, /resend_confirmation_required/);
+      assert.doesNotMatch(rendered, /--resend-confirmation-approved/);
+    }
   }
 
   for (const target of EXTERNAL_MODEL_CONTRACT_DOC_TARGETS.filter((item) =>
@@ -356,6 +386,7 @@ test("provider-neutral contracts expose the shared audit and status field invent
     "source_send_approval_required",
     "source_send_approval_state",
     "source_content_transmission",
+    "agy_session_id",
     "review_quality.failed_review_slot",
     "review_quality.semantic_failure_reasons",
     "error_code",

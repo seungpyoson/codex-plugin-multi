@@ -72,16 +72,9 @@ const GROK_EXPECTED_KEYS = Object.freeze([
 function run(args, options = {}) {
   const defaultTransportEnv = options.defaultTransport === false ? {} : { GROK_TRANSPORT: "web" };
   const cwd = options.cwd ?? REPO_ROOT;
-  const workloadLockDir = options.env?.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(options.env?.GROK_PLUGIN_DATA ?? cwd, ".provider-workload");
   return spawnSync(process.execPath, [COMPANION, ...args], {
     cwd,
-    env: {
-      ...process.env,
-      ...defaultTransportEnv,
-      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
-      ...options.env,
-    },
+    env: grokSmokeEnv(cwd, options.env, defaultTransportEnv),
     encoding: "utf8",
   });
 }
@@ -89,17 +82,10 @@ function run(args, options = {}) {
 function runAsync(args, options = {}) {
   const defaultTransportEnv = options.defaultTransport === false ? {} : { GROK_TRANSPORT: "web" };
   const cwd = options.cwd ?? REPO_ROOT;
-  const workloadLockDir = options.env?.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(options.env?.GROK_PLUGIN_DATA ?? cwd, ".provider-workload");
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [COMPANION, ...args], {
       cwd,
-      env: {
-        ...process.env,
-        ...defaultTransportEnv,
-        RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
-        ...options.env,
-      },
+      env: grokSmokeEnv(cwd, options.env, defaultTransportEnv),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -112,6 +98,17 @@ function runAsync(args, options = {}) {
       resolve({ status, signal, stdout, stderr });
     });
   });
+}
+
+function grokSmokeEnv(cwd, env = {}, defaultTransportEnv = {}) {
+  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(env.GROK_PLUGIN_DATA ?? cwd, ".provider-workload");
+  return {
+    ...process.env,
+    ...defaultTransportEnv,
+    ...env,
+    RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+  };
 }
 
 function parseStdout(result) {
@@ -775,15 +772,14 @@ test("Grok CLI lifecycle markdown streams running card before source-bearing CLI
       "--prompt", "Review selected source.",
     ], {
       cwd,
-      env: {
-        ...process.env,
+      env: grokSmokeEnv(cwd, {
         PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         GROK_CLI_BINARY: grokPath,
         GROK_CLI_AUTH_HOME: authHome,
         GROK_PLUGIN_DATA: dataDir,
         GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
         CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "25",
-      },
+      }),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -841,15 +837,14 @@ test("Grok CLI timeout escalates when source-bearing process ignores SIGTERM", {
       "--prompt", "Review selected source.",
     ], {
       cwd,
-      env: {
-        ...process.env,
+      env: grokSmokeEnv(cwd, {
         PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         GROK_CLI_BINARY: grokPath,
         GROK_CLI_AUTH_HOME: authHome,
         GROK_PLUGIN_DATA: dataDir,
         GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
         GROK_CLI_TIMEOUT_MS: "3000",
-      },
+      }),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

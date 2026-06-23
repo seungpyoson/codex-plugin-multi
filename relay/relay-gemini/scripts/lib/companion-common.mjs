@@ -2,8 +2,8 @@
 // Edit scripts/lib/companion-common.mjs, then run
 // `node scripts/ci/sync-companion-common.mjs` to update plugin packaging copies.
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolve as resolvePath, sep } from "node:path";
+import fs, { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, resolve as resolvePath, sep } from "node:path";
 
 export const PING_PROMPT =
   "reply with exactly: pong. Do not use any tools, do not read files, and do not explore the workspace.";
@@ -254,15 +254,29 @@ function reviewMetadataProjection(obj) {
     "rendered_prompt_hash",
     "selected_source",
     "scope_resolution",
+    "request",
     "selected_route",
     "fallback_reason",
     "approval_scope",
+    "source_content_transmission",
     "source_send_approval_required",
     "source_send_approval_state",
+    "source_packet_policy",
+    "packet_recovery",
   ]) {
     if (manifest[key] !== undefined) projection[key] = manifest[key];
   }
   return Object.keys(projection).length > 0 ? { audit_manifest: projection } : null;
+}
+
+function runtimeDiagnosticsProjection(obj) {
+  const diagnostics = obj?.runtime_diagnostics;
+  if (!diagnostics || typeof diagnostics !== "object") return null;
+  const projection = {};
+  for (const key of ["source_packet_policy", "packet_recovery"]) {
+    if (diagnostics[key] !== undefined) projection[key] = diagnostics[key];
+  }
+  return Object.keys(projection).length > 0 ? projection : null;
 }
 
 function terminalLifecycleProjection(obj) {
@@ -301,6 +315,8 @@ function terminalLifecycleProjection(obj) {
   }
   const reviewMetadata = reviewMetadataProjection(obj);
   if (reviewMetadata) projection.review_metadata = reviewMetadata;
+  const runtimeDiagnostics = runtimeDiagnosticsProjection(obj);
+  if (runtimeDiagnostics) projection.runtime_diagnostics = runtimeDiagnostics;
   return projection;
 }
 
@@ -437,15 +453,96 @@ function enforcePrivateMode(target, mode) {
   }
 }
 
-function realpathOrResolve(target) {
+export function realpathOrResolve(target) {
   try {
     return realpathSync.native(target);
-  } catch {
-    return resolvePath(target);
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return resolvePath(target);
+    }
+    throw err;
   }
 }
 
-function assertRealJobDirectory(jobsDir, dir) {
+// Directory fsync is genuinely unavailable on some platforms/filesystems
+// (Windows cannot fsync a directory handle; some network/virtual filesystems
+// reject it; a signal can interrupt it). Those outcomes stay best-effort. A
+// real storage error (EIO, ENOSPC, EROFS, an unexpected EBADF, …) means the
+// just-completed rename may not be crash-durable, so it MUST surface — swallowing
+// it would make this helper's durability contract silently false (fail loud).
+const TOLERABLE_DIR_FSYNC_CODES = new Set([
+  "EINVAL", // directory fd does not support fsync on this filesystem
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "ENOSYS",
+  "EISDIR", // platform rejects opening/fsyncing a directory handle (Windows)
+  "EPERM",
+  "EACCES",
+  "EINTR", // interrupted; the mandatory data-file fsync already completed
+]);
+
+function fsyncDirectoryBestEffort(dir) {
+  let dfd;
+  try {
+    dfd = fs.openSync(dir, "r");
+    fs.fsyncSync(dfd);
+  } catch (err) {
+    if (!TOLERABLE_DIR_FSYNC_CODES.has(err?.code)) {
+      throw err;
+    }
+    // Tolerated: directory fsync is unsupported here or was interrupted. The
+    // mandatory data-file fsync ran before the rename, so the payload is durable.
+  } finally {
+    if (dfd !== undefined) {
+      try {
+        fs.closeSync(dfd);
+      } catch {
+        // fd already closed or never valid; nothing durable depends on close
+      }
+    }
+  }
+}
+
+export function writeFileAtomicDurable(targetPath, data, { mode } = {}) {
+  const tmpFile = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+  let renamed = false;
+  try {
+    if (mode === undefined) {
+      fs.writeFileSync(tmpFile, data);
+    } else {
+      fs.writeFileSync(tmpFile, data, { mode });
+    }
+    const fd = fs.openSync(tmpFile, "r");
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (mode !== undefined) {
+      fs.chmodSync(tmpFile, mode);
+    }
+    fs.renameSync(tmpFile, targetPath);
+    renamed = true;
+    fsyncDirectoryBestEffort(dirname(targetPath));
+  } catch (err) {
+    if (!renamed) {
+      try { fs.unlinkSync(tmpFile); } catch { /* preserve original */ }
+    } else if (err && typeof err === "object") {
+      // The rename already succeeded: targetPath now holds the new contents and
+      // is visible to every reader. The only step left when `renamed` is true is
+      // the best-effort parent-directory fsync, so this is a post-rename
+      // crash-durability failure, NOT a "nothing was written" failure. Tag it so
+      // a multi-file commit caller (commitJobRecord) can tell the two apart and
+      // keep its dependent index write — stranding an already-spawned job
+      // invisibly is worse than the durability gap. The error still throws, so
+      // any caller that does not special-case the tag stays fail-loud.
+      err.durableWriteCommitted = true;
+    }
+    throw err;
+  }
+}
+
+export function assertRealJobDirectory(jobsDir, dir) {
   const stat = lstatSync(dir);
   if (stat.isSymbolicLink()) {
     throw new Error(`${dir} is not a real directory inside jobsDir`);
