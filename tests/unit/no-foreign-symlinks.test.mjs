@@ -29,22 +29,31 @@ test("findForeignSymlinks: flags an absolute (machine-specific) target — the #
   assert.match(offenders[0].reason, /absolute/);
 });
 
-test("findForeignSymlinks: flags Windows-drive and UNC absolute targets", () => {
+test("findForeignSymlinks: flags every machine-rooted Windows form (drive, UNC, root-relative, drive-relative)", () => {
+  // The committed blob is identical on every clone OS, so a target that is
+  // machine-rooted under WINDOWS semantics must be rejected even when the check
+  // runs on POSIX. Covers the reviewer-found gaps: single-backslash root-relative
+  // (`\Windows\System32`) and drive-relative (`C:foo`, `C:`).
   const offenders = findForeignSymlinks([
-    { path: "a", target: "C:\\Windows\\system32" },
-    { path: "b", target: "C:/Windows" },
-    { path: "c", target: "\\\\server\\share" },
+    { path: "a", target: "C:\\Windows\\system32" }, // drive + backslash
+    { path: "b", target: "C:/Windows" }, // drive + forward slash
+    { path: "c", target: "\\\\server\\share" }, // UNC
+    { path: "d", target: "\\Windows\\System32" }, // single-backslash current-drive root
+    { path: "e", target: "C:foo" }, // drive-relative (binds to C:'s cwd)
+    { path: "f", target: "C:" }, // bare drive
   ]);
-  assert.equal(offenders.length, 3);
-  for (const o of offenders) assert.match(o.reason, /absolute/);
+  assert.equal(offenders.length, 6);
+  for (const o of offenders) assert.match(o.reason, /machine-specific/);
 });
 
-test("findForeignSymlinks: flags relative targets that escape the repo root", () => {
+test("findForeignSymlinks: flags relative targets that escape the repo root, incl. backslash separators", () => {
   const offenders = findForeignSymlinks([
     { path: "link", target: "../outside" },
     { path: "a/b/link", target: "../../../etc/passwd" },
+    { path: "toplink", target: "..\\outside" }, // Windows-separator escape from root
+    { path: "sub/nestlink", target: "..\\..\\outside" }, // Windows-separator nested escape
   ]);
-  assert.equal(offenders.length, 2);
+  assert.equal(offenders.length, 4);
   for (const o of offenders) assert.match(o.reason, /escapes repo root/);
 });
 
@@ -54,6 +63,7 @@ test("findForeignSymlinks: allows relative targets resolving inside the repo (th
     { path: "tests/smoke/claude", target: "claude-mock.mjs" },
     { path: "a/b/c", target: "../d" }, // -> a/d, still inside
     { path: "x", target: "./y" }, // -> y, inside
+    { path: "z", target: "sub\\file" }, // backslash, but -> sub/file, inside (no false positive)
   ]);
   assert.deepEqual(offenders, []);
 });
@@ -157,6 +167,63 @@ test("CLI flags a relative symlink that escapes the repo root", () => {
     }
     assert.ok(threw, "expected the check to exit non-zero on an escaping symlink");
     assert.match(combined, /escaper/);
+    assert.match(combined, /escapes repo root/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Windows-form bypasses found by external review (Kimi/GPT) and reproduced as
+// real committable blobs from POSIX — these would be CI false-greens on a
+// Windows clone of the #247 class. End-to-end through git, on POSIX.
+test("CLI flags a single-backslash Windows current-drive-root symlink target", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "winroot-symlink-"));
+  try {
+    fixtureGit(dir, ["init"]);
+    fixtureGit(dir, ["config", "user.email", "test@example.com"]);
+    fixtureGit(dir, ["config", "user.name", "Test User"]);
+    // `\Windows\System32`: absolute on Windows (current drive root), literal
+    // filename on POSIX — git stores the bytes verbatim either way.
+    symlinkSync("\\Windows\\System32", path.join(dir, "winroot"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    let threw = false;
+    let combined = "";
+    try {
+      execFileSync("node", [CHECK], { cwd: dir, encoding: "utf8", env: fixtureGitEnv() });
+    } catch (e) {
+      threw = true;
+      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+    }
+    assert.ok(threw, "expected the check to exit non-zero on a \\-rooted Windows target");
+    assert.match(combined, /winroot/);
+    assert.match(combined, /machine-specific/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CLI flags a Windows-separator relative escape (..\\..\\outside)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "winescape-symlink-"));
+  try {
+    fixtureGit(dir, ["init"]);
+    fixtureGit(dir, ["config", "user.email", "test@example.com"]);
+    fixtureGit(dir, ["config", "user.name", "Test User"]);
+    // `..\outside` from a top-level link escapes the repo on Windows; on POSIX it
+    // is a literal name — the old guard saw only POSIX and let it pass.
+    symlinkSync("..\\outside", path.join(dir, "toplink"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    let threw = false;
+    let combined = "";
+    try {
+      execFileSync("node", [CHECK], { cwd: dir, encoding: "utf8", env: fixtureGitEnv() });
+    } catch (e) {
+      threw = true;
+      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+    }
+    assert.ok(threw, "expected the check to exit non-zero on a \\-separator escape");
+    assert.match(combined, /toplink/);
     assert.match(combined, /escapes repo root/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
