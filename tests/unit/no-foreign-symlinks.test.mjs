@@ -29,41 +29,55 @@ test("findForeignSymlinks: flags an absolute (machine-specific) target — the #
   assert.match(offenders[0].reason, /absolute/);
 });
 
-test("findForeignSymlinks: flags every machine-rooted Windows form (drive, UNC, root-relative, drive-relative)", () => {
-  // The committed blob is identical on every clone OS, so a target that is
-  // machine-rooted under WINDOWS semantics must be rejected even when the check
-  // runs on POSIX. Covers the reviewer-found gaps: single-backslash root-relative
-  // (`\Windows\System32`) and drive-relative (`C:foo`, `C:`).
+// The guard is an allowlist: it accepts only a non-empty, relative, forward-slash
+// target that resolves inside the repo, and rejects everything else. The next
+// three tests pin the three rejection sub-classes; each row is a whole class, not
+// a single enumerated syntax.
+
+test("findForeignSymlinks: rejects any backslash target (Windows sep / UNC / drive+backslash / \\-escape)", () => {
+  // ONE rule (`includes("\\")`) subsumes all of these — they are non-portable on
+  // every clone, so the guard never has to enumerate the individual forms.
   const offenders = findForeignSymlinks([
     { path: "a", target: "C:\\Windows\\system32" }, // drive + backslash
+    { path: "b", target: "\\\\server\\share" }, // UNC
+    { path: "c", target: "\\Windows\\System32" }, // single-backslash current-drive root
+    { path: "toplink", target: "..\\outside" }, // backslash escape from root
+    { path: "sub/nestlink", target: "..\\..\\outside" }, // nested backslash escape
+    { path: "z", target: "sub\\file" }, // diverges across OSes (sub/file on Win, literal on POSIX)
+  ]);
+  assert.equal(offenders.length, 6);
+  for (const o of offenders) assert.match(o.reason, /non-portable/);
+});
+
+test("findForeignSymlinks: rejects forward-slash absolute and drive-qualified targets", () => {
+  const offenders = findForeignSymlinks([
+    { path: "n", target: "/Users/x/relay/node_modules" }, // POSIX absolute (the #247 bug)
     { path: "b", target: "C:/Windows" }, // drive + forward slash
-    { path: "c", target: "\\\\server\\share" }, // UNC
-    { path: "d", target: "\\Windows\\System32" }, // single-backslash current-drive root
     { path: "e", target: "C:foo" }, // drive-relative (binds to C:'s cwd)
     { path: "f", target: "C:" }, // bare drive
   ]);
-  assert.equal(offenders.length, 6);
+  assert.equal(offenders.length, 4);
   for (const o of offenders) assert.match(o.reason, /machine-specific/);
 });
 
-test("findForeignSymlinks: flags relative targets that escape the repo root, incl. backslash separators", () => {
+test("findForeignSymlinks: rejects empty target and forward-slash escapes above the repo root", () => {
   const offenders = findForeignSymlinks([
+    { path: "x", target: "" }, // empty — fail closed
     { path: "link", target: "../outside" },
     { path: "a/b/link", target: "../../../etc/passwd" },
-    { path: "toplink", target: "..\\outside" }, // Windows-separator escape from root
-    { path: "sub/nestlink", target: "..\\..\\outside" }, // Windows-separator nested escape
   ]);
-  assert.equal(offenders.length, 4);
-  for (const o of offenders) assert.match(o.reason, /escapes repo root/);
+  assert.equal(offenders.length, 3);
+  assert.match(offenders[0].reason, /empty/);
+  assert.match(offenders[1].reason, /escapes repo root/);
+  assert.match(offenders[2].reason, /escapes repo root/);
 });
 
-test("findForeignSymlinks: allows relative targets resolving inside the repo (the 2 legit links)", () => {
+test("findForeignSymlinks: allows safe relative forward-slash targets resolving inside the repo", () => {
   const offenders = findForeignSymlinks([
     { path: "relay/relay-api-reviewers", target: "../plugins/api-reviewers" },
     { path: "tests/smoke/claude", target: "claude-mock.mjs" },
     { path: "a/b/c", target: "../d" }, // -> a/d, still inside
     { path: "x", target: "./y" }, // -> y, inside
-    { path: "z", target: "sub\\file" }, // backslash, but -> sub/file, inside (no false positive)
   ]);
   assert.deepEqual(offenders, []);
 });
@@ -142,7 +156,7 @@ test("CLI exits non-zero and names the offender when a foreign symlink is commit
     assert.ok(threw, "expected the check to exit non-zero on a foreign symlink");
     assert.match(combined, /FAILED/);
     assert.match(combined, /bad-link/);
-    assert.match(combined, /absolute target/);
+    assert.match(combined, /machine-specific/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -173,18 +187,20 @@ test("CLI flags a relative symlink that escapes the repo root", () => {
   }
 });
 
-// Windows-form bypasses found by external review (Kimi/GPT) and reproduced as
-// real committable blobs from POSIX — these would be CI false-greens on a
-// Windows clone of the #247 class. End-to-end through git, on POSIX.
-test("CLI flags a single-backslash Windows current-drive-root symlink target", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "winroot-symlink-"));
+// Forms found by external review (Kimi/GPT) and reproduced as real committable
+// blobs from POSIX — CI false-greens on a Windows clone of the #247 class under
+// the old POSIX-only guard. End-to-end through git, on POSIX. These cover the two
+// rejection mechanisms a forward-slash-only test cannot reach: a backslash byte,
+// and a drive qualifier with no backslash and no leading slash.
+test("CLI flags a backslash-bearing symlink target (Windows separator / UNC / \\-escape)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "backslash-symlink-"));
   try {
     fixtureGit(dir, ["init"]);
     fixtureGit(dir, ["config", "user.email", "test@example.com"]);
     fixtureGit(dir, ["config", "user.name", "Test User"]);
-    // `\Windows\System32`: absolute on Windows (current drive root), literal
-    // filename on POSIX — git stores the bytes verbatim either way.
-    symlinkSync("\\Windows\\System32", path.join(dir, "winroot"));
+    // `\Windows\System32`: absolute on Windows, literal filename on POSIX — git
+    // stores the bytes verbatim. The backslash alone makes it non-portable.
+    symlinkSync("\\Windows\\System32", path.join(dir, "winlink"));
     fixtureGit(dir, ["add", "-A"]);
 
     let threw = false;
@@ -195,23 +211,23 @@ test("CLI flags a single-backslash Windows current-drive-root symlink target", (
       threw = true;
       combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
     }
-    assert.ok(threw, "expected the check to exit non-zero on a \\-rooted Windows target");
-    assert.match(combined, /winroot/);
-    assert.match(combined, /machine-specific/);
+    assert.ok(threw, "expected the check to exit non-zero on a backslash target");
+    assert.match(combined, /winlink/);
+    assert.match(combined, /non-portable/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("CLI flags a Windows-separator relative escape (..\\..\\outside)", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "winescape-symlink-"));
+test("CLI flags a Windows drive-relative target with no backslash (C:foo)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "driverel-symlink-"));
   try {
     fixtureGit(dir, ["init"]);
     fixtureGit(dir, ["config", "user.email", "test@example.com"]);
     fixtureGit(dir, ["config", "user.name", "Test User"]);
-    // `..\outside` from a top-level link escapes the repo on Windows; on POSIX it
-    // is a literal name — the old guard saw only POSIX and let it pass.
-    symlinkSync("..\\outside", path.join(dir, "toplink"));
+    // `C:foo`: drive-relative on Windows (binds to drive C:'s cwd), literal name
+    // on POSIX. No backslash and not POSIX-absolute, so only the drive rule catches it.
+    symlinkSync("C:foo", path.join(dir, "driverel"));
     fixtureGit(dir, ["add", "-A"]);
 
     let threw = false;
@@ -222,9 +238,9 @@ test("CLI flags a Windows-separator relative escape (..\\..\\outside)", () => {
       threw = true;
       combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
     }
-    assert.ok(threw, "expected the check to exit non-zero on a \\-separator escape");
-    assert.match(combined, /toplink/);
-    assert.match(combined, /escapes repo root/);
+    assert.ok(threw, "expected the check to exit non-zero on a drive-relative target");
+    assert.match(combined, /driverel/);
+    assert.match(combined, /machine-specific/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
