@@ -10,11 +10,15 @@
 // "bad" forms — drive letters, UNC, \ escapes … — is unbounded whack-a-mole;
 // requiring the single safe shape is the class fix).
 //
-// Accepts: a NON-empty, RELATIVE, forward-slash target that resolves INSIDE the
-//   repo (e.g. ../plugins/api-reviewers, claude-mock.mjs).
-// Rejects everything else: any "\" (Windows separator / non-portable byte on
-//   POSIX — subsumes \x, C:\x, \\UNC, ..\ escapes), a leading "/" or an "X:"
-//   drive qualifier (machine-rooted), and "../" escapes above the repo root.
+// Accepts: a NON-empty, RELATIVE, forward-slash target whose EVERY segment is a
+//   portable filename and which resolves INSIDE the repo on every clone OS
+//   (e.g. ../plugins/api-reviewers, claude-mock.mjs).
+// Rejects everything else: any "\" (Windows separator; subsumes \x, C:\x, \\UNC),
+//   a leading "/" (POSIX absolute), a segment that is not a portable filename
+//   (a Windows-illegal char incl. ":" — which covers drive qualifiers C:foo and
+//   NTFS streams name:stream — or a control byte; a trailing dot/space Windows
+//   strips; or a reserved device name CON/NUL/COM1… that binds to a device, not
+//   a file), and "../" escapes above the repo root.
 //
 // Why this exists (#247): a `node_modules` symlink whose target was the absolute
 // path /Users/.../relay/node_modules was committed to main, because .gitignore's
@@ -46,12 +50,32 @@ import { cleanGitEnv } from "../../plugins/api-reviewers/scripts/lib/git-env.mjs
 
 const TRUSTED_GIT_ENV = gitEnv(cleanGitEnv());
 
+// Windows reserves a FIXED, OS-defined set of device names: any path segment that
+// is one of these (with or without an extension) refers to the DEVICE, not an
+// in-repo file, on a Windows clone. A closed set — not open-ended path syntax.
+const WIN_RESERVED_SEGMENT = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
+// Punctuation illegal in a Windows path segment (the "/" separator excepted, and
+// "\" already rejected wholesale). ":" also covers drive qualifiers (C:foo) and
+// NTFS alternate-data-streams (name:stream).
+const WIN_ILLEGAL_PUNCT = '<>:"|?*';
+
+// True when a segment contains a byte illegal in a portable filename: a control
+// byte (NUL .. US, 0x00–0x1f — covers embedded newline/NUL) or Windows-illegal
+// punctuation. A codepoint scan avoids a control-character regex literal.
+function hasNonPortableChar(segment) {
+  for (const ch of segment) {
+    const code = ch.codePointAt(0);
+    if (code <= 0x1f) return true;
+    if (WIN_ILLEGAL_PUNCT.includes(ch)) return true;
+  }
+  return false;
+}
+
 // Classify a tracked symlink's committed target. Returns a human-readable reason
 // when the target is foreign, or null when it is the one safe shape.
 //
-// This is an ALLOWLIST (see file header): rather than enumerate every machine-
-// rooted syntax (POSIX absolute, Windows drive/UNC/root-relative, drive-relative,
-// \ escapes …) — a list that grows every time a new form is found — it requires
+// This is an ALLOWLIST (see file header): rather than enumerate every foreign
+// target syntax — a list that grows every time a new form is found — it requires
 // the single portable, in-repo shape and rejects all else, so unknown forms fail
 // closed. Each rejection below removes a whole sub-class, not one instance.
 function classifyForeignTarget(linkPath, target) {
@@ -60,15 +84,32 @@ function classifyForeignTarget(linkPath, target) {
   }
   // A portable git symlink target uses "/". A backslash is a Windows path
   // separator (and a divergent, non-portable byte on POSIX), so ANY "\" makes the
-  // target non-portable — this single rule subsumes \x, C:\x, \\UNC and ..\ escapes.
+  // target non-portable — this single rule subsumes \x, C:\x and \\UNC.
   if (target.includes("\\")) {
     return "non-portable '\\' separator (symlink targets must use '/')";
   }
-  // Machine-rooted under any OS: a leading "/" (POSIX absolute) or an "X:" drive
-  // qualifier (Windows absolute or drive-relative). A portable relative segment
-  // never begins with "/" or a drive letter, so either is machine-bound.
-  if (posix.isAbsolute(target) || /^[A-Za-z]:/.test(target)) {
-    return "absolute / drive-rooted target (machine-specific)";
+  // A leading "/" is POSIX-absolute → machine-rooted.
+  if (posix.isAbsolute(target)) {
+    return "absolute target (machine-specific)";
+  }
+  // Every segment must be a portable filename that names an in-repo file on EVERY
+  // clone OS. One cohesive rule (vs. enumerating "bad target syntaxes") rejects:
+  // Windows-illegal characters (incl. ":" → drive qualifiers and NTFS streams, and
+  // control bytes), trailing dot/space (Windows silently strips them), and reserved
+  // device names (which resolve to a device, not a file).
+  for (const segment of target.split("/")) {
+    if (segment === "" || segment === "." || segment === "..") {
+      continue; // separators and lexical navigation — handled by containment below
+    }
+    if (hasNonPortableChar(segment)) {
+      return `non-portable character in path segment "${segment}"`;
+    }
+    if (/[ .]$/.test(segment)) {
+      return `path segment "${segment}" ends with a space or dot (non-portable on Windows)`;
+    }
+    if (WIN_RESERVED_SEGMENT.test(segment)) {
+      return `Windows reserved device name "${segment}" (machine-bound, not an in-repo file)`;
+    }
   }
   // Containment: resolve lexically against the link's own directory; it must not
   // climb above the repo root.

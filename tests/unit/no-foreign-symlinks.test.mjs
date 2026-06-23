@@ -49,15 +49,56 @@ test("findForeignSymlinks: rejects any backslash target (Windows sep / UNC / dri
   for (const o of offenders) assert.match(o.reason, /non-portable/);
 });
 
-test("findForeignSymlinks: rejects forward-slash absolute and drive-qualified targets", () => {
+test("findForeignSymlinks: rejects forward-slash POSIX-absolute targets", () => {
   const offenders = findForeignSymlinks([
-    { path: "n", target: "/Users/x/relay/node_modules" }, // POSIX absolute (the #247 bug)
-    { path: "b", target: "C:/Windows" }, // drive + forward slash
-    { path: "e", target: "C:foo" }, // drive-relative (binds to C:'s cwd)
-    { path: "f", target: "C:" }, // bare drive
+    { path: "n", target: "/Users/x/relay/node_modules" }, // the #247 bug
+    { path: "e", target: "/etc/passwd" },
   ]);
-  assert.equal(offenders.length, 4);
+  assert.equal(offenders.length, 2);
   for (const o of offenders) assert.match(o.reason, /machine-specific/);
+});
+
+test("findForeignSymlinks: rejects a segment with a Windows-illegal char (':' drive/stream, control bytes, < > | ? * \")", () => {
+  // ':' subsumes the old drive-qualifier special case (C:foo, C:, C:/x) AND NTFS
+  // alternate-data-streams (name:stream); the control range covers NUL/newline.
+  const offenders = findForeignSymlinks([
+    { path: "a", target: "C:/Windows" }, // drive + forward slash -> ':' illegal
+    { path: "b", target: "C:foo" }, // drive-relative -> ':' illegal
+    { path: "c", target: "C:" }, // bare drive -> ':' illegal
+    { path: "d", target: "foo:bar" }, // NTFS stream / colon mid-segment
+    { path: "e", target: "a|b" },
+    { path: "f", target: "a?b" },
+    { path: "g", target: "a*b" },
+    { path: "h", target: 'a"b' },
+    { path: "i", target: "a<b" },
+    { path: "j", target: "ctrl" + String.fromCharCode(0) + "byte" }, // embedded control byte (NUL)
+  ]);
+  assert.equal(offenders.length, 10);
+  for (const o of offenders) assert.match(o.reason, /non-portable character/);
+});
+
+test("findForeignSymlinks: rejects Windows reserved device-name segments (CON, NUL, COM1 …)", () => {
+  const offenders = findForeignSymlinks([
+    { path: "a", target: "nul" },
+    { path: "b", target: "con.txt" }, // reserved + extension still reserved
+    { path: "c", target: "AUX" }, // case-insensitive
+    { path: "d", target: "prn" },
+    { path: "e", target: "com1" },
+    { path: "f", target: "lpt9" },
+    { path: "g", target: "sub/con" }, // reserved as a non-leading segment
+  ]);
+  assert.equal(offenders.length, 7);
+  for (const o of offenders) assert.match(o.reason, /reserved device name/);
+});
+
+test("findForeignSymlinks: rejects a segment ending in a space or dot (Windows strips them)", () => {
+  const offenders = findForeignSymlinks([
+    { path: "a", target: "trail." },
+    { path: "b", target: "trail " },
+    { path: "c", target: "sub/baz." },
+  ]);
+  assert.equal(offenders.length, 3);
+  for (const o of offenders) assert.match(o.reason, /space or dot/);
 });
 
 test("findForeignSymlinks: rejects empty target and forward-slash escapes above the repo root", () => {
@@ -72,12 +113,18 @@ test("findForeignSymlinks: rejects empty target and forward-slash escapes above 
   assert.match(offenders[2].reason, /escapes repo root/);
 });
 
-test("findForeignSymlinks: allows safe relative forward-slash targets resolving inside the repo", () => {
+test("findForeignSymlinks: allows safe relative forward-slash targets, incl. names that merely contain reserved substrings", () => {
   const offenders = findForeignSymlinks([
     { path: "relay/relay-api-reviewers", target: "../plugins/api-reviewers" },
     { path: "tests/smoke/claude", target: "claude-mock.mjs" },
     { path: "a/b/c", target: "../d" }, // -> a/d, still inside
     { path: "x", target: "./y" }, // -> y, inside
+    // No over-match: these CONTAIN reserved names but are not reserved segments.
+    { path: "p", target: "console.mjs" }, // "con" but not the CON segment
+    { path: "q", target: "command.ts" }, // "com" with no digit
+    { path: "r", target: "aux-helper.js" }, // "aux" then "-"
+    { path: "s", target: "nullable.json" }, // "nul" then "l"
+    { path: "t", target: "lpt-notes.md" }, // "lpt" then "-"
   ]);
   assert.deepEqual(offenders, []);
 });
@@ -156,7 +203,7 @@ test("CLI exits non-zero and names the offender when a foreign symlink is commit
     assert.ok(threw, "expected the check to exit non-zero on a foreign symlink");
     assert.match(combined, /FAILED/);
     assert.match(combined, /bad-link/);
-    assert.match(combined, /machine-specific/);
+    assert.match(combined, /absolute target/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -226,7 +273,8 @@ test("CLI flags a Windows drive-relative target with no backslash (C:foo)", () =
     fixtureGit(dir, ["config", "user.email", "test@example.com"]);
     fixtureGit(dir, ["config", "user.name", "Test User"]);
     // `C:foo`: drive-relative on Windows (binds to drive C:'s cwd), literal name
-    // on POSIX. No backslash and not POSIX-absolute, so only the drive rule catches it.
+    // on POSIX. No backslash and not POSIX-absolute, so the illegal-character rule
+    // (the ':') catches it. Assert that specific reason, not the static footer.
     symlinkSync("C:foo", path.join(dir, "driverel"));
     fixtureGit(dir, ["add", "-A"]);
 
@@ -240,7 +288,35 @@ test("CLI flags a Windows drive-relative target with no backslash (C:foo)", () =
     }
     assert.ok(threw, "expected the check to exit non-zero on a drive-relative target");
     assert.match(combined, /driverel/);
-    assert.match(combined, /machine-specific/);
+    assert.match(combined, /non-portable character/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Kimi's BLOCK repro, end-to-end: a symlink target `nul` is a relative,
+// forward-slash, in-repo-looking name on POSIX, but resolves to the NUL DEVICE on
+// a Windows clone — the allowlist's missing "portable filename" half. Pins the fix.
+test("CLI flags a Windows reserved device-name target (nul)", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "reserved-symlink-"));
+  try {
+    fixtureGit(dir, ["init"]);
+    fixtureGit(dir, ["config", "user.email", "test@example.com"]);
+    fixtureGit(dir, ["config", "user.name", "Test User"]);
+    symlinkSync("nul", path.join(dir, "devlink"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    let threw = false;
+    let combined = "";
+    try {
+      execFileSync("node", [CHECK], { cwd: dir, encoding: "utf8", env: fixtureGitEnv() });
+    } catch (e) {
+      threw = true;
+      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+    }
+    assert.ok(threw, "expected the check to exit non-zero on a reserved device name");
+    assert.match(combined, /devlink/);
+    assert.match(combined, /reserved device name/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
