@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 .codex-plugin-*/jobs/
 .codex-plugin-data/
 coverage/
