@@ -58,24 +58,36 @@ test("findForeignSymlinks: allows relative targets resolving inside the repo (th
   assert.deepEqual(offenders, []);
 });
 
-test("parseLsFilesStage: parses mode/sha/path and tolerates spaces in paths", () => {
+test("parseLsFilesStage: parses NUL-delimited (-z) records; tolerates spaces in paths", () => {
   const out =
-    "120000 be9723c077bfb81c7747f25dfa964da1f3134e24 0\tnode_modules\n" +
-    "100644 def4560000000000000000000000000000000000 0\tdir/some file.txt\n";
+    "120000 be9723c077bfb81c7747f25dfa964da1f3134e24 0\tnode_modules\0" +
+    "100644 def4560000000000000000000000000000000000 0\tdir/some file.txt\0";
   assert.deepEqual(parseLsFilesStage(out), [
     { mode: "120000", sha: "be9723c077bfb81c7747f25dfa964da1f3134e24", path: "node_modules" },
     { mode: "100644", sha: "def4560000000000000000000000000000000000", path: "dir/some file.txt" },
   ]);
 });
 
+test("parseLsFilesStage: preserves special bytes in a path (no C-quoting under -z)", () => {
+  // A name with a non-ASCII byte and a space — `-z` keeps it verbatim, so the
+  // escape check sees the real dirname (the quoting-bypass that motivated -z).
+  const out = "120000 abc 0\tsub/né me/link\0";
+  assert.deepEqual(parseLsFilesStage(out), [
+    { mode: "120000", sha: "abc", path: "sub/né me/link" },
+  ]);
+});
+
 test("collectTrackedSymlinks: filters to mode 120000 and reads the blob target", () => {
   const lsFiles =
-    "100644 aaa 0\treal.txt\n" +
-    "120000 bbb 0\tlink-abs\n" +
-    "120000 ccc 0\tsub/link-rel\n";
+    "100644 aaa 0\treal.txt\0" +
+    "120000 bbb 0\tlink-abs\0" +
+    "120000 ccc 0\tsub/link-rel\0";
   const blobs = { bbb: "/abs/target\n", ccc: "../inside" };
   const runGit = (args) => {
-    if (args[0] === "ls-files") return lsFiles;
+    if (args[0] === "ls-files") {
+      assert.deepEqual(args, ["ls-files", "-s", "-z"]); // NUL-delimited form
+      return lsFiles;
+    }
     if (args[0] === "cat-file") return blobs[args[2]];
     throw new Error(`unexpected git ${args.join(" ")}`);
   };

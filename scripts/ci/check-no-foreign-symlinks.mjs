@@ -20,11 +20,21 @@
 // the current working directory, so it is correct in worktrees and testable
 // against a throwaway repo.
 //
+// Git is invoked via the absolute DEFAULT_GIT_BINARY with a fixed safe PATH
+// (the repo-canonical trusted-binary pattern; see provider-readiness-manifest),
+// never a $PATH-resolved bare name. `ls-files -s -z` is NUL-delimited and not
+// C-quoted, so paths with special bytes are preserved verbatim (no quoting
+// bypass of the escape check).
+//
 // Run in CI via `npm run lint`.
 
 import { execFileSync } from "node:child_process";
 import { posix } from "node:path";
 import { pathToFileURL } from "node:url";
+import { DEFAULT_GIT_BINARY, gitEnv } from "../../plugins/api-reviewers/scripts/lib/git-binary.mjs";
+import { cleanGitEnv } from "../../plugins/api-reviewers/scripts/lib/git-env.mjs";
+
+const TRUSTED_GIT_ENV = gitEnv(cleanGitEnv());
 
 // Absolute target detection across POSIX + Windows forms. Git stores the symlink
 // target verbatim; reject anything machine-rooted.
@@ -54,29 +64,34 @@ export function findForeignSymlinks(entries) {
   return offenders;
 }
 
-// Parse `git ls-files -s` output → [{ mode, sha, path }].
-// Line format: "<mode> <sha> <stage>\t<path>". Paths may contain spaces, so the
-// path is everything after the first tab.
+// Parse `git ls-files -s -z` output → [{ mode, sha, path }].
+// Record format: "<mode> <sha> <stage>\t<path>", records NUL-delimited. `-z`
+// disables C-quoting, so special bytes in a path survive intact.
 export function parseLsFilesStage(output) {
   const out = [];
-  for (const line of output.split("\n")) {
-    if (!line) continue;
-    const tab = line.indexOf("\t");
+  for (const rec of output.split("\0")) {
+    if (!rec) continue;
+    const tab = rec.indexOf("\t");
     if (tab === -1) continue;
-    const meta = line.slice(0, tab).split(/\s+/);
-    out.push({ mode: meta[0], sha: meta[1], path: line.slice(tab + 1) });
+    const meta = rec.slice(0, tab).split(/\s+/);
+    out.push({ mode: meta[0], sha: meta[1], path: rec.slice(tab + 1) });
   }
   return out;
 }
 
 function makeRunGit(cwd) {
   return (args) =>
-    execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    execFileSync(DEFAULT_GIT_BINARY, ["-C", cwd, ...args], {
+      encoding: "utf8",
+      env: TRUSTED_GIT_ENV,
+      timeout: 15000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
 }
 
 // Collect tracked symlinks and their committed targets via git.
 export function collectTrackedSymlinks(runGit) {
-  const symlinks = parseLsFilesStage(runGit(["ls-files", "-s"])).filter((e) => e.mode === "120000");
+  const symlinks = parseLsFilesStage(runGit(["ls-files", "-s", "-z"])).filter((e) => e.mode === "120000");
   return symlinks.map((e) => ({
     path: e.path,
     // A symlink blob's content IS its target string (no trailing newline).
@@ -87,9 +102,10 @@ export function collectTrackedSymlinks(runGit) {
 export function main(cwd = process.cwd()) {
   // Anchor to the enclosing git toplevel so `git ls-files` covers the whole repo
   // regardless of the directory the check was invoked from.
-  const toplevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-    cwd,
+  const toplevel = execFileSync(DEFAULT_GIT_BINARY, ["-C", cwd, "rev-parse", "--show-toplevel"], {
     encoding: "utf8",
+    env: TRUSTED_GIT_ENV,
+    timeout: 15000,
   }).trim();
   const runGit = makeRunGit(toplevel);
 
