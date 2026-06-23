@@ -574,13 +574,21 @@ test("writeFileAtomicDurable surfaces a real directory-fsync I/O error but toler
   };
   try {
     // A genuine storage error on the directory fsync means the rename may not be
-    // crash-durable; it MUST surface rather than be silently swallowed.
+    // crash-durable; it MUST surface rather than be silently swallowed. Because
+    // the rename already happened, the error is tagged durableWriteCommitted so
+    // multi-file commit callers can preserve operational visibility instead of
+    // treating it as "nothing was written".
     injectDirectoryFsyncError("EIO");
+    const eioTarget = path.join(dir, "eio.json");
     assert.throws(
-      () => writeFileAtomicDurable(path.join(dir, "eio.json"), "payload\n"),
-      (err) => err?.code === "EIO",
-      "EIO on the directory fsync must propagate, not be swallowed",
+      () => writeFileAtomicDurable(eioTarget, "payload\n"),
+      (err) => err?.code === "EIO" && err.durableWriteCommitted === true,
+      "EIO on the directory fsync must propagate tagged, not be swallowed",
     );
+    // The post-rename failure must still have left the payload on disk.
+    fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+    assert.equal(readFileSync(eioTarget, "utf8"), "payload\n");
 
     // An "unsupported here" directory fsync stays best-effort: the data-file
     // fsync already ran before the rename, so the write succeeds and persists.
@@ -588,6 +596,17 @@ test("writeFileAtomicDurable surfaces a real directory-fsync I/O error but toler
     const okTarget = path.join(dir, "ok.json");
     writeFileAtomicDurable(okTarget, "payload\n");
     assert.equal(readFileSync(okTarget, "utf8"), "payload\n");
+
+    // A PRE-rename failure (the parent directory does not exist, so the tmp
+    // write fails before any rename) must NOT be tagged: nothing was written, so
+    // a commit caller must still abort rather than index a phantom job.
+    fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+    assert.throws(
+      () => writeFileAtomicDurable(path.join(dir, "no-such-subdir", "x.json"), "payload\n"),
+      (err) => err?.durableWriteCommitted !== true,
+      "a pre-rename failure must not carry the durableWriteCommitted tag",
+    );
   } finally {
     fs.fsyncSync = originalFsync;
     syncBuiltinESMExports();

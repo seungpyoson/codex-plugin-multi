@@ -527,6 +527,16 @@ export function writeFileAtomicDurable(targetPath, data, { mode } = {}) {
   } catch (err) {
     if (!renamed) {
       try { fs.unlinkSync(tmpFile); } catch { /* preserve original */ }
+    } else if (err && typeof err === "object") {
+      // The rename already succeeded: targetPath now holds the new contents and
+      // is visible to every reader. The only step left when `renamed` is true is
+      // the best-effort parent-directory fsync, so this is a post-rename
+      // crash-durability failure, NOT a "nothing was written" failure. Tag it so
+      // a multi-file commit caller (commitJobRecord) can tell the two apart and
+      // keep its dependent index write — stranding an already-spawned job
+      // invisibly is worse than the durability gap. The error still throws, so
+      // any caller that does not special-case the tag stays fail-loud.
+      err.durableWriteCommitted = true;
     }
     throw err;
   }

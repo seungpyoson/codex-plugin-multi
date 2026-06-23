@@ -605,7 +605,18 @@ export function commitJobRecord(cwd, jobId, record) {
   try {
     updateState(cwd, (state) => {
       try { writeJobFile(cwd, jobId, record); }
-      catch (e) { metaError = e; throw e; }
+      catch (e) {
+        metaError = e;
+        // AGY's writers route through writeFileAtomicDurable (unlike the other
+        // companions), so a post-rename directory-fsync failure surfaces here
+        // tagged durableWriteCommitted: the meta file is already renamed into
+        // place and only its crash-durability fsync degraded. Keep indexing the
+        // job in state.json so status/cancel/reconcileActiveJobs (which scan only
+        // state.json) can still see and heal it — aborting would strand an
+        // already-spawned, source-bearing job invisibly. A pre-rename failure
+        // stays untagged and still aborts (nothing was written; no phantom job).
+        if (!e?.durableWriteCommitted) throw e;
+      }
       applyJobUpsertToState(state, record);
     });
   } catch (e) {

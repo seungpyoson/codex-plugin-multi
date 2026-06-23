@@ -7,6 +7,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 
 import * as AgyState from "../../plugins/agy/scripts/lib/state.mjs";
+import { buildJobRecord } from "../../plugins/agy/scripts/lib/job-record.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/agy/scripts/agy-companion.mjs");
@@ -148,6 +149,77 @@ test("AGY exported state writers fsync durable records before rename", () => {
     fs.renameSync = originalRename;
     syncBuiltinESMExports();
     delete process.env.AGY_DURABLE_STATE_TEST_DATA;
+    AgyState.configureState({
+      pluginDataEnv: "AGY_PLUGIN_DATA",
+      fallbackStateRootDir: path.join(tmpdir(), "agy-companion"),
+    });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("AGY commitJobRecord keeps a spawned job visible on a post-rename durability error", () => {
+  // Kimi PR-#218 finding A (HIGH): a real directory-fsync I/O error at the
+  // onSpawn running-record write must NOT make an already-spawned, source-bearing
+  // job invisible. writeFileAtomicDurable renames the meta file into place before
+  // the best-effort directory fsync, so a post-rename EIO is tagged
+  // durableWriteCommitted; commitJobRecord must still index the job in state.json
+  // so status/cancel and reconcileActiveJobs (which scan ONLY state.json) can see
+  // and heal it. Before the fix the meta throw aborted the state.json update,
+  // stranding the job; reconcile never visits a meta orphan absent from state.json.
+  const dir = mkdtempSync(path.join(tmpdir(), "agy-durable-visibility-"));
+  const originalFsync = fs.fsyncSync;
+  const injectDirectoryFsyncEIO = () => {
+    fs.fsyncSync = function patchedFsync(fd) {
+      // Only the post-rename parent-directory fsync targets a directory fd; the
+      // mandatory data-file fsync must still run so the payload itself is durable.
+      if (fs.fstatSync(fd).isDirectory()) {
+        const err = new Error("injected EIO on directory fsync");
+        err.code = "EIO";
+        throw err;
+      }
+      return originalFsync.call(this, fd);
+    };
+    syncBuiltinESMExports();
+  };
+  try {
+    process.env.AGY_DURABLE_VIS_TEST_DATA = dir;
+    AgyState.configureState({
+      pluginDataEnv: "AGY_DURABLE_VIS_TEST_DATA",
+      fallbackStateRootDir: path.join(dir, "fallback"),
+    });
+    const id = "00000000-0000-4000-8000-000000000223";
+    const running = buildJobRecord({
+      job_id: id, target: "agy", parent_job_id: null, resume_chain: [],
+      mode_profile_name: "review", mode: "review", model: "m",
+      cwd: dir, workspace_root: dir, containment: "worktree", scope: "working-tree",
+      run_kind: "background", dispose_effective: false, scope_base: null, scope_paths: null,
+      prompt_head: "t", schema_spec: null, binary: "agy",
+      started_at: new Date().toISOString(),
+    }, {
+      status: "running", exitCode: null, parsed: null,
+      pidInfo: { pid: 1, starttime: "x", argv0: "agy" },
+    }, []);
+
+    injectDirectoryFsyncEIO();
+    const { metaError } = AgyState.commitJobRecord(dir, id, running);
+    // Fail-loud is preserved: the durability failure still surfaces, tagged.
+    assert.ok(metaError, "post-rename durability failure must surface as metaError");
+    assert.equal(metaError.code, "EIO");
+    assert.equal(metaError.durableWriteCommitted, true,
+      "the surfaced error must be tagged as a post-rename (file-on-disk) failure");
+
+    // …but the spawned job must remain visible to status/cancel/reconcile. This
+    // assertion fails against the pre-fix commitJobRecord, which aborted the
+    // state.json index write on the meta throw.
+    fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+    const summary = AgyState.listJobs(dir).find((job) => job.id === id);
+    assert.ok(summary, "state.json must index the job despite the durability error");
+    assert.equal(summary.status, "running");
+  } finally {
+    fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+    delete process.env.AGY_DURABLE_VIS_TEST_DATA;
     AgyState.configureState({
       pluginDataEnv: "AGY_PLUGIN_DATA",
       fallbackStateRootDir: path.join(tmpdir(), "agy-companion"),
