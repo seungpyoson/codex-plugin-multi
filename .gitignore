@@ -1,3 +1,6 @@
+# No trailing slash: also ignores a `node_modules` *symlink* (worktrees symlink
+# it to share installed deps). A `node_modules/` rule matches only a directory
+# and lets the symlink form be committed — see #247. Do not re-add the slash.
 node_modules
 .codex-plugin-*/jobs/
 .codex-plugin-data/
