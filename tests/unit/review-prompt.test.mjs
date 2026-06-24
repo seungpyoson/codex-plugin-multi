@@ -16,6 +16,7 @@ import {
 
 const REVIEW_PROMPT_MODULES = Object.freeze([
   ["shared", "scripts/lib/review-prompt.mjs"],
+  ["agy", "plugins/agy/scripts/lib/review-prompt.mjs"],
   ["api-reviewers", "plugins/api-reviewers/scripts/lib/review-prompt.mjs"],
   ["claude", "plugins/claude/scripts/lib/review-prompt.mjs"],
   ["gemini", "plugins/gemini/scripts/lib/review-prompt.mjs"],
