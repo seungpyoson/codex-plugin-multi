@@ -4279,6 +4279,113 @@ test("root2 detector3: terse-but-concrete reviews do not flag shallow_output", a
   }
 });
 
+test("root2 detector3: fabricated concise concrete loci still demote against source-bearing packets", async () => {
+  const spoofs = [
+    "Verdict: APPROVE. init() leaks a buffer.",
+    "Verdict: APPROVE. foo() should return early.",
+    "Verdict: APPROVE. x() throws.",
+    "Verdict: APPROVE. parse() throws on bad input.",
+    "Verdict: APPROVE. Looks good, but foo() could throw.",
+    "Verdict: APPROVE. nonexistentFunction() should return early.",
+  ];
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const result of spoofs) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles: [{ path: "src/sample.js", text: "export const value = 1;\n" }],
+        result,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] fabricated locus should look shallow for: ${result}`);
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
+        true,
+        `[${name}] shallow_output should be present for fabricated locus: ${result}`,
+      );
+      assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] fabricated locus should fail the review slot: ${result}`);
+      assert.equal(manifest.review_slot.verdict, "failed_slot", `[${name}] fabricated locus should be demoted: ${result}`);
+      assert.equal(manifest.review_slot.not_counted_reason, "source_sent_unusable", `[${name}] fabricated locus should not count: ${result}`);
+    }
+    const noSource = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [],
+      result: "Verdict: APPROVE. init() leaks a buffer.",
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(noSource.review_quality.looks_shallow, false, `[${name}] no-source fallback should preserve text-only concrete finding`);
+    assert.equal(noSource.review_quality.failed_review_slot, false, `[${name}] no-source fallback should still count the review`);
+    assert.equal(noSource.review_slot.verdict, "approved", `[${name}] no-source fallback approval should count`);
+    assert.equal(noSource.review_slot.not_counted_reason, "none", `[${name}] no-source fallback should have no not-counted reason`);
+  }
+});
+
+test("root2 detector3: attested concise source loci still count after grounding", async () => {
+  const sourceFiles = [{
+    path: "src/cart.js",
+    text: [
+      "export function total(items) {",
+      "  return items.reduce((sum, item) => sum + item.price, 0);",
+      "}",
+      "export function validateInput(value) {",
+      "  return value;",
+      "}",
+      "export const cart = { total };",
+      "cart.total = total;",
+    ].join("\n"),
+  }];
+  const cases = [
+    "Verdict: REQUEST_CHANGES. src/cart.js:42 returns the wrong total instead of adding tax.",
+    "Verdict: REQUEST CHANGES. total() subtracts discounts instead of adding them.",
+    "Verdict: REQUEST CHANGES. cart.total drops tax instead of adding it.",
+    "Verdict: REQUEST_CHANGES. The optional path around validateInput() should not return early for empty arrays.",
+  ];
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    for (const result of cases) {
+      const manifest = targetBuildReviewAuditManifest({
+        prompt: "rendered prompt",
+        sourceFiles,
+        result,
+        status: "completed",
+        errorCode: null,
+      });
+      assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] attested locus should not look shallow for: ${result}`);
+      assert.equal(
+        manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
+        false,
+        `[${name}] shallow_output should be absent for attested locus: ${result}`,
+      );
+      assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] attested locus should count: ${result}`);
+      assert.equal(manifest.review_slot.verdict, "request_changes", `[${name}] request-changes review should count: ${result}`);
+      assert.equal(manifest.review_slot.not_counted_reason, "none", `[${name}] attested locus should have no not-counted reason: ${result}`);
+    }
+  }
+});
+
+test("root2 detector3: source symbol grounding remains linear on large source packets", async () => {
+  const largeSource = `${"const attested = 1;\n".repeat(10000)}export function realHandler() { return attested; }\n`;
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const start = process.hrtime.bigint();
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "src/large.js", text: largeSource }],
+      result: "Verdict: APPROVE. fabricatedMissing() throws on empty input.",
+      status: "completed",
+      errorCode: null,
+    });
+    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.ok(
+      elapsedMs < 2000,
+      `[${name}] source symbol grounding took ${elapsedMs.toFixed(1)}ms on a large source packet; extraction must stay linear.`,
+    );
+    assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] fabricated locus should still demote after large source extraction`);
+  }
+});
+
 test("root2 detector3: bare-LGTM with no verdict still flags shallow_output", async () => {
   // Also yields missing_verdict (Root-3-owned); assert only shallow_output here.
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
@@ -4418,23 +4525,26 @@ test("root2 detector3: long-but-realistic call loci still escape the shallow fla
   const cases = [
     {
       selected: "src/services/auth/scheduler.js",
+      text: "export function validateAndRefreshAuthToken() { return Date.now(); }\n",
       result: "Verdict: REQUEST CHANGES. The function validateAndRefreshAuthToken() returns the wrong expiry instead of the computed deadline",
     },
     {
       selected: "lib/persistence/pool.js",
+      text: "export function acquireConnectionWithRetry() { return openSocket(); }\n",
       result: "Request changes: acquireConnectionWithRetry() leaks the socket and the cleanup path swallows the close error",
     },
     {
       selected: "webhooks.js",
+      text: "export function processIncomingWebhookPayload() { return true; }\n",
       result: "Verdict: REQUEST CHANGES. processIncomingWebhookPayload() drops the signature header instead of validating it first",
     },
   ];
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
-    for (const { selected, result } of cases) {
+    for (const { selected, text, result } of cases) {
       const manifest = targetBuildReviewAuditManifest({
         prompt: "rendered prompt",
-        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
+        sourceFiles: [{ path: selected, text }],
         result,
         status: "completed",
         errorCode: null,
@@ -4455,9 +4565,9 @@ test("root2 detector3: negation-bearing defect cues do not mis-flag concrete rev
   // "does not free") must not trip CONCRETE_FINDING_NEGATION when they carry a real call locus.
   // Guard: a clause that strips to a GENUINE negation/absence must STAY flagged (no over-rescue).
   const NOT_SHALLOW = [
-    { selected: "socket.js", result: "Verdict: REQUEST CHANGES. The socket close() is never called on the error path" },
-    { selected: "validator.js", result: "Verdict: REQUEST CHANGES. validateInput() should not return early on empty arrays" },
-    { selected: "pool.js", result: "Verdict: REQUEST CHANGES. acquire() does not free the slot when the request times out" },
+    { selected: "socket.js", text: "export function close() { return true; }\n", result: "Verdict: REQUEST CHANGES. The socket close() is never called on the error path" },
+    { selected: "validator.js", text: "export function validateInput() { return true; }\n", result: "Verdict: REQUEST CHANGES. validateInput() should not return early on empty arrays" },
+    { selected: "pool.js", text: "export function acquire() { return true; }\n", result: "Verdict: REQUEST CHANGES. acquire() does not free the slot when the request times out" },
   ];
   const STILL_SHALLOW = [
     { selected: "socket.js", result: "Verdict: APPROVE. close() is never called but that is no real problem here" },
@@ -4465,10 +4575,10 @@ test("root2 detector3: negation-bearing defect cues do not mis-flag concrete rev
   ];
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
-    for (const { selected, result } of NOT_SHALLOW) {
+    for (const { selected, text, result } of NOT_SHALLOW) {
       const manifest = targetBuildReviewAuditManifest({
         prompt: "rendered prompt",
-        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
+        sourceFiles: [{ path: selected, text }],
         result,
         status: "completed",
         errorCode: null,
@@ -4556,6 +4666,15 @@ test("root2 detector3: praise/confirmation reusing defect vocabulary flags shall
     "Verdict: REQUEST_CHANGES\nlookup() returns the wrong index when none of the keys match, instead of throwing.",
     "Verdict: REQUEST_CHANGES\nthe happy path of encode() works as expected, but the empty-input branch throws and crashes.",
   ];
+  const cleanSource = [
+    "export function close() { return true; }",
+    "export function acquire() { return true; }",
+    "export function validateInput() { return true; }",
+    "export function parseInt() { return 1; }",
+    "export function indexInto() { return 1; }",
+    "export function lookup() { return 1; }",
+    "export function encode() { return true; }",
+  ].join("\n");
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
     for (const result of FLAG) {
@@ -4563,7 +4682,7 @@ test("root2 detector3: praise/confirmation reusing defect vocabulary flags shall
       assert.equal(m.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present for: ${result}`);
     }
     for (const result of CLEAN) {
-      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
+      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: cleanSource }], result, status: "completed", errorCode: null });
       assert.equal(m.review_quality.looks_shallow, false, `[${name}] real finding must stay clean for: ${result}`);
     }
   }
@@ -4682,7 +4801,7 @@ test("root2 detector3: hasDefectCue split-identity — every defect-cue alternat
     const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
     for (const cue of CUES) {
       const result = `Verdict: REQUEST CHANGES\nnextPage() ${cue}.`;
-      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
+      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export function nextPage() { return 1; }\n" }], result, status: "completed", errorCode: null });
       assert.equal(m.review_quality.looks_shallow, false, `[${name}] defect cue must register a concrete finding: ${cue}`);
     }
   }
