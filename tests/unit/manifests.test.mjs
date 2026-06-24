@@ -13,6 +13,7 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DESCRIPTION_MAX_LENGTH = 88;
 const DELEGATION_PLUGINS = ["claude", "gemini", "kimi"];
+const AGY_WORKFLOWS = ["review", "adversarial-review", "custom-review", "setup", "status", "result", "cancel"];
 const API_REVIEWER_PROVIDERS = ["deepseek", "glm"];
 const GROK_WORKFLOWS = ["review", "adversarial-review", "custom-review", "setup"];
 
@@ -314,6 +315,29 @@ test("grok plugin.json: valid schema", () => {
   assert.doesNotMatch(m.interface.longDescription, /api\.x\.ai/i);
 });
 
+test("agy plugin metadata is registered in the Codex marketplace", () => {
+  const manifest = readJson("plugins/agy/.codex-plugin/plugin.json");
+  const pkg = readJson("plugins/agy/package.json");
+  const rootPackage = readJson("package.json");
+  const marketplace = readJson(".agents/plugins/marketplace.json");
+  const entry = marketplace.plugins.find((plugin) => plugin.name === "relay-agy");
+
+  assert.ok(entry, "relay-agy missing from Codex marketplace");
+  assert.equal(marketplaceSourcePath(entry), "plugins/agy");
+  assert.equal(entry.policy.installation, "AVAILABLE");
+  assert.equal(entry.policy.authentication, "ON_USE");
+  assert.equal(manifest.name, "relay-agy");
+  assert.equal(manifest.version, "0.1.0");
+  assert.equal(manifest.license, "AGPL-3.0-only");
+  assert.equal(manifest.skills, "./skills");
+  assert.deepEqual(manifest.interface.capabilities, ["Interactive", "Read"]);
+  assert.doesNotMatch(manifest.interface.longDescription, /rescue/i);
+  assert.equal(pkg.name, "@relay/relay-agy-plugin");
+  assert.equal(pkg.version, manifest.version);
+  assert.equal(pkg.private, true);
+  assert.ok(rootPackage.workspaces.includes("plugins/agy"));
+});
+
 test("direct API relay plugin.json files are split by provider", () => {
   for (const provider of API_REVIEWER_PROVIDERS) {
     const root = `plugins/${relayPluginName(provider)}`;
@@ -383,6 +407,10 @@ test("claude, gemini, kimi, and grok package non-ping command docs until upstrea
     const rel = `plugins/grok/commands/grok-${command}.md`;
     assert.equal(existsSync(path.join(REPO_ROOT, rel)), true, `${rel} missing`);
   }
+  for (const command of AGY_WORKFLOWS) {
+    const rel = `plugins/agy/commands/agy-${command}.md`;
+    assert.equal(existsSync(path.join(REPO_ROOT, rel)), true, `${rel} missing`);
+  }
   assert.equal(existsSync(path.join(REPO_ROOT, "plugins/grok/commands/grok-ping.md")), false);
 });
 
@@ -432,6 +460,22 @@ test("grok exposes a user-invocable skill fallback", () => {
   assertNoBracketedCliFlagsInShellFences(skill, rel);
   assertNoShellVariablePlaceholdersInShellFences(skill, rel);
   assertPickerDescription(skill, rel);
+});
+
+test("agy exposes implemented workflow skill fallbacks without unsupported continue prose", () => {
+  const delegationRel = "plugins/agy/skills/agy-delegation/SKILL.md";
+  const delegation = readFileSync(path.join(REPO_ROOT, delegationRel), "utf8");
+
+  assert.match(delegation, /^name:\s*agy-delegation$/m);
+  assert.match(delegation, /^user-invocable:\s*true$/m);
+  assert.match(delegation, /agy-companion\.mjs/);
+  assert.match(delegation, /agy-companion\.mjs"\s+doctor\b/);
+  assert.match(delegation, /--mode=custom-review\b/);
+  assert.doesNotMatch(delegation, /agy-companion\.mjs"\s+continue\b/, `${delegationRel} must not document unsupported continue`);
+  assert.doesNotMatch(delegation, /^Continue a job:/m, `${delegationRel} must not document unsupported continue`);
+  assert.doesNotMatch(delegation, /^Cancel a background job:/m, `${delegationRel} must not call AGY foreground-only jobs background jobs`);
+  assertNoBracketedCliFlagsInShellFences(delegation, delegationRel);
+  assertPickerDescription(delegation, delegationRel);
 });
 
 test("provider workflow skills are user-invocable and command-backed", () => {
@@ -517,6 +561,31 @@ test("provider workflow skills are user-invocable and command-backed", () => {
     assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
     const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
     assertGrokCommandDoc(command, workflow, commandRel);
+    assert.match(skill, new RegExp(commandRel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+
+  for (const workflow of AGY_WORKFLOWS) {
+    const skillName = `agy-${workflow}`;
+    const rel = `plugins/agy/skills/${skillName}/SKILL.md`;
+    const skillPath = path.join(REPO_ROOT, rel);
+    assert.equal(existsSync(skillPath), true, `${rel} missing`);
+    const skill = readFileSync(skillPath, "utf8");
+
+    assert.match(skill, new RegExp(`^name:\\s*${skillName}$`, "m"));
+    assert.match(skill, /^user-invocable:\s*true$/m);
+    assertPickerDescription(skill, rel);
+    assert.match(skill, /agy-companion\.mjs/);
+    assert.match(skill, new RegExp(`relay-agy:${skillName}`));
+    assertCompanionWorkflowInvocation(skill, "agy", workflow, rel);
+    const commandRel = `plugins/agy/commands/${skillName}.md`;
+    assert.equal(existsSync(path.join(REPO_ROOT, commandRel)), true, `${commandRel} missing`);
+    const command = readFileSync(path.join(REPO_ROOT, commandRel), "utf8");
+    assertNoBracketedCliFlagsInShellFences(command, commandRel);
+    if (["review", "adversarial-review"].includes(workflow)) {
+      assert.match(command, /--lifecycle-events\s+markdown\b/, `${commandRel} missing lifecycle markdown option`);
+      assert.match(command, /external_review_launched/, `${commandRel} missing launch event rendering guidance`);
+      assert.match(command, /external_review.*before/, `${commandRel} missing external_review rendering guidance`);
+    }
     assert.match(skill, new RegExp(commandRel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 });

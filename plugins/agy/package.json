@@ -1,0 +1,7 @@
+{
+  "name": "@relay/relay-agy-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "description": "Relay for Codex plugin that delegates to Google Antigravity CLI."
+}

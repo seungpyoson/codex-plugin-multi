@@ -2,10 +2,13 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { buildCodexDirectApiPlugin, buildCodexDirectApiSuite } from "../../scripts/lib/codex-relay-build.mjs";
+
+const PROVIDER_DEFINITIONS_HELPER = path.resolve("scripts/lib/provider-plugin-definitions.mjs");
 
 function writeJson(file, value) {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -80,6 +83,23 @@ test("buildCodexDirectApiSuite removes stale generated direct API relay plugin d
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
+});
+
+test("AGY Codex metadata uses canonical plugins/agy and stays outside direct API generation", async () => {
+  assert.equal(existsSync(PROVIDER_DEFINITIONS_HELPER), true, "shared provider metadata helper must exist");
+  const { providerDefinition, directApiProviderDefinitions } = await import(
+    pathToFileURL(PROVIDER_DEFINITIONS_HELPER).href
+  );
+
+  const agy = providerDefinition("agy");
+  assert.equal(agy.codex.manifestName, "relay-agy");
+  assert.equal(agy.codex.packageDirectory, "agy");
+  assert.equal(agy.family, "companion");
+  assert.equal(directApiProviderDefinitions().some((provider) => provider.id === "agy"), false);
+  assert.throws(
+    () => buildCodexDirectApiPlugin({ provider: "agy", repoRoot: process.cwd() }),
+    /unsupported Codex direct API relay provider: agy/,
+  );
 });
 
 test("direct API relay wrapper resolves shared runtime from Codex marketplace source", () => {

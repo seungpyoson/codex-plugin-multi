@@ -174,14 +174,17 @@ function renderLifecycleMarkdown(obj) {
   if (obj.http_status != null) rows.push(["HTTP", obj.http_status]);
   if (obj.suggested_action) rows.push(["Action", obj.suggested_action]);
   if (externalReview.disclosure) rows.push(["Disclosure", externalReview.disclosure]);
-  return [
+  const lines = [
     "### EXTERNAL REVIEW",
     "",
     "| Field | Value |",
     "| --- | --- |",
     ...rows.map(([key, value]) => `| ${markdownCell(key)} | ${markdownCell(value)} |`),
     "",
-  ].join("\n");
+  ];
+  const findings = typeof obj.result === "string" ? obj.result.trimEnd() : "";
+  if (findings) lines.push("### REVIEW FINDINGS", "", findings, "");
+  return lines.join("\n");
 }
 
 function externalReviewFromProgress(obj) {
@@ -3577,11 +3580,12 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
       : (execution.parsed?.error ?? "")
   );
   const errorMessage = rawErrorMessage == null ? null : redactSensitiveText(rawErrorMessage);
-  const diagnostic = reviewQualityState
+  const diagnosticBase = reviewQualityState
     ? `review did not complete as a usable external review (${qualityReasons.join(", ") || "review_quality_failed"})`
     : (safeDiagnostics
       ? `${errorMessage || errorCode} (${formatDiagnosticPairs(safeDiagnostics)})`
       : (errorMessage || errorCode));
+  const diagnostic = configuredTimeoutDiagnostic(diagnosticBase, safeDiagnostics);
   const payloadSent = execution.payload_sent ?? (processCompleted ? true : null);
   const reviewDisclosure = disclosure(cfg, completed, payloadSent, errorCode, execution.pidInfo ?? null);
   const transmission = sourceContentTransmissionForPayload({
@@ -3727,6 +3731,32 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
     raw_model: execution.parsed?.raw_model ?? null,
     schema_version: SCHEMA_VERSION,
   });
+}
+
+function configuredTimeoutDiagnostic(summary, diagnostics) {
+  const timeoutMs = diagnostics?.configured_timeout_ms;
+  if (summary == null || timeoutMs == null || String(summary).includes("configured_timeout_ms=")) {
+    return summary;
+  }
+  return `${summary} (configured_timeout_ms=${timeoutMs})`;
+}
+
+function recordWithConfiguredTimeoutSummary(record) {
+  if (
+    record?.status === "completed" ||
+    typeof record?.error_summary !== "string" ||
+    record.error_summary.includes("configured_timeout_ms=")
+  ) {
+    return record;
+  }
+  const timeoutMs = record.runtime_diagnostics?.tunnel_request?.configured_timeout_ms
+    ?? record.runtime_diagnostics?.cli_request?.configured_timeout_ms
+    ?? null;
+  if (timeoutMs == null) return record;
+  return {
+    ...record,
+    error_summary: `${record.error_summary} (configured_timeout_ms=${timeoutMs})`,
+  };
 }
 
 function formatDiagnosticPairs(diagnostics) {
@@ -4996,7 +5026,7 @@ async function cmdRun(options) {
   }
   releaseProviderWorkloadLease(workloadLease);
   workloadLease = null;
-  const record = redactValue(buildRecord({
+  const record = recordWithConfiguredTimeoutSummary(redactValue(buildRecord({
     cfg,
     mode,
     options: runOptions,
@@ -5004,7 +5034,7 @@ async function cmdRun(options) {
     execution,
     startedAt,
     endedAt: new Date().toISOString(),
-  }), redactor());
+  }), redactor()));
   const printable = await persistRecordBestEffort(record, process.env, record.workspace_root ?? record.cwd);
   printLifecycleJson(printable, lifecycleEvents);
   process.exit(record.status === "completed" ? 0 : 1);

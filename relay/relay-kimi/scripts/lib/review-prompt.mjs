@@ -1557,6 +1557,7 @@ export function buildReviewAuditManifest({
     retryDispositionRequired: retryPolicy.retry_disposition_required,
     requestSettingsHash,
     sourceState: sourceContentTransmission,
+    sourceSendAllowed: effectiveSourcePacketPolicy.source_send_allowed,
     status,
     errorCode: effectiveErrorCode,
     result,

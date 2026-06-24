@@ -1,0 +1,7 @@
+{
+  "review_quality": null,
+  "fallbacks": {
+    "review_quality": [],
+    "native": []
+  }
+}

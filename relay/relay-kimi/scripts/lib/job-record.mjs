@@ -52,6 +52,7 @@ export const EXPECTED_KEYS = Object.freeze([
   "claude_session_id",
   "gemini_session_id",
   "kimi_session_id",
+  "agy_session_id",
   "resume_chain",
   "pid_info",
 
@@ -685,7 +686,7 @@ function redactStructuredOutput(value, redactText) {
  *   execution  — null when writing the pre-run/queued record. Otherwise:
  *                  { exitCode, endedAt?, parsed: {ok, result?, structured?, denials?,
  *                                        costUsd?, usage?, reason?, error?},
- *                    claudeSessionId?, geminiSessionId?, kimiSessionId?, pidInfo,
+ *                    claudeSessionId?, geminiSessionId?, kimiSessionId?, agySessionId?, pidInfo,
  *                    errorMessage?, stdout?, stderr? }
  *
  *   mutations  — array of git-status line strings or
@@ -739,6 +740,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     claude_session_id: execution?.claudeSessionId ?? null,
     gemini_session_id: execution?.geminiSessionId ?? null,
     kimi_session_id: execution?.kimiSessionId ?? null,
+    agy_session_id: execution?.agySessionId ?? null,
     resume_chain: Array.isArray(invocation.resume_chain)
       ? [...invocation.resume_chain]
       : [],

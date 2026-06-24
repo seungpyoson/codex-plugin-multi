@@ -1,3 +1,15 @@
+const BOOLEAN_FALSE_VALUES = new Set(["false", "0", "no", "off", ""]);
+
+function parseBooleanOptionValue(inlineValue) {
+  if (inlineValue === undefined) return true;
+  return !BOOLEAN_FALSE_VALUES.has(String(inlineValue).toLowerCase());
+}
+
+function isBareBooleanNegationToken(value) {
+  if (value === undefined || String(value).startsWith("-")) return false;
+  return BOOLEAN_FALSE_VALUES.has(String(value).toLowerCase());
+}
+
 export function parseArgs(argv, config = {}) {
   const valueOptions = new Set(config.valueOptions ?? []);
   const booleanOptions = new Set(config.booleanOptions ?? []);
@@ -25,11 +37,17 @@ export function parseArgs(argv, config = {}) {
     }
 
     if (token.startsWith("--")) {
-      const [rawKey, inlineValue] = token.slice(2).split("=", 2);
+      const body = token.slice(2);
+      const eqIndex = body.indexOf("=");
+      const rawKey = eqIndex === -1 ? body : body.slice(0, eqIndex);
+      const inlineValue = eqIndex === -1 ? undefined : body.slice(eqIndex + 1);
       const key = aliasMap[rawKey] ?? rawKey;
 
       if (booleanOptions.has(key)) {
-        options[key] = inlineValue === undefined ? true : inlineValue !== "false";
+        if (inlineValue === undefined && isBareBooleanNegationToken(argv[index + 1])) {
+          throw new Error(`Ambiguous boolean: use --${rawKey}=${argv[index + 1]} to set false; a bare --${rawKey} means true`);
+        }
+        options[key] = parseBooleanOptionValue(inlineValue);
         continue;
       }
 

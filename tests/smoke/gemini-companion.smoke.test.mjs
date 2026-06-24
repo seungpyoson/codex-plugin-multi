@@ -40,20 +40,24 @@ function sha256(value) {
 }
 
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-")) } = {}) {
-  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(dataDir, "provider-workload");
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
     encoding: "utf8",
-    env: {
-      ...process.env,
-      GEMINI_BINARY: MOCK,
-      GEMINI_PLUGIN_DATA: dataDir,
-      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
-      ...env,
-    },
+    env: smokeEnv(dataDir, env),
   });
   return { ...res, dataDir };
+}
+
+function smokeEnv(dataDir, env = {}) {
+  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(dataDir, "provider-workload");
+  return {
+    ...process.env,
+    GEMINI_BINARY: MOCK,
+    GEMINI_PLUGIN_DATA: dataDir,
+    RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+    ...env,
+  };
 }
 
 function geminiAuthModeArgs(mode) {
@@ -1390,7 +1394,7 @@ test("gemini _run-worker refuses terminal JobRecord without overwriting it", asy
     ], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, GEMINI_BINARY: MOCK, GEMINI_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.notEqual(rerun.status, 0, "manual _run-worker re-entry should fail");
     const after = JSON.parse(readFileSync(metaPath, "utf8"));
@@ -1450,7 +1454,7 @@ test("gemini _run-worker writes failed JobRecord when queued prompt sidecar is m
     ], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, GEMINI_BINARY: MOCK, GEMINI_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.notEqual(worker.status, 0, "worker should fail without prompt sidecar");
     const finalRecord = JSON.parse(readFileSync(state.resolveJobFile(cwd, jobId), "utf8"));
@@ -1531,12 +1535,9 @@ test("gemini _run-worker audit manifest matches prompt sidecar source snapshot a
     ], {
       cwd,
       encoding: "utf8",
-      env: {
-        ...process.env,
-        GEMINI_BINARY: MOCK,
-        GEMINI_PLUGIN_DATA: dataDir,
+      env: smokeEnv(dataDir, {
         GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "old worker source sentinel",
-      },
+      }),
     });
     assert.equal(worker.status, 0, `worker stderr=${worker.stderr}; stdout=${worker.stdout}`);
     const finalRecord = JSON.parse(readFileSync(state.resolveJobFile(cwd, jobId), "utf8"));
@@ -2476,8 +2477,8 @@ test("gemini review preserves result when post-run mutation detection is unavail
     cwd,
     encoding: "utf8",
     env: {
-      ...process.env,
-      GEMINI_PLUGIN_DATA: dataDir,
+      ...smokeEnv(dataDir),
+      GEMINI_BINARY: binary,
     },
   });
   try {
@@ -2635,7 +2636,7 @@ test("gemini status default surfaces continuable terminal states; --all includes
     const res = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(res.status, 0, `exit ${res.status}: ${res.stderr}`);
     const parsed = JSON.parse(res.stdout);
@@ -2650,7 +2651,7 @@ test("gemini status default surfaces continuable terminal states; --all includes
     const allRes = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(allRes.status, 0, `exit ${allRes.status}: ${allRes.stderr}`);
     const allParsed = JSON.parse(allRes.stdout);
