@@ -14,13 +14,17 @@
 //    distinction and reports only the final resolved path). This is the #247
 //    class and is checked directly on the blob string.
 //
-// 2. Actual resolution (kernel realpath + membership). The materialized symlink
-//    is resolved with fs.realpathSync against the working tree and accepted only
-//    when the real path stays inside the canonical repo root and names either a
-//    tracked file or a directory prefix containing tracked files. The kernel
-//    performs resolution, so intermediate symlinks, `..` through symlinks or
-//    files (ENOTDIR), and cycles (ELOOP) need no hand-rolled path logic. The
-//    tracked path set from `git ls-files -s -z` is the membership source of truth.
+// 2. Actual resolution (kernel realpath + membership). First a coherence guard:
+//    the working-tree symlink must equal its committed blob, else realpath would
+//    validate a surface that differs from what gets checked out elsewhere (a
+//    dirty index) — so a divergent working tree is rejected, fail-closed. Then the
+//    materialized symlink is resolved with fs.realpathSync against the working
+//    tree and accepted only when the real path stays inside the canonical repo
+//    root and names either a tracked file or a directory prefix containing tracked
+//    files. The kernel performs resolution, so intermediate symlinks, `..` through
+//    symlinks or files (ENOTDIR), and cycles (ELOOP) need no hand-rolled path
+//    logic. The tracked path set from `git ls-files -s -z` is the membership
+//    source of truth.
 //
 // A symlink must pass BOTH gates. Gate 1 only adds rejections, so it can never
 // turn a realpath rejection into an accept; its worst case is a fail-closed
@@ -51,7 +55,7 @@
 // Run in CI via `npm run lint`.
 
 import { execFileSync } from "node:child_process";
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_GIT_BINARY, gitEnv } from "../../plugins/api-reviewers/scripts/lib/git-binary.mjs";
@@ -94,7 +98,7 @@ function errorCode(e) {
   return e && typeof e === "object" && "code" in e ? e.code : "UNKNOWN";
 }
 
-function resolveTrackedSymlink(absPath) {
+function resolveTrackedSymlink(absPath, blobTarget) {
   let st;
   try {
     st = lstatSync(absPath);
@@ -103,6 +107,24 @@ function resolveTrackedSymlink(absPath) {
   }
   if (!st.isSymbolicLink()) {
     return { reason: "not a materialized symlink (is core.symlinks disabled?)" };
+  }
+  // Coherence: gate 2 resolves the WORKING TREE, but a symlink only matters for
+  // what gets COMMITTED. realpath(working tree) is a faithful proxy for the
+  // committed blob only when the two agree. A dirty index can diverge them (a bad
+  // blob staged, then the working-tree link swapped to a benign target), which
+  // would let realpath validate a surface that never ships. Refuse to trust a
+  // divergent working tree — fail closed. In a clean checkout (CI) a materialized
+  // symlink always equals its blob, so this never fires there.
+  let wtTarget;
+  try {
+    wtTarget = readlinkSync(absPath);
+  } catch (e) {
+    return { reason: `unreadable symlink (${errorCode(e)})` };
+  }
+  if (wtTarget !== blobTarget) {
+    return {
+      reason: `working-tree target (${wtTarget}) differs from the committed blob; stage the symlink change`,
+    };
   }
   try {
     return { realPath: realpathSync(absPath) };
@@ -122,7 +144,7 @@ export function findForeignSymlinks(symlinks, repoRoot, isTrackedPath) {
       continue;
     }
     const abs = path.join(repoRoot, linkPath);
-    const resolved = resolveTrackedSymlink(abs);
+    const resolved = resolveTrackedSymlink(abs, target);
     const reason =
       resolved.reason ?? classifyResolvedSymlink(resolved.realPath, repoRoot, isTrackedPath);
     if (reason) {

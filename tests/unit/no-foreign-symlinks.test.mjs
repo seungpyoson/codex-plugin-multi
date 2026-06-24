@@ -251,6 +251,48 @@ test("CLI rejects a non-portable staged blob even when the working tree was swap
   });
 });
 
+// Coherence gate: a relative-but-invalid blob (gate 1 passes the FORM) cannot be
+// masked by swapping the working-tree symlink to a benign target. Gate 2 first
+// requires the working tree to equal the committed blob, else it fails closed.
+test("CLI rejects a dirty symlink whose working tree differs from the staged blob", () => {
+  withFixtureRepo("dirty-relative-blob-", (dir) => {
+    writeFileSync(path.join(dir, "safe.txt"), "safe\n", "utf8");
+    symlinkSync("missing.txt", path.join(dir, "link")); // stage a relative-but-broken blob
+    fixtureGit(dir, ["add", "-A"]);
+    unlinkSync(path.join(dir, "link"));
+    symlinkSync("safe.txt", path.join(dir, "link")); // swap working tree to a valid target
+
+    const combined = checkFails(dir);
+    assert.match(combined, /link -> missing\.txt\s+\(working-tree target \(safe\.txt\) differs from the committed blob/);
+  });
+});
+
+test("CLI rejects a dirty symlink with an empty staged blob masked by the working tree", () => {
+  withFixtureRepo("dirty-empty-blob-", (dir) => {
+    writeFileSync(path.join(dir, "safe.txt"), "safe\n", "utf8");
+    const emptySha = fixtureGit(dir, ["hash-object", "-w", "--stdin"], { input: "" }).stdout.trim();
+    fixtureGit(dir, ["update-index", "--add", "--cacheinfo", `120000,${emptySha},link`]);
+    symlinkSync("safe.txt", path.join(dir, "link")); // working tree disagrees with the empty blob
+
+    const combined = checkFails(dir);
+    assert.match(combined, /\(working-tree target \(safe\.txt\) differs from the committed blob/);
+  });
+});
+
+// The flip side / CI guarantee: on a CLEAN checkout (working tree == blob), the
+// same broken blob IS caught — so a bad symlink cannot survive CI even though the
+// local dirty case above is what the coherence gate fails closed on.
+test("CLI rejects a broken relative blob on a clean checkout (the CI guarantee)", () => {
+  withFixtureRepo("clean-broken-blob-", (dir) => {
+    writeFileSync(path.join(dir, "safe.txt"), "safe\n", "utf8");
+    symlinkSync("missing.txt", path.join(dir, "link")); // points at a non-existent in-repo path
+    fixtureGit(dir, ["add", "-A"]); // working tree already matches the blob (clean)
+
+    const combined = checkFails(dir);
+    assert.match(combined, /link -> missing\.txt\s+\(unresolvable/);
+  });
+});
+
 test("CLI rejects an intermediate-symlink '..' escape (real git repo)", () => {
   withFixtureRepo("intermediate-symlink-", (dir) => {
     writeFileSync(path.join(dir, "safe"), "root safe\n", "utf8");
