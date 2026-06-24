@@ -857,6 +857,7 @@ export function buildReviewSlotDisposition({
   retryDispositionRequired = false,
   requestSettingsHash = null,
   sourceState = "unknown",
+  sourceSendAllowed = null,
   status = null,
   errorCode = null,
   result = "",
@@ -871,6 +872,15 @@ export function buildReviewSlotDisposition({
   if (status === "failed" && errorCode === "timeout") verdict = "timeout";
   else if (status && status !== "completed") verdict = "failed_slot";
   if (reviewQuality?.failed_review_slot === true && (verdict === "approved" || verdict === "request_changes")) {
+    verdict = "failed_slot";
+  }
+  // #238: a verdict reached without the source the review needed cannot count. The source-packet
+  // policy sets source_send_allowed===false ONLY when the review is source-bearing AND a block
+  // applies (source_packet_too_large / resend_confirmation_required) -- so this excludes legit
+  // diff-only reviews (not source-bearing => allowed) and legit resumes (already sent => allowed).
+  // Demote to failed_slot so notCountedReason returns source_not_sent instead of "none". This is
+  // ground truth (was the source delivered), independent of the spoofable review text.
+  if (sourceSendAllowed === false && (verdict === "approved" || verdict === "request_changes")) {
     verdict = "failed_slot";
   }
   const retry_fingerprint = hashValue(retryFingerprint);

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { parseArgs, splitRawArgumentString } from "../../plugins/claude/scripts/lib/args.mjs";
+import { parseArgs as parseAgyArgs } from "../../plugins/agy/scripts/lib/args.mjs";
 
 test("parseArgs: long value option via --key value", () => {
   const { options, positionals } = parseArgs(
@@ -19,6 +20,13 @@ test("parseArgs: long value option via --key=value", () => {
   assert.equal(options.model, "claude-opus-4-7");
 });
 
+test("parseArgs: inline value keeps equals after the first separator", () => {
+  const { options } = parseArgs(["--env=FOO=bar=baz"], {
+    valueOptions: ["env"],
+  });
+  assert.equal(options.env, "FOO=bar=baz");
+});
+
 test("parseArgs: boolean flag defaults to true when present", () => {
   const { options } = parseArgs(["--isolated"], { booleanOptions: ["isolated"] });
   assert.equal(options.isolated, true);
@@ -31,12 +39,125 @@ test("parseArgs: --key=false sets boolean to false", () => {
   assert.equal(options.isolated, false);
 });
 
+test("parseArgs: rejects ambiguous space-separated false after boolean flags", () => {
+  assert.throws(
+    () => parseArgs(["--resend-confirmation-approved", "no"], {
+      booleanOptions: ["resend-confirmation-approved"],
+    }),
+    /Ambiguous boolean: use --resend-confirmation-approved=no to set false/,
+  );
+
+  const nextOption = parseArgs(["--resend-confirmation-approved", "--dry-run"], {
+    booleanOptions: ["resend-confirmation-approved"],
+  });
+  assert.equal(nextOption.options["resend-confirmation-approved"], true);
+  assert.deepEqual(nextOption.positionals, ["--dry-run"]);
+});
+
+test("AGY parseArgs: inline safety boolean false values disable the option", () => {
+  const falsyValues = ["false", "FALSE", "0", "no", "NO", "off", "OFF", ""];
+  for (const value of falsyValues) {
+    const { options } = parseAgyArgs([`--allow-large-source-packet=${value}`], {
+      booleanOptions: ["allow-large-source-packet"],
+    });
+    assert.equal(options["allow-large-source-packet"], false, `value ${JSON.stringify(value)} must parse false`);
+  }
+
+  for (const value of ["true", "TRUE", "1"]) {
+    const { options } = parseAgyArgs([`--allow-large-source-packet=${value}`], {
+      booleanOptions: ["allow-large-source-packet"],
+    });
+    assert.equal(options["allow-large-source-packet"], true, `value ${JSON.stringify(value)} must parse true`);
+  }
+
+  const { options } = parseAgyArgs(["--allow-large-source-packet"], {
+    booleanOptions: ["allow-large-source-packet"],
+  });
+  assert.equal(options["allow-large-source-packet"], true, "bare safety override remains explicit approval");
+});
+
+test("AGY parseArgs: rejects ambiguous space-separated false after safety boolean", () => {
+  assert.throws(
+    () => parseAgyArgs(["--resend-confirmation-approved", "no"], {
+      booleanOptions: ["resend-confirmation-approved"],
+    }),
+    /Ambiguous boolean: use --resend-confirmation-approved=no to set false/,
+  );
+
+  const inline = parseAgyArgs(["--resend-confirmation-approved=no"], {
+    booleanOptions: ["resend-confirmation-approved"],
+  });
+  assert.equal(inline.options["resend-confirmation-approved"], false);
+
+  const bare = parseAgyArgs(["--resend-confirmation-approved"], {
+    booleanOptions: ["resend-confirmation-approved"],
+  });
+  assert.equal(bare.options["resend-confirmation-approved"], true);
+
+  const positional = parseAgyArgs(["--resend-confirmation-approved", "review-now"], {
+    booleanOptions: ["resend-confirmation-approved"],
+  });
+  assert.equal(positional.options["resend-confirmation-approved"], true);
+  assert.deepEqual(positional.positionals, ["review-now"]);
+
+  const nextOption = parseAgyArgs(["--resend-confirmation-approved", "--dry-run"], {
+    booleanOptions: ["resend-confirmation-approved"],
+  });
+  assert.equal(nextOption.options["resend-confirmation-approved"], true);
+  assert.deepEqual(nextOption.positionals, ["--dry-run"]);
+});
+
+test("AGY parseArgs: the boolean-ambiguity guard never breaks the canonical positional path", () => {
+  // The documented way to pass a prompt (including a literal "no"/"off") is after
+  // the -- separator. The default-deny guard is intentional and kept universal so
+  // any future safety boolean is fail-closed by default rather than fail-open by
+  // omission; the guard must not touch the canonical -- positional path.
+  const foreground = parseAgyArgs(["--foreground", "--", "no"], {
+    booleanOptions: ["foreground", "background"],
+  });
+  assert.equal(foreground.options.foreground, true);
+  assert.deepEqual(foreground.positionals, ["no"]);
+
+  // A multi-word prompt that merely starts with a false-like word is unaffected
+  // (only a bare token exactly equal to a false-like value is ambiguous).
+  const phrase = parseAgyArgs(["--background", "no time to explain"], {
+    booleanOptions: ["foreground", "background"],
+  });
+  assert.equal(phrase.options.background, true);
+  assert.deepEqual(phrase.positionals, ["no time to explain"]);
+
+  // The safety-critical flag still rejects the genuinely ambiguous bare form —
+  // making the guard opt-in per flag (as proposed) would regress this to fail-open.
+  assert.throws(
+    () => parseAgyArgs(["--resend-confirmation-approved", "off"], {
+      booleanOptions: ["resend-confirmation-approved"],
+    }),
+    /Ambiguous boolean: use --resend-confirmation-approved=off to set false/,
+  );
+});
+
 test("parseArgs: alias maps short to long", () => {
   const { options } = parseArgs(["-m", "X"], {
     valueOptions: ["model"],
     aliasMap: { m: "model" },
   });
   assert.equal(options.model, "X");
+});
+
+test("parseArgs: short boolean, fallback key, and missing short value branches", () => {
+  const { options } = parseArgs(["-v"], {
+    booleanOptions: ["verbose"],
+    aliasMap: { v: "verbose" },
+  });
+  assert.equal(options.verbose, true);
+
+  const { positionals } = parseArgs(["-z"], {});
+  assert.deepEqual(positionals, ["-z"]);
+
+  assert.throws(
+    () => parseArgs(["-m"], { valueOptions: ["model"], aliasMap: { m: "model" } }),
+    /Missing value for -m/,
+  );
 });
 
 test("parseArgs: throws on missing value", () => {

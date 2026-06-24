@@ -552,6 +552,7 @@ test("review panel CLI accepts workspace paths that start with dashes", () => {
       CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
     },
@@ -696,6 +697,7 @@ test("review panel CLI aggregates live and recent jobs across provider state roo
   const claudeData = mkdtempSync(join(tmpdir(), "review-panel-claude-"));
   const geminiData = mkdtempSync(join(tmpdir(), "review-panel-gemini-"));
   const kimiData = mkdtempSync(join(tmpdir(), "review-panel-kimi-"));
+  const agyData = mkdtempSync(join(tmpdir(), "review-panel-agy-"));
   const grokData = mkdtempSync(join(tmpdir(), "review-panel-grok-"));
   const apiData = mkdtempSync(join(tmpdir(), "review-panel-api-"));
 
@@ -736,6 +738,16 @@ test("review panel CLI aggregates live and recent jobs across provider state roo
     workspace_root: workspace,
     external_review: { source_content_transmission: "sent" },
     review_metadata: { raw_output: { elapsed_ms: 99 } },
+  }, "workspace-a");
+
+  writeCompanionRecord(agyData, {
+    job_id: "job_88888888-8888-4888-8888-888888888888",
+    provider: "agy",
+    status: "failed",
+    error_code: "agy_error",
+    workspace_root: workspace,
+    external_review: { source_content_transmission: "sent" },
+    review_metadata: { raw_output: { elapsed_ms: 321 } },
   }, "workspace-a");
 
   writeRecord(apiData, {
@@ -794,6 +806,7 @@ test("review panel CLI aggregates live and recent jobs across provider state roo
       CLAUDE_PLUGIN_DATA: claudeData,
       GEMINI_PLUGIN_DATA: geminiData,
       KIMI_PLUGIN_DATA: kimiData,
+      AGY_PLUGIN_DATA: agyData,
       GROK_PLUGIN_DATA: grokData,
       API_REVIEWERS_PLUGIN_DATA: apiData,
     },
@@ -803,6 +816,7 @@ test("review panel CLI aggregates live and recent jobs across provider state roo
   assert.match(output, /claude \| job_11111111-1111-4111-8111-111111111111 \| source_sent_waiting \| sent \| 1234 \|  \| -/);
   assert.match(output, /gemini \| job_22222222-2222-4222-8222-222222222222 \| source_sent_timeout \| sent \| 600000 \|  \| timeout/);
   assert.match(output, /kimi \| job_66666666-6666-4666-8666-666666666666 \| provider_unavailable \| sent \| 99 \|  \| provider_unavailable/);
+  assert.match(output, /agy \| job_88888888-8888-4888-8888-888888888888 \| provider_unavailable \| sent \| 321 \|  \| agy_error/);
   assert.match(output, /grok \| job_33333333-3333-4333-8333-333333333333 \| provider_unavailable \| not_sent \| 8000 \|  \| tunnel_unavailable/);
   assert.match(output, /deepseek \| job_44444444-4444-4444-8444-444444444444 \| approval_required \| not_sent \| 34 \|  \| approval_required/);
   assert.match(output, /glm \| job_55555555-5555-4555-8555-555555555555 \| completed_approved \| sent \| 45422 \|  \| approve/);
@@ -852,6 +866,7 @@ test("review panel workspace collection excludes records without workspace metad
       CLAUDE_PLUGIN_DATA: claudeData,
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
     },
@@ -890,6 +905,7 @@ test("review panel skips malformed workspace metadata without aborting collectio
       CLAUDE_PLUGIN_DATA: claudeData,
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
     },
@@ -919,6 +935,7 @@ test("review panel rejects filesystem-root workspace records", () => {
       CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: apiData,
     },
@@ -948,6 +965,7 @@ test("review panel rejects non-repo ancestor workspace records", () => {
       CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: apiData,
     },
@@ -978,6 +996,7 @@ test("review panel rejects fake .git files for ancestor workspace records", () =
       CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: apiData,
     },
@@ -1036,6 +1055,7 @@ test("review panel direct fallback finds records written with lexical workspace 
       CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
       GROK_PLUGIN_DATA: undefined,
     },
@@ -1070,6 +1090,7 @@ test("review panel direct fallback finds symlink-written records from canonical 
       CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
       GROK_PLUGIN_DATA: undefined,
     },
@@ -1105,6 +1126,7 @@ test("review panel companion fallback finds records from git root when workspace
       ...process.env,
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
       CLAUDE_PLUGIN_DATA: "",
@@ -1143,6 +1165,7 @@ test("review panel companion fallback accepts git root with .git symlink directo
       ...process.env,
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
       CLAUDE_PLUGIN_DATA: "",
@@ -1176,6 +1199,7 @@ test("review panel direct providers honor explicit empty plugin data paths", () 
         CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
         GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
         KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+        AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
         GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
         API_REVIEWERS_PLUGIN_DATA: "",
       },
@@ -1209,6 +1233,7 @@ test("review panel skips symlinked jobs directories", () => {
       CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: apiData,
     },
@@ -1244,6 +1269,7 @@ test("review panel prefers flat companion records over colliding sidecar meta re
       CLAUDE_PLUGIN_DATA: claudeData,
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-api-")),
     },
@@ -1302,6 +1328,7 @@ test("review panel workspace collection sorts unknown providers after known prov
       CLAUDE_PLUGIN_DATA: claudeData,
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-grok-")),
       API_REVIEWERS_PLUGIN_DATA: apiData,
     },
@@ -1341,6 +1368,7 @@ test("review panel sorts grok-web records with Grok", () => {
       CLAUDE_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-claude-")),
       GEMINI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-gemini-")),
       KIMI_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-kimi-")),
+      AGY_PLUGIN_DATA: mkdtempSync(join(tmpdir(), "review-panel-empty-agy-")),
       GROK_PLUGIN_DATA: grokData,
       API_REVIEWERS_PLUGIN_DATA: apiData,
     },

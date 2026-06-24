@@ -1597,10 +1597,9 @@ test("gemini _run-worker audit manifest matches prompt sidecar source snapshot a
     ], {
       cwd,
       encoding: "utf8",
-      env: {
-        ...smokeEnv(dataDir),
+      env: smokeEnv(dataDir, {
         GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "old worker source sentinel",
-      },
+      }),
     });
     assert.equal(worker.status, 0, `worker stderr=${worker.stderr}; stdout=${worker.stdout}`);
     const finalRecord = JSON.parse(readFileSync(state.resolveJobFile(cwd, jobId), "utf8"));
@@ -2541,6 +2540,7 @@ test("gemini review preserves result when post-run mutation detection is unavail
     encoding: "utf8",
     env: {
       ...smokeEnv(dataDir),
+      GEMINI_BINARY: binary,
     },
   });
   try {

@@ -517,6 +517,62 @@ test("review slot disposition never counts failed process output as approval", (
   }
 });
 
+// #238: an approval/request_changes on a source-bearing review whose source send was BLOCKED
+// (source_send_allowed === false: e.g. source_packet_too_large, resend_confirmation_required)
+// reviewed without the source it needed -- it must NOT count as a satisfied review. The decidable
+// signal is source_send_allowed===false, which the policy sets only when the review is
+// source-bearing AND a block applies, so it cleanly excludes legit diff-only (not source-bearing)
+// and legit resume (send still allowed) reviews.
+test("review slot disposition does not count an approval when the required source was blocked (#238)", () => {
+  for (const result of ["Verdict: APPROVE\nBlocking findings: none.", "Verdict: REQUEST_CHANGES\nBlocking findings: one."]) {
+    const disposition = buildReviewSlotDisposition({
+      provider: "claude",
+      mode: "review",
+      stage: "final",
+      attemptId: "job-source-blocked",
+      reviewedHeadSha: "head",
+      currentHeadSha: "head",
+      retryFingerprint: "f".repeat(64),
+      retryCount: 0,
+      sourceState: "not_sent",
+      sourceSendAllowed: false,
+      status: "completed",
+      errorCode: null,
+      result,
+      reviewQuality: { failed_review_slot: false, semantic_failure_reasons: [] },
+    });
+    assert.equal(disposition.verdict, "failed_slot");
+    assert.notEqual(disposition.not_counted_reason, "none");
+    assert.equal(disposition.not_counted_reason, "source_not_sent");
+  }
+});
+
+// Precision guard: the #238 demotion must NOT touch legit approvals -- a not-source-bearing
+// (diff-only) review and a source-sent review keep counting.
+test("review slot disposition still counts legit approvals (diff-only / source-sent) (#238 precision)", () => {
+  const base = {
+    provider: "claude",
+    mode: "review",
+    stage: "final",
+    attemptId: "job-legit",
+    reviewedHeadSha: "head",
+    currentHeadSha: "head",
+    retryFingerprint: "f".repeat(64),
+    retryCount: 0,
+    status: "completed",
+    errorCode: null,
+    result: "Verdict: APPROVE\nBlocking findings: none.",
+    reviewQuality: { failed_review_slot: false, semantic_failure_reasons: [] },
+  };
+  const diffOnly = buildReviewSlotDisposition({ ...base, sourceState: "not_sent", sourceSendAllowed: true });
+  assert.equal(diffOnly.verdict, "approved");
+  assert.equal(diffOnly.not_counted_reason, "none");
+
+  const sourceSent = buildReviewSlotDisposition({ ...base, sourceState: "sent", sourceSendAllowed: true });
+  assert.equal(sourceSent.verdict, "approved");
+  assert.equal(sourceSent.not_counted_reason, "none");
+});
+
 function assertRouteStepLedger(route) {
   assert.deepEqual(route.route_steps.map((step) => step.route), PROVIDER_ROUTE_STEPS);
   for (const step of route.route_steps) {

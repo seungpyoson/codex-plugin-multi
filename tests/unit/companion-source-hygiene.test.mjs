@@ -73,3 +73,79 @@ test("gemini background approval preflight audits prompt source without walking 
     "background approval-required audit manifest must not use cwd as containment fallback",
   );
 });
+
+test("agy companion uses prompt sidecars, source hashes, and no raw-source diagnostics", () => {
+  const source = readFileSync(resolvePath("plugins/agy/scripts/agy-companion.mjs"), "utf8");
+  const reviewPromptSource = readFileSync(resolvePath("plugins/agy/scripts/lib/review-prompt.mjs"), "utf8");
+
+  assert.match(source, /writePromptSidecar|consumePromptSidecar|prompt sidecar/i);
+  assert.match(source, /buildReviewAuditManifest/);
+  assert.match(reviewPromptSource, /content_hash/);
+  assert.match(source, /import \{ setupContainment \} from "\.\/lib\/containment\.mjs";/);
+  assert.match(source, /import \{ populateScope \} from "\.\/lib\/scope\.mjs";/);
+  assert.match(source, /import \{ diffSourceFiles \} from "\.\/lib\/diff-source\.mjs";/);
+  assert.match(source, /populateScope\(profile, cwd, containment\.path,[\s\S]*workspaceRoot/);
+  assert.match(source, /includeDirPath:\s*containment\.path/);
+  assert.match(source, /catch \(error\) \{\s*if \(containment\) \{ try \{ containment\.cleanup\(\); \} catch/);
+  assert.match(source, /persistAndPrintPreSpawnFailure\(invocation, lifecycleEvents, "prompt_sidecar_failed"/);
+  assert.doesNotMatch(source, /includeDirPath:\s*cwd/);
+  assert.doesNotMatch(source, /function git\(/);
+  assert.doesNotMatch(source, /selected_source[\s\S]*content\s*:/);
+  assert.doesNotMatch(source, /error_message:\s*[^,\n]*content/i);
+});
+
+test("agy foreground lifecycle keeps cancel, sidecar, and stale-job parity hooks", () => {
+  const source = readFileSync(resolvePath("plugins/agy/scripts/agy-companion.mjs"), "utf8");
+
+  assert.match(source, /import \{ reconcileActiveJobs \} from "\.\/lib\/reconcile\.mjs";/);
+  for (const command of ["status", "result", "cancel"]) {
+    const start = source.indexOf(`function ${command}(rest)`);
+    assert.notEqual(start, -1, `expected ${command} command`);
+    const end = source.indexOf("\nfunction ", start + 1);
+    const block = source.slice(start, end === -1 ? source.length : end);
+    assert.match(block, /reconcileActiveJobs\(workspaceRoot\);/, `${command} must reconcile stale active jobs`);
+  }
+
+  const runStart = source.indexOf("async function run(rest)");
+  assert.notEqual(runStart, -1, "expected run command");
+  const runEnd = source.indexOf("\nfunction ", runStart + 1);
+  const runBlock = source.slice(runStart, runEnd === -1 ? source.length : runEnd);
+  const setupIndex = runBlock.indexOf("containment = setupContainment");
+  const queuedIndex = runBlock.indexOf("const queuedRecord = buildJobRecord(invocation, null, []);");
+  const spawnIndex = runBlock.indexOf("execution = await spawnAgy");
+  const readinessIndex = runBlock.indexOf("const readinessFailure = agyReadinessPreflight");
+  const launchIndex = runBlock.indexOf("externalReviewLaunchedEvent");
+  const preSpawnCancelIndex = runBlock.indexOf("if (consumeCancelMarker(workspaceRoot, jobId))");
+  assert.ok(queuedIndex !== -1 && queuedIndex < setupIndex, "queued record must be persisted before scope setup");
+  assert.ok(readinessIndex !== -1 && readinessIndex < launchIndex, "readiness preflight must run before launch event");
+  assert.ok(readinessIndex !== -1 && readinessIndex < spawnIndex, "readiness preflight must run before source-bearing spawn");
+  assert.ok(preSpawnCancelIndex !== -1 && preSpawnCancelIndex < spawnIndex, "cancel marker must be consumed before spawn");
+  const afterQueuedBlock = runBlock.slice(queuedIndex);
+  assert.doesNotMatch(afterQueuedBlock, /fail\("(?:prompt_sidecar_failed|git_binary_rejected)"/);
+  assert.match(afterQueuedBlock, /persistAndPrintPreSpawnFailure\(invocation, lifecycleEvents, "prompt_sidecar_failed"/);
+  assert.match(afterQueuedBlock, /persistAndPrintPreSpawnFailure\(invocation, lifecycleEvents, "git_binary_rejected"/);
+  assert.match(runBlock, /mutationContext = prepareMutationContext\(invocation\);/);
+  assert.match(runBlock, /recordPostRunMutations\(invocation, mutationContext\);/);
+  assert.match(
+    runBlock,
+    /let postRunPolicyError = null;[\s\S]*recordPostRunMutations\(invocation, mutationContext\);[\s\S]*if \(isGitBinaryPolicyError\(error\)\) \{[\s\S]*postRunPolicyError = error;[\s\S]*reason: "git_binary_rejected"[\s\S]*const reviewCompleted = !postRunPolicyError/,
+    "post-run Git binary policy errors must hard-fail the terminal record without bypassing cleanup",
+  );
+  assert.doesNotMatch(runBlock, /if \(isGitBinaryPolicyError\(error\)\) throw error;/);
+  assert.match(runBlock, /withMutationReviewFailure\(reviewAuditManifest, mutationContext\.mutations\)/);
+
+  assert.match(
+    source,
+    /catch \(error\) \{\s+try \{ consumePromptSidecar\(jobsDir\(workspaceRoot\), jobId\); \} catch \{ \/\* best-effort prompt sidecar cleanup \*\/ \}/,
+    "prompt sidecar failure path must attempt best-effort sidecar cleanup",
+  );
+});
+
+test("agy state defaults identify the agy adapter", () => {
+  const source = readFileSync(resolvePath("plugins/agy/scripts/lib/state.mjs"), "utf8");
+
+  assert.match(source, /pluginDataEnv:\s*"AGY_PLUGIN_DATA"/);
+  assert.match(source, /fallbackStateRootDir:\s*path\.join\(os\.tmpdir\(\),\s*"agy-companion"\)/);
+  assert.match(source, /sessionIdEnv:\s*"AGY_COMPANION_SESSION_ID"/);
+  assert.doesNotMatch(source, /GEMINI_PLUGIN_DATA|GEMINI_COMPANION_SESSION_ID|gemini-companion/);
+});

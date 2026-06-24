@@ -52,6 +52,7 @@ export const EXPECTED_KEYS = Object.freeze([
   "claude_session_id",
   "gemini_session_id",
   "kimi_session_id",
+  "agy_session_id",
   "resume_chain",
   "pid_info",
 
@@ -726,6 +727,7 @@ export function buildJobRecord(invocation, execution, mutations) {
     claude_session_id: execution?.claudeSessionId ?? null,
     gemini_session_id: execution?.geminiSessionId ?? null,
     kimi_session_id: execution?.kimiSessionId ?? null,
+    agy_session_id: execution?.agySessionId ?? null,
     resume_chain: Array.isArray(invocation.resume_chain)
       ? [...invocation.resume_chain]
       : [],

@@ -41,17 +41,21 @@
 
 import { execFileSync } from "node:child_process";
 import {
-  mkdirSync, copyFileSync, chmodSync,
+  mkdirSync, chmodSync,
   statSync, lstatSync, realpathSync, unlinkSync, openSync, closeSync,
+  fstatSync, readSync, writeSync, renameSync, constants,
   readdirSync, rmSync,
 } from "node:fs";
 import path from "node:path";
 
+import { matchGlob } from "./diff-source.mjs";
 import { cleanGitEnv as scrubGitEnv } from "./git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./git-binary.mjs";
 
 const VALID_SCOPES = new Set(["working-tree", "staged", "branch-diff", "head", "custom"]);
 const MAX_GIT_SYMLINK_HOPS = 40;
+const AGY_MAX_LIVE_FILE_BYTES = 8 * 1024 * 1024;
+const COPY_BUFFER_BYTES = 64 * 1024;
 const OBJECT_PURE_GIT_CONFIG = [
   "--no-replace-objects",
   "-c", "core.fsmonitor=false",
@@ -131,6 +135,10 @@ function scopePopulationFailed(message) {
   throw new Error(`scope_population_failed: ${message}`);
 }
 
+function scopeFileTooLarge(rel, size, maxBytes = AGY_MAX_LIVE_FILE_BYTES) {
+  throw new Error(`scope_file_too_large: ${rel} is ${size} bytes; max ${maxBytes}`);
+}
+
 function scopeEmpty(message) {
   throw new Error(`scope_empty: ${message}`);
 }
@@ -168,6 +176,102 @@ function chmodGitMode(dst, mode) {
     else scopePopulationFailed(`unsupported git file mode ${mode} for ${dst}`);
   } catch (err) {
     scopePopulationFailed(`cannot chmod git file ${dst}: ${err.message}`);
+  }
+}
+
+function liveFileOpenFlags() {
+  return constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+}
+
+function sameFileIdentity(a, b) {
+  return a?.dev === b?.dev && a?.ino === b?.ino;
+}
+
+function writeAllSync(fd, buffer, offset, length) {
+  let written = 0;
+  while (written < length) {
+    written += writeSync(fd, buffer, offset + written, length - written);
+  }
+}
+
+function copyFileDescriptorToPath(inputFd, dst, rel, sourceMode) {
+  const tmpFile = `${dst}.${process.pid}.${Date.now()}.tmp`;
+  let outputFd = null;
+  let renamed = false;
+  try {
+    outputFd = openSync(tmpFile, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_EXCL, sourceMode & 0o777);
+    const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
+    let total = 0;
+    while (true) {
+      const remaining = AGY_MAX_LIVE_FILE_BYTES + 1 - total;
+      if (remaining <= 0) {
+        scopeFileTooLarge(rel, total);
+      }
+      const bytesRead = readSync(inputFd, buffer, 0, Math.min(buffer.length, remaining), null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > AGY_MAX_LIVE_FILE_BYTES) {
+        scopeFileTooLarge(rel, total);
+      }
+      writeAllSync(outputFd, buffer, 0, bytesRead);
+    }
+    closeSync(outputFd);
+    outputFd = null;
+    chmodSync(tmpFile, sourceMode & 0o777);
+    renameSync(tmpFile, dst);
+    renamed = true;
+  } catch (err) {
+    try { if (outputFd !== null) closeSync(outputFd); } catch { /* preserve original */ }
+    if (!renamed) {
+      try { unlinkSync(tmpFile); } catch { /* already gone */ }
+    }
+    scopePopulationFailed(`cannot copy ${rel}: ${err.message}`);
+  }
+}
+
+function copyLiveRegularFile(src, dst, rel, sourceRoot) {
+  let resolved;
+  try {
+    resolved = realpathSync(src);
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    scopePopulationFailed(`cannot resolve ${rel}: ${err.message}`);
+  }
+  if (!isInsidePath(sourceRoot, resolved)) {
+    unsafeSymlink(rel, "changed to resolve outside source root");
+  }
+
+  let beforeOpen;
+  try {
+    beforeOpen = lstatSync(src);
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    scopePopulationFailed(`cannot inspect ${rel}: ${err.message}`);
+  }
+
+  let inputFd;
+  try {
+    inputFd = openSync(src, liveFileOpenFlags());
+  } catch (err) {
+    if (err?.code === "ENOENT") return;
+    if (err?.code === "ELOOP") unsafeSymlink(rel, "changed to a symlink during copy");
+    scopePopulationFailed(`cannot open ${rel}: ${err.message}`);
+  }
+
+  try {
+    const stat = fstatSync(inputFd);
+    if (!sameFileIdentity(beforeOpen, stat)) {
+      unsafeSymlink(rel, "changed identity during copy");
+    }
+    if (!stat.isFile()) {
+      unsafeSymlink(rel, "changed to a non-regular file during copy");
+    }
+    if (stat.size > AGY_MAX_LIVE_FILE_BYTES) {
+      scopeFileTooLarge(rel, stat.size);
+    }
+    copyFileDescriptorToPath(inputFd, dst, rel, stat.mode);
+  } finally {
+    try { closeSync(inputFd); } catch { /* already closed */ }
   }
 }
 
@@ -267,22 +371,14 @@ function copyLiveFile(sourceCwd, targetPath, rel, sourceRoot, ignored = null) {
     if (!resolvedStat.isFile()) {
       unsafeSymlink(rel, "does not resolve to a regular file");
     }
-    try {
-      copyFileSync(resolved, dst);
-    } catch (err) {
-      scopePopulationFailed(`cannot copy ${rel}: ${err.message}`);
-    }
+    copyLiveRegularFile(resolved, dst, rel, sourceRoot);
     return;
   }
   if (lst.isDirectory()) {
     mkdirSync(dst, { recursive: true });
     return;
   }
-  try {
-    copyFileSync(src, dst);
-  } catch (err) {
-    scopePopulationFailed(`cannot copy ${rel}: ${err.message}`);
-  }
+  copyLiveRegularFile(src, dst, rel, sourceRoot);
 }
 
 function gitScopeContext(sourceCwd, workspaceRoot = null) {
@@ -845,32 +941,6 @@ function scopeHead(sourceCwd, targetPath, containmentHandle, workspaceRoot = nul
     cleanupGitSnapshotTarget(sourceCwd, targetPath);
     throw err;
   }
-}
-
-function matchGlob(rel, pattern) {
-  // Minimal glob: supports '*' (no /) and '**' (any), '?' (single). Good
-  // enough for scope=custom's "<dir>/*.md" and "**/*.js" shapes; we avoid
-  // pulling in a full micromatch dep. This is a small supported subset, not a
-  // claim of full shell-glob compatibility.
-  // Translate to regex.
-  let re = "^";
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i];
-    if (c === "*") {
-      if (pattern[i + 1] === "*") {
-        re += ".*";
-        i += 1;
-        // Skip a trailing slash after ** so "**/a" matches "a" at any depth.
-        if (pattern[i + 1] === "/") i += 1;
-      } else {
-        re += "[^/]*";
-      }
-    } else if (c === "?") re += "[^/]";
-    else if (".^$+(){}|\\[]".includes(c)) re += "\\" + c;
-    else re += c;
-  }
-  re += "$";
-  return new RegExp(re).test(rel);
 }
 
 function scopeCustom(sourceCwd, targetPath, scopePaths) {

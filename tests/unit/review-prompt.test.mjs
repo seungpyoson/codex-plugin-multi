@@ -3948,3 +3948,51 @@ for (const [name, file] of REVIEW_PROMPT_MODULES) {
     }), "working-tree");
   });
 }
+
+// #238: ground-truth disposition guard -- a clean, substantive approval reached on a SOURCE-BEARING
+// review whose source send was BLOCKED (source_send_allowed=false) must not count as a satisfied
+// slot; it is demoted to failed_slot / source_not_sent. Legit diff-only (not source-bearing) and
+// source-sent approvals keep counting. This is ground truth (was the source delivered) -- it does
+// NOT depend on the spoofable review text. Composed via buildReviewAuditManifest across all copies.
+const SOURCE_BLOCKED_APPROVAL = [
+  "Verdict: Approve",
+  "Blocking findings: none.",
+  "Non-blocking concerns: a minor naming nit in check() could be clearer.",
+  "I inspected the selected source and traced the control flow end to end; the guard returns a consistent boolean across all branches and the early-return path is handled correctly. Test coverage for the happy path and the empty-input path both look adequate, the error messages are actionable, and nothing in this change introduces a regression or a security concern. This is a clean approval after a full and careful read of the supplied source content from top to bottom.",
+].join("\n");
+const SOURCE_BLOCKED_FILE = [{ path: "src/auth.js", text: "export function check(){ return true; }\n".repeat(3) }];
+const SOURCE_BLOCKED_POLICY = Object.freeze({
+  source_bearing: true,
+  source_send_allowed: false,
+  source_content_transmission: "not_sent",
+  source_packet_policy_error_code: "source_packet_too_large",
+  source_packet_action: "narrow_source_packet",
+  review_surface_changed: false,
+});
+
+for (const [name, file] of REVIEW_PROMPT_MODULES) {
+  test(`source-blocked approval is not counted as a satisfied slot (#238) (${name})`, async () => {
+    const { buildReviewAuditManifest: build } = await loadReviewPromptModule(file);
+
+    const blocked = build({
+      prompt: "p", result: SOURCE_BLOCKED_APPROVAL, status: "completed", errorCode: null,
+      sourceFiles: SOURCE_BLOCKED_FILE, route: { sourcePacketPolicy: SOURCE_BLOCKED_POLICY },
+    });
+    assert.equal(blocked.review_slot.verdict, "failed_slot", "source-blocked approval must be demoted");
+    assert.equal(blocked.review_slot.not_counted_reason, "source_not_sent");
+
+    // Precision: diff-only (not source-bearing) approval still counts.
+    const diffOnly = build({
+      prompt: "p", result: SOURCE_BLOCKED_APPROVAL, status: "completed", errorCode: null, sourceFiles: [],
+    });
+    assert.equal(diffOnly.review_slot.verdict, "approved", "diff-only approval must still count");
+    assert.equal(diffOnly.review_slot.not_counted_reason, "none");
+
+    // Precision: source-bearing approval that was actually sent still counts.
+    const sent = build({
+      prompt: "p", result: SOURCE_BLOCKED_APPROVAL, status: "completed", errorCode: null, sourceFiles: SOURCE_BLOCKED_FILE,
+    });
+    assert.equal(sent.review_slot.verdict, "approved", "source-sent approval must still count");
+    assert.equal(sent.review_slot.not_counted_reason, "none");
+  });
+}

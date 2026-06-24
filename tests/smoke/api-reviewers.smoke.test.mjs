@@ -102,17 +102,9 @@ async function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = 
     }
   }
   return new Promise((resolve) => {
-    const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-      ?? path.join(env.API_REVIEWERS_PLUGIN_DATA ?? cwd, ".provider-workload");
     execFile(process.execPath, [companion, ...finalArgs], {
       cwd,
-      env: {
-        ...process.env,
-        API_REVIEWERS_DISABLE_ENV_CACHE: "1",
-        RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
-        RELAY_WORKLOAD_TEST_MODE: "1",
-        ...env,
-      },
+      env: apiReviewersSmokeEnv(cwd, env),
       timeout: 10000,
     }, (error, stdout, stderr) => {
       resolve({ error, stdout, stderr, status: error?.code ?? 0 });
@@ -122,22 +114,26 @@ async function run(args, { cwd = REPO_ROOT, env = {}, companion = COMPANION } = 
 
 async function runExecutable(args, { cwd = REPO_ROOT, env = {}, executable } = {}) {
   return new Promise((resolve) => {
-    const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-      ?? path.join(env.API_REVIEWERS_PLUGIN_DATA ?? cwd, ".provider-workload");
     execFile(executable, args, {
       cwd,
-      env: {
-        ...process.env,
-        API_REVIEWERS_DISABLE_ENV_CACHE: "1",
-        RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
-        RELAY_WORKLOAD_TEST_MODE: "1",
-        ...env,
-      },
+      env: apiReviewersSmokeEnv(cwd, env),
       timeout: 10000,
     }, (error, stdout, stderr) => {
       resolve({ error, stdout, stderr, status: error?.code ?? 0 });
     });
   });
+}
+
+function apiReviewersSmokeEnv(cwd, env = {}) {
+  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(env.API_REVIEWERS_PLUGIN_DATA ?? cwd, ".provider-workload");
+  return {
+    ...process.env,
+    API_REVIEWERS_DISABLE_ENV_CACHE: "1",
+    ...env,
+    RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+    RELAY_WORKLOAD_TEST_MODE: "1",
+  };
 }
 
 function parseJson(stdout) {
@@ -1365,8 +1361,7 @@ test("direct API reviewer restores current meta if pre-index artifact is pruned"
     "--prompt", "Check this file.",
   ], {
     cwd,
-    env: {
-      ...process.env,
+    env: apiReviewersSmokeEnv(cwd, {
       API_REVIEWERS_PLUGIN_DATA: dataDir,
       API_REVIEWERS_DISABLE_ENV_CACHE: "1",
       API_REVIEWERS_MOCK_RESPONSE: mockResponse("deepseek-v4-pro"),
@@ -1374,7 +1369,7 @@ test("direct API reviewer restores current meta if pre-index artifact is pruned"
       RELAY_PROVIDER_WORKLOAD_LOCK_DIR: path.join(dataDir, ".provider-workload"),
       RELAY_WORKLOAD_TEST_MODE: "1",
       DEEPSEEK_API_KEY: "secret-test-value",
-    },
+    }),
     timeout: 10000,
   });
 
@@ -5075,6 +5070,7 @@ test("direct API reviewers render lifecycle markdown cards before source transmi
   assert.match(result.stdout, /\| Message \| [^|]*prompt is required[^|]*--prompt <focus>[^|]* \|/);
   assert.match(result.stdout, /\| Summary \| [^|]+ \|/);
   assert.match(result.stdout, /\| Action \| Correct the api-reviewer command arguments and retry\. \|/);
+  assert.doesNotMatch(result.stdout, /### REVIEW FINDINGS/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
   assert.doesNotMatch(result.stdout, /^\{/);
 });
@@ -5117,6 +5113,8 @@ test("direct API reviewers lifecycle markdown emits launch and terminal cards on
     assert.match(result.stdout, /\| Status \| running \|/);
     assert.match(result.stdout, /\| Source \| sent \|/);
     assert.match(result.stdout, /\| Status \| completed \|/);
+    assert.match(result.stdout, /^### REVIEW FINDINGS$/m);
+    assert.match(result.stdout, /Provider model: deepseek-v4-pro/);
     assert.equal(parseCompactJsonLines(result.stdout).some((line) => line.event === "external_review_progress"), false);
     assert.doesNotMatch(result.stdout, /secret-test-value/);
     assert.doesNotMatch(result.stdout, /^\{\n/m);
@@ -5174,14 +5172,13 @@ test("direct API reviewers lifecycle markdown streams running card before provid
       "--approval-token", approvalToken,
     ], {
       cwd,
-      env: {
-        ...process.env,
+      env: apiReviewersSmokeEnv(cwd, {
         API_REVIEWERS_DISABLE_ENV_CACHE: "1",
         CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "5",
         RELAY_PROVIDER_WORKLOAD_LOCK_DIR: path.join(cwd, ".provider-workload"),
         RELAY_WORKLOAD_TEST_MODE: "1",
         DEEPSEEK_API_KEY: "secret-test-value",
-      },
+      }),
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stdout.setEncoding("utf8");

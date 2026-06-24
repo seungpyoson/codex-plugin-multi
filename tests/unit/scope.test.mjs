@@ -3495,6 +3495,27 @@ test("populateScope scope=custom: supports question mark and globstar-root patte
   }
 });
 
+test("populateScope scope=custom: globstar slash requires a directory boundary", () => {
+  const src = seedRepo();
+  const tgt = mkTarget();
+  try {
+    writeFileSync(path.join(src, "prefixroot.js"), "no\n");
+    writeFileSync(path.join(src, "root.js"), "root\n");
+    mkdirSync(path.join(src, "nested"));
+    writeFileSync(path.join(src, "nested", "root.js"), "nested\n");
+
+    populateScope(profile("custom"), src, tgt, {
+      scopePaths: ["**/root.js"],
+    });
+
+    assert.equal(readFileSync(path.join(tgt, "root.js"), "utf8"), "root\n");
+    assert.equal(readFileSync(path.join(tgt, "nested", "root.js"), "utf8"), "nested\n");
+    assert.equal(existsSync(path.join(tgt, "prefixroot.js")), false);
+  } finally {
+    cleanup(src, tgt);
+  }
+});
+
 test("populateScope scope=custom: rejects symlink escaping source root", () => {
   const src = seedRepo();
   const tgt = mkTarget();
