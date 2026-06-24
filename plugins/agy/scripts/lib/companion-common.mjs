@@ -158,14 +158,17 @@ export function renderLifecycleMarkdown(obj) {
   if (obj.http_status != null) rows.push(["HTTP", obj.http_status]);
   if (obj.suggested_action) rows.push(["Action", obj.suggested_action]);
   if (externalReview.disclosure) rows.push(["Disclosure", externalReview.disclosure]);
-  return [
+  const lines = [
     "### EXTERNAL REVIEW",
     "",
     "| Field | Value |",
     "| --- | --- |",
     ...rows.map(([key, value]) => `| ${markdownCell(key)} | ${markdownCell(value)} |`),
     "",
-  ].join("\n");
+  ];
+  const findings = typeof obj.result === "string" ? obj.result.trimEnd() : "";
+  if (findings) lines.push("### REVIEW FINDINGS", "", findings, "");
+  return lines.join("\n");
 }
 
 export function externalReviewLaunchedEvent(invocation, externalReview) {
