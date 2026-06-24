@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
   PING_PROMPT,
+  assertRealJobDirectory,
   cancelNoPidInfoSuggestedAction,
   cancelUnverifiableSuggestedAction,
   comparePathStrings,
@@ -30,6 +32,7 @@ import {
   scopeBaseForOptions,
   startExternalReviewHeartbeat,
   summarizeScopeDirectory,
+  writeFileAtomicDurable,
   writePromptSidecar,
 } from "../../scripts/lib/companion-common.mjs";
 import { COMPANION_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
@@ -505,6 +508,137 @@ test("prompt sidecar helpers write 0600 handoff files and consume once", () => {
   assert.equal(consumePromptSidecar(jobsDir, "job-1"), "secret prompt");
   assert.equal(existsSync(p), false);
   assert.equal(consumePromptSidecar(jobsDir, "job-1"), null);
+});
+
+test("writeFileAtomicDurable fsyncs file data before rename and cleans tmp on failure", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "companion-common-durable-"));
+  const target = path.join(dir, "record.json");
+  const originalFsync = fs.fsyncSync;
+  const originalRename = fs.renameSync;
+  const fsyncCalls = [];
+  let renamedBeforeFsync = false;
+  try {
+    fs.fsyncSync = function patchedFsync(fd) {
+      fsyncCalls.push(fd);
+      return originalFsync.call(this, fd);
+    };
+    fs.renameSync = function patchedRename(from, to) {
+      if (String(to) === target) {
+        renamedBeforeFsync = fsyncCalls.length === 0;
+      }
+      return originalRename.call(this, from, to);
+    };
+    syncBuiltinESMExports();
+
+    writeFileAtomicDurable(target, "payload\n", { mode: 0o600 });
+
+    assert.equal(readFileSync(target, "utf8"), "payload\n");
+    assert.equal(renamedBeforeFsync, false, "tmp file must be fsynced before rename");
+    assert.ok(fsyncCalls.length >= 1, "durable write must fsync at least the tmp file");
+    if (POSIX_MODE_ASSERTIONS) {
+      assert.equal((statSync(target).mode & 0o777), 0o600);
+    }
+
+    const renameError = new Error("forced durable rename failure");
+    fs.renameSync = function patchedFailingRename() {
+      throw renameError;
+    };
+    assert.throws(
+      () => writeFileAtomicDurable(path.join(dir, "failed.json"), "nope\n"),
+      (err) => err === renameError,
+    );
+    assert.deepEqual(fs.readdirSync(dir).filter((name) => name.endsWith(".tmp")), []);
+  } finally {
+    fs.fsyncSync = originalFsync;
+    fs.renameSync = originalRename;
+    syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeFileAtomicDurable surfaces a real directory-fsync I/O error but tolerates unsupported", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "companion-common-dirfsync-"));
+  const originalFsync = fs.fsyncSync;
+  const injectDirectoryFsyncError = (code) => {
+    fs.fsyncSync = function patchedFsync(fd) {
+      // Only the post-rename parent-directory fsync targets a directory fd; the
+      // mandatory data-file fsync must still run for the payload to be durable.
+      if (fs.fstatSync(fd).isDirectory()) {
+        const err = new Error(`injected ${code} on directory fsync`);
+        err.code = code;
+        throw err;
+      }
+      return originalFsync.call(this, fd);
+    };
+    syncBuiltinESMExports();
+  };
+  try {
+    // A genuine storage error on the directory fsync means the rename may not be
+    // crash-durable; it MUST surface rather than be silently swallowed. Because
+    // the rename already happened, the error is tagged durableWriteCommitted so
+    // multi-file commit callers can preserve operational visibility instead of
+    // treating it as "nothing was written".
+    injectDirectoryFsyncError("EIO");
+    const eioTarget = path.join(dir, "eio.json");
+    assert.throws(
+      () => writeFileAtomicDurable(eioTarget, "payload\n"),
+      (err) => err?.code === "EIO" && err.durableWriteCommitted === true,
+      "EIO on the directory fsync must propagate tagged, not be swallowed",
+    );
+    // The post-rename failure must still have left the payload on disk.
+    fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+    assert.equal(readFileSync(eioTarget, "utf8"), "payload\n");
+
+    // An "unsupported here" directory fsync stays best-effort: the data-file
+    // fsync already ran before the rename, so the write succeeds and persists.
+    injectDirectoryFsyncError("EINVAL");
+    const okTarget = path.join(dir, "ok.json");
+    writeFileAtomicDurable(okTarget, "payload\n");
+    assert.equal(readFileSync(okTarget, "utf8"), "payload\n");
+
+    // A PRE-rename failure (the parent directory does not exist, so the tmp
+    // write fails before any rename) must NOT be tagged: nothing was written, so
+    // a commit caller must still abort rather than index a phantom job.
+    fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+    assert.throws(
+      () => writeFileAtomicDurable(path.join(dir, "no-such-subdir", "x.json"), "payload\n"),
+      (err) => err?.durableWriteCommitted !== true,
+      "a pre-rename failure must not carry the durableWriteCommitted tag",
+    );
+  } finally {
+    fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("assertRealJobDirectory fails closed when realpath is denied", () => {
+  const jobsDir = mkdtempSync(path.join(tmpdir(), "companion-common-realpath-jobs-"));
+  const jobDir = path.join(jobsDir, "job-eacces");
+  const originalNative = fs.realpathSync.native;
+  try {
+    mkdirSync(jobDir, { recursive: true });
+    fs.realpathSync.native = function patchedRealpath(target) {
+      if (path.resolve(String(target)) === path.resolve(jobDir)) {
+        const error = new Error("realpath denied");
+        error.code = "EACCES";
+        throw error;
+      }
+      return originalNative.call(this, target);
+    };
+    syncBuiltinESMExports();
+
+    assert.throws(
+      () => assertRealJobDirectory(jobsDir, jobDir),
+      (err) => err?.code === "EACCES" && /realpath denied/.test(err.message),
+    );
+  } finally {
+    fs.realpathSync.native = originalNative;
+    syncBuiltinESMExports();
+    rmSync(jobsDir, { recursive: true, force: true });
+  }
 });
 
 test("prompt sidecar helpers reject unsafe job ids before resolving paths", () => {

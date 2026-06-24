@@ -15,6 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { realpathOrResolve, writeFileAtomicDurable } from "./companion-common.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
@@ -165,14 +166,6 @@ const SAFE_JOB_ID = /^(?:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9
 export function assertSafeJobId(jobId) {
   if (typeof jobId !== "string" || !SAFE_JOB_ID.test(jobId)) {
     throw new Error(`Unsafe jobId: ${JSON.stringify(jobId)}`);
-  }
-}
-
-function realpathOrResolve(p) {
-  try {
-    return fs.realpathSync.native(p);
-  } catch {
-    return path.resolve(p);
   }
 }
 
@@ -552,21 +545,11 @@ function saveStateUnlocked(cwd, state) {
     removeJobArtifacts(cwd, job);
   }
 
-  // Atomic write: write to a sibling tmp file, then rename. Rename is atomic
-  // on POSIX and prevents readers from observing a partial state.json. The
-  // caller holds a per-workspace advisory lock so launcher/worker read-modify
-  // writes cannot clobber each other.
+  // Atomic durable write: sibling tmp file, fsync, rename, and best-effort
+  // parent directory fsync. The caller holds a per-workspace advisory lock so
+  // launcher/worker read-modify writes cannot clobber each other.
   const stateFile = resolveStateFile(cwd);
-  const tmpFile = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    fs.writeFileSync(tmpFile, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
-    fs.renameSync(tmpFile, stateFile);
-  } catch (e) {
-    // If rename failed (cross-device, permissions), clean up the tmp so we
-    // don't leak noise in the state dir. Preserve original error.
-    try { fs.unlinkSync(tmpFile); } catch { /* already gone */ }
-    throw e;
-  }
+  writeFileAtomicDurable(stateFile, `${JSON.stringify(nextState, null, 2)}\n`);
   return nextState;
 }
 
@@ -622,7 +605,18 @@ export function commitJobRecord(cwd, jobId, record) {
   try {
     updateState(cwd, (state) => {
       try { writeJobFile(cwd, jobId, record); }
-      catch (e) { metaError = e; throw e; }
+      catch (e) {
+        metaError = e;
+        // AGY's writers route through writeFileAtomicDurable (unlike the other
+        // companions), so a post-rename directory-fsync failure surfaces here
+        // tagged durableWriteCommitted: the meta file is already renamed into
+        // place and only its crash-durability fsync degraded. Keep indexing the
+        // job in state.json so status/cancel/reconcileActiveJobs (which scan only
+        // state.json) can still see and heal it — aborting would strand an
+        // already-spawned, source-bearing job invisibly. A pre-rename failure
+        // stays untagged and still aborts (nothing was written; no phantom job).
+        if (!e?.durableWriteCommitted) throw e;
+      }
       applyJobUpsertToState(state, record);
     });
   } catch (e) {
@@ -686,14 +680,7 @@ export function writeJobFile(cwd, jobId, payload) {
   assertSafeJobId(jobId);
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  const tmpFile = `${jobFile}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    fs.writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-    fs.renameSync(tmpFile, jobFile);
-  } catch (e) {
-    try { fs.unlinkSync(tmpFile); } catch { /* already gone */ }
-    throw e;
-  }
+  writeFileAtomicDurable(jobFile, `${JSON.stringify(payload, null, 2)}\n`);
   return jobFile;
 }
 
@@ -711,14 +698,7 @@ export function writeJobRecordToFile(jobFile, payload) {
     throw new Error("writeJobRecordToFile: jobFile must be a non-empty string");
   }
   fs.mkdirSync(path.dirname(jobFile), { recursive: true });
-  const tmpFile = `${jobFile}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    fs.writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-    fs.renameSync(tmpFile, jobFile);
-  } catch (e) {
-    try { fs.unlinkSync(tmpFile); } catch { /* already gone */ }
-    throw e;
-  }
+  writeFileAtomicDurable(jobFile, `${JSON.stringify(payload, null, 2)}\n`);
   return jobFile;
 }
 

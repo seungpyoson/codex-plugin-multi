@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { basename as basenamePath, join as joinPath, resolve as resolvePath } from "node:path";
+import { basename as basenamePath, dirname as dirnamePath, join as joinPath, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { parseArgs } from "./lib/args.mjs";
-import { buildAgyArgs, parseAgyResult, spawnAgy } from "./lib/agy.mjs";
+import { MAX_TIMER_DELAY_MS, buildAgyArgs, parseAgyResult, spawnAgy } from "./lib/agy.mjs";
 import { writeCancelMarker, consumeCancelMarker } from "./lib/cancel-marker.mjs";
 import { setupContainment } from "./lib/containment.mjs";
 import {
   cancelNoPidInfoSuggestedAction,
   cancelUnverifiableSuggestedAction,
   consumePromptSidecar,
+  assertRealJobDirectory,
   externalReviewLaunchedEvent,
   gitStatusLines,
   parseLifecycleEventsMode,
@@ -23,6 +25,8 @@ import {
   printLifecycleJson,
   scopeBaseForOptions,
   summarizeScopeDirectory,
+  runtimeOptionsSidecarPath as commonRuntimeOptionsSidecarPath,
+  writeFileAtomicDurable,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
@@ -45,12 +49,11 @@ import {
   selectedSourceFilesFromPrompt,
 } from "./lib/review-prompt.mjs";
 import {
+  commitJobRecord,
   configureState,
   listJobs,
   resolveJobFile,
   resolveJobsDir,
-  upsertJob,
-  writeJobFile,
   writeJobRecordToFile,
 } from "./lib/state.mjs";
 import { reconcileActiveJobs } from "./lib/reconcile.mjs";
@@ -59,12 +62,14 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const PROVIDER_DISPLAY = "Google Antigravity CLI";
 const DEFAULT_TIMEOUT_MS = 900000;
+const MAX_REVIEW_TIMEOUT_MS = MAX_TIMER_DELAY_MS;
 const READINESS_PREFLIGHT_TIMEOUT_MS = 30000;
 const READINESS_PREFLIGHT_PROMPT = "Reply with exactly: relay-agy-readiness";
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "AGY FILE";
 const AGY_SOURCE_PACKET_MAX_BYTES = 256 * 1024;
 const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
+const AGY_WRITABLE_SIDECARS = new Set(["git-status-before.txt", "git-status-after.txt"]);
 
 // Set true once the AGY target process has spawned (onSpawn fires on execve), which is
 // the point the selected source packet is delivered to it via --print argv. The top-level
@@ -154,7 +159,15 @@ function parseReviewTimeoutMs(cliValue, fallback = DEFAULT_TIMEOUT_MS) {
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     fail("bad_args", `--timeout-ms must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
   }
+  if (parsed > MAX_REVIEW_TIMEOUT_MS) {
+    fail("bad_args", `--timeout-ms must be between 1 and ${MAX_REVIEW_TIMEOUT_MS} milliseconds; got ${JSON.stringify(raw)}`);
+  }
   return parsed;
+}
+
+function afterQueueTestDelayMs(env = process.env) {
+  const parsed = Number(env.RELAY_TEST_AGY_AFTER_QUEUE_DELAY_MS ?? 0);
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 5000 ? parsed : 0;
 }
 
 function doctor(rest) {
@@ -306,19 +319,32 @@ function jobsDir(cwd) {
 }
 
 function runtimeOptionsSidecarPath(workspaceRoot, jobId) {
-  return `${resolveJobsDir(workspaceRoot)}/${jobId}/runtime-options.json`;
+  return commonRuntimeOptionsSidecarPath(resolveJobsDir(workspaceRoot), jobId);
 }
 
-function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
-  const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
+function prepareSidecarJobDirectory(workspaceRoot, file) {
+  const jobsDirectory = resolveJobsDir(workspaceRoot);
+  const dir = dirnamePath(file);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  assertRealJobDirectory(jobsDirectory, dir);
   try {
     chmodSync(dir, 0o700);
   } catch (err) {
     if (process.platform !== "win32") throw err;
   }
+  return dir;
+}
+
+function agySidecarPath(workspaceRoot, jobId, name) {
+  if (!AGY_WRITABLE_SIDECARS.has(name)) {
+    throw new Error(`unsupported AGY sidecar: ${name}`);
+  }
+  return joinPath(dirnamePath(runtimeOptionsSidecarPath(workspaceRoot, jobId)), name);
+}
+
+function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   const file = runtimeOptionsSidecarPath(workspaceRoot, jobId);
-  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  prepareSidecarJobDirectory(workspaceRoot, file);
   const payload = {
     timeout_ms: options.timeout_ms,
   };
@@ -351,33 +377,13 @@ function writeRuntimeOptionsSidecar(workspaceRoot, jobId, options) {
   if (typeof options.source_packet_override_source === "string" && options.source_packet_override_source.length > 0) {
     payload.source_packet_override_source = options.source_packet_override_source;
   }
-  try {
-    writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600, encoding: "utf8" });
-    try { chmodSync(tmpFile, 0o600); } catch { /* best-effort on non-POSIX */ }
-    renameSync(tmpFile, file);
-  } catch (e) {
-    try { unlinkSync(tmpFile); } catch { /* already gone */ }
-    throw e;
-  }
+  writeFileAtomicDurable(file, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
 }
 
 function writeSidecar(workspaceRoot, jobId, name, contents) {
-  const dir = `${resolveJobsDir(workspaceRoot)}/${jobId}`;
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try {
-    chmodSync(dir, 0o700);
-  } catch (err) {
-    if (process.platform !== "win32") throw err;
-  }
-  const file = `${dir}/${name}`;
-  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    writeFileSync(tmpFile, contents ?? "", "utf8");
-    renameSync(tmpFile, file);
-  } catch (e) {
-    try { unlinkSync(tmpFile); } catch { /* already gone */ }
-    throw e;
-  }
+  const file = agySidecarPath(workspaceRoot, jobId, name);
+  prepareSidecarJobDirectory(workspaceRoot, file);
+  writeFileAtomicDurable(file, contents ?? "");
 }
 
 function gitStatus(args, cwd, workspaceRoot = null) {
@@ -789,19 +795,15 @@ function sourcePacketRuntimeDiagnosticsForManifest(manifest, base = null) {
 }
 
 function persistRecord(workspaceRoot, record, { fallbackJobFile = null } = {}) {
-  try {
-    writeJobFile(workspaceRoot, record.job_id, record);
-    upsertJob(workspaceRoot, record);
-  } catch (error) {
-    // A mid-run git-binary policy change can make resolveWorkspaceRoot() throw,
-    // so writeJobFile()/upsertJob() can no longer locate this job's state dir.
-    // When the caller supplied a path resolved while git was healthy, land the
-    // terminal meta record there git-free; reconcileActiveJobs() heals state.json
-    // from it on the next command. Without a fallback (or for non-policy errors)
-    // the original failure still propagates.
-    if (!fallbackJobFile || !isGitBinaryPolicyError(error)) throw error;
-    writeJobRecordToFile(fallbackJobFile, record);
-  }
+  const { metaError, stateError } = commitJobRecord(workspaceRoot, record.job_id, record);
+  const error = metaError ?? stateError;
+  if (!error) return;
+  // A mid-run git-binary policy change can make state resolution fail. When the
+  // caller supplied a path resolved while git was healthy, land the terminal meta
+  // record there git-free; reconcileActiveJobs() heals state.json on the next
+  // command. Without a fallback (or for non-policy errors), propagate the failure.
+  if (!fallbackJobFile || !isGitBinaryPolicyError(error)) throw error;
+  writeJobRecordToFile(fallbackJobFile, record);
 }
 
 function executionForRecord({ status, pidInfo = null, parsed = null, exitCode = null, endedAt = null, reviewAuditManifest, selectedFiles }) {
@@ -1096,6 +1098,10 @@ async function run(rest) {
     source_packet_override_source: invocation.source_packet_override_source,
   });
   persistRecord(invocation.workspace_root, queuedRecord);
+  const queueDelayMs = afterQueueTestDelayMs();
+  if (queueDelayMs > 0) {
+    await sleep(queueDelayMs);
+  }
   // Pre-resolve the durable job-record path while git is still healthy. A mid-run
   // RELAY_GIT_BINARY topology change can make resolveWorkspaceRoot() throw a git
   // policy error, after which resolveStateDir()/persistRecord() can no longer
