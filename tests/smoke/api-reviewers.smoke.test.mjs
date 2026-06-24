@@ -4995,6 +4995,7 @@ test("direct API reviewers render lifecycle markdown cards before source transmi
   assert.match(result.stdout, /\| Message \| [^|]*prompt is required[^|]*--prompt <focus>[^|]* \|/);
   assert.match(result.stdout, /\| Summary \| [^|]+ \|/);
   assert.match(result.stdout, /\| Action \| Correct the api-reviewer command arguments and retry\. \|/);
+  assert.doesNotMatch(result.stdout, /### REVIEW FINDINGS/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
   assert.doesNotMatch(result.stdout, /^\{/);
 });
@@ -5037,6 +5038,8 @@ test("direct API reviewers lifecycle markdown emits launch and terminal cards on
     assert.match(result.stdout, /\| Status \| running \|/);
     assert.match(result.stdout, /\| Source \| sent \|/);
     assert.match(result.stdout, /\| Status \| completed \|/);
+    assert.match(result.stdout, /^### REVIEW FINDINGS$/m);
+    assert.match(result.stdout, /Provider model: deepseek-v4-pro/);
     assert.equal(parseCompactJsonLines(result.stdout).some((line) => line.event === "external_review_progress"), false);
     assert.doesNotMatch(result.stdout, /secret-test-value/);
     assert.doesNotMatch(result.stdout, /^\{\n/m);

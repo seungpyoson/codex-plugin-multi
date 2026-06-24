@@ -5430,6 +5430,8 @@ test("custom-review lifecycle markdown emits launch and terminal cards on succes
     assert.match(result.stdout, /\| Status \| running \|/);
     assert.match(result.stdout, /\| Source \| sent \|/);
     assert.match(result.stdout, /\| Status \| completed \|/);
+    assert.match(result.stdout, /^### REVIEW FINDINGS$/m);
+    assert.match(result.stdout, /Markdown lifecycle success marker\./);
     assert.equal(parseCompactJsonLines(result).some((line) => line.event === "external_review_progress"), false);
     assert.doesNotMatch(result.stdout, /secret-cookie-like-token/);
     assert.doesNotMatch(result.stdout, /^\{\n/m);
