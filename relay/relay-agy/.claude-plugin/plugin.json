@@ -1,0 +1,17 @@
+{
+  "name": "relay-agy",
+  "version": "0.1.0",
+  "author": {
+    "name": "relay-maintainer"
+  },
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "agy",
+    "antigravity",
+    "google-antigravity",
+    "review"
+  ],
+  "description": "Delegate review and adversarial review to Google Antigravity CLI from within Claude Code.",
+  "homepage": "https://github.com/relay-org/relay",
+  "repository": "https://github.com/relay-org/relay"
+}

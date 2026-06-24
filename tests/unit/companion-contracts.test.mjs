@@ -10,19 +10,52 @@ function readRepoFile(rel) {
   return readFileSync(path.join(REPO_ROOT, rel), "utf8");
 }
 
+function functionSource(source, name, rel) {
+  const match = new RegExp(`function ${name}[\\s\\S]*?\\n}`).exec(source);
+  assert.ok(match, `${rel}: missing ${name} helper`);
+  return match[0];
+}
+
+function sidecarDirectorySource(source, block, rel) {
+  return block.includes("prepareSidecarJobDirectory")
+    ? functionSource(source, "prepareSidecarJobDirectory", rel)
+    : block;
+}
+
+function assertSiblingAtomicWrite(block, label) {
+  assert.match(block, /renameSync/, `${label} must rename a tmp file into place`);
+  assert.match(block, /\.tmp/, `${label} must write a sibling tmp file`);
+}
+
+function assertSharedDurableSidecarWrite(block, rel) {
+  assert.match(block, /writeFileAtomicDurable\(/, `${rel}: writeSidecar must call the shared durable atomic writer`);
+  const helper = functionSource(
+    readRepoFile("scripts/lib/companion-common.mjs"),
+    "writeFileAtomicDurable",
+    "scripts/lib/companion-common.mjs",
+  );
+  assertSiblingAtomicWrite(helper, "writeFileAtomicDurable");
+  assert.match(helper, /fs\.fsyncSync/, "writeFileAtomicDurable must fsync file data before rename");
+}
+
 test("companion sidecar writes use sibling tmp files, rename, and private directories", () => {
   for (const rel of [
     "plugins/claude/scripts/claude-companion.mjs",
     "plugins/gemini/scripts/gemini-companion.mjs",
     "plugins/kimi/scripts/kimi-companion.mjs",
+    "plugins/agy/scripts/agy-companion.mjs",
   ]) {
     const source = readRepoFile(rel);
     const match = /function writeSidecar[\s\S]*?\n}/.exec(source);
     assert.ok(match, `${rel}: missing writeSidecar helper`);
-    assert.match(match[0], /renameSync/, `${rel}: writeSidecar must rename a tmp file into place`);
-    assert.match(match[0], /\.tmp/, `${rel}: writeSidecar must write a sibling tmp file`);
-    assert.match(match[0], /mode:\s*0o700/, `${rel}: writeSidecar must create private job dirs`);
-    assert.match(match[0], /chmodSync\(dir,\s*0o700\)/, `${rel}: writeSidecar must tighten existing job dirs`);
+    if (match[0].includes("writeFileAtomicDurable")) {
+      assertSharedDurableSidecarWrite(match[0], rel);
+    } else {
+      assertSiblingAtomicWrite(match[0], `${rel}: writeSidecar`);
+    }
+    const dirSource = sidecarDirectorySource(source, match[0], rel);
+    assert.match(dirSource, /mode:\s*0o700/, `${rel}: writeSidecar must create private job dirs`);
+    assert.match(dirSource, /chmodSync\(dir,\s*0o700\)/, `${rel}: writeSidecar must tighten existing job dirs`);
   }
 });
 
@@ -55,12 +88,25 @@ test("prompt sidecar cleanup fails closed after a successful read", () => {
     "consumePromptSidecar cleanup uncertainty must fail closed after a successful read");
 });
 
-test("Kimi runtime-options sidecar writes use private directories", () => {
-  const source = readRepoFile("plugins/kimi/scripts/kimi-companion.mjs");
-  const match = /function writeRuntimeOptionsSidecar[\s\S]*?\n}/.exec(source);
-  assert.ok(match, "kimi companion: missing writeRuntimeOptionsSidecar helper");
-  assert.match(match[0], /mode:\s*0o700/, "runtime-options sidecar must create private job dirs");
-  assert.match(match[0], /chmodSync\(dir,\s*0o700\)/, "runtime-options sidecar must tighten existing job dirs");
+test("runtime-options sidecar writes use private directories where supported", () => {
+  for (const rel of [
+    "plugins/kimi/scripts/kimi-companion.mjs",
+    "plugins/agy/scripts/agy-companion.mjs",
+  ]) {
+    const source = readRepoFile(rel);
+    const match = /function writeRuntimeOptionsSidecar[\s\S]*?\n}/.exec(source);
+    assert.ok(match, `${rel}: missing writeRuntimeOptionsSidecar helper`);
+    const dirSource = sidecarDirectorySource(source, match[0], rel);
+    assert.match(dirSource, /mode:\s*0o700/, `${rel}: runtime-options sidecar must create private job dirs`);
+    assert.match(dirSource, /chmodSync\(dir,\s*0o700\)/, `${rel}: runtime-options sidecar must tighten existing job dirs`);
+  }
+});
+
+test("AGY companion explicitly rejects unsupported background and continue flows", () => {
+  const source = readRepoFile("plugins/agy/scripts/agy-companion.mjs");
+  assert.match(source, /options\.background[\s\S]*fail\("bad_args"[\s\S]*--background[\s\S]*(unsupported|foreground-only)/i);
+  assert.match(source, /command === "continue"[\s\S]*fail\("bad_args"[\s\S]*(continue|resume)[\s\S]*unsupported/i);
+  assert.doesNotMatch(source, /_run-worker|spawnDetached|detached worker/i);
 });
 
 test("workers distinguish empty prompt sidecars from missing prompt sidecars", () => {

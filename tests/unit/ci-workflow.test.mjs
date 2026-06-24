@@ -27,6 +27,7 @@ const credentialResolutionSchema = JSON.parse(readFileSync(
 ));
 
 const DIFF_SOURCE_PACKAGE_COPY_PATHS = [
+  "plugins/agy/scripts/lib/diff-source.mjs",
   "plugins/api-reviewers/scripts/lib/diff-source.mjs",
   "plugins/claude/scripts/lib/diff-source.mjs",
   "plugins/gemini/scripts/lib/diff-source.mjs",
@@ -36,7 +37,8 @@ const DIFF_SOURCE_PACKAGE_COPY_PATHS = [
 
 const DIFF_SOURCE_CPD_PATHS = [
   "scripts/lib/diff-source.mjs",
-  ...DIFF_SOURCE_PACKAGE_COPY_PATHS,
+  // AGY scripts are already excluded from Sonar analysis as a whole.
+  ...DIFF_SOURCE_PACKAGE_COPY_PATHS.filter((path) => !path.startsWith("plugins/agy/")),
   "scripts/ci/sync-diff-source.mjs",
 ];
 
@@ -166,6 +168,15 @@ test("review-quality exports carry maintainer-facing JSDoc", () => {
   const evaluator = readFileSync(resolve("scripts/lib/review-quality-evaluator.mjs"), "utf8");
   assert.match(reviewPrompt, /\/\*\*[\s\S]*delimiter-guarded[\s\S]*export function buildSelectedSourcePromptBlock/);
   assert.match(evaluator, /\/\*\*[\s\S]*seeded review packet[\s\S]*export function evaluateSeededReviewPacket/);
+});
+
+test("Sonar source exclusions cover synced provider script packages", () => {
+  for (const path of [
+    "plugins/kimi/scripts/**",
+    "plugins/agy/scripts/**",
+  ]) {
+    assert.match(sonarConfig, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 });
 
 test("pull-request CI runs the enforced coverage gate", () => {
@@ -445,6 +456,7 @@ test("companion foreground cancelled terminal records exit cleanly", () => {
 
 test("companion mutation-detection git calls use safe git resolver", () => {
   for (const rel of [
+    "plugins/agy/scripts/agy-companion.mjs",
     "plugins/claude/scripts/claude-companion.mjs",
     "plugins/gemini/scripts/gemini-companion.mjs",
     "plugins/kimi/scripts/kimi-companion.mjs",
@@ -476,6 +488,7 @@ test("companion mutation-detection git calls use safe git resolver", () => {
 
 test("companion preflight preserves Git binary policy error classification", () => {
   for (const rel of [
+    "plugins/agy/scripts/agy-companion.mjs",
     "plugins/claude/scripts/claude-companion.mjs",
     "plugins/gemini/scripts/gemini-companion.mjs",
     "plugins/kimi/scripts/kimi-companion.mjs",
@@ -494,6 +507,7 @@ test("companion preflight preserves Git binary policy error classification", () 
 
 test("scope population git calls use authoritative workspace root", () => {
   for (const rel of [
+    "plugins/agy/scripts/lib/scope.mjs",
     "plugins/claude/scripts/lib/scope.mjs",
     "plugins/gemini/scripts/lib/scope.mjs",
     "plugins/kimi/scripts/lib/scope.mjs",
@@ -510,6 +524,7 @@ test("scope population git calls use authoritative workspace root", () => {
   }
 
   for (const rel of [
+    "plugins/agy/scripts/agy-companion.mjs",
     "plugins/claude/scripts/claude-companion.mjs",
     "plugins/gemini/scripts/gemini-companion.mjs",
     "plugins/kimi/scripts/kimi-companion.mjs",

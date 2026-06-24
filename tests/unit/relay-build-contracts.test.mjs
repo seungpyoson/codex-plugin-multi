@@ -324,6 +324,41 @@ test("buildRelayPlugin: emits relay-gemini Claude plugin tree", () => {
   }
 });
 
+test("buildRelayPlugin: emits relay-agy Claude plugin tree from shared provider metadata", () => {
+  const outRoot = mkdtempSync(path.join(tmpdir(), "relay-agy-build-"));
+  try {
+    const pluginRoot = buildRelayPlugin({ provider: "agy", repoRoot: process.cwd(), outRoot });
+
+    assert.equal(pluginRoot, path.join(outRoot, "relay-agy"));
+    assert.equal(existsSync(path.join(pluginRoot, ".claude-plugin", "plugin.json")), true);
+    const manifest = JSON.parse(readFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), "utf8"));
+    assert.equal(manifest.name, "relay-agy");
+    assert.equal(manifest.interface, undefined);
+    assert.equal(manifest.skills, undefined);
+
+    assert.deepEqual(readdirSync(path.join(pluginRoot, "commands")).sort(), [
+      "adversarial-review.md",
+      "cancel.md",
+      "custom-review.md",
+      "result.md",
+      "review.md",
+      "setup.md",
+      "status.md",
+    ]);
+
+    const reviewDoc = readFileSync(path.join(pluginRoot, "commands", "review.md"), "utf8");
+    assert.match(reviewDoc, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/relay-run\.mjs" agy-companion\.mjs/);
+    assert.match(reviewDoc, /--prompt-file "\$RELAY_PROMPT_FILE"/);
+    assert.doesNotMatch(reviewDoc, /<plugin-root>|-- "<focus text>"/);
+
+    const relayRun = readFileSync(path.join(pluginRoot, "scripts", "relay-run.mjs"), "utf8");
+    assert.match(relayRun, /AGY_PLUGIN_DATA/);
+    assert.match(relayRun, /AGY_COMPANION_SESSION_ID/);
+  } finally {
+    rmSync(outRoot, { recursive: true, force: true });
+  }
+});
+
 test("buildRelaySuite: emits the full Claude relay provider suite without relay-claude", () => {
   const tmpRoot = mkdtempSync(path.join(tmpdir(), "relay-suite-"));
   const outRoot = path.join(tmpRoot, "relay");
@@ -332,6 +367,7 @@ test("buildRelaySuite: emits the full Claude relay provider suite without relay-
     const pluginNames = pluginRoots.map((root) => path.basename(root)).sort();
 
     assert.deepEqual(pluginNames, [
+      "relay-agy",
       "relay-deepseek",
       "relay-gemini",
       "relay-glm",

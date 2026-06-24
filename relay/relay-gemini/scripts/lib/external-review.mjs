@@ -1,4 +1,5 @@
 export const PROVIDER_NAMES = Object.freeze({
+  agy: "Google Antigravity CLI",
   claude: "Claude Code",
   deepseek: "DeepSeek",
   gemini: "Gemini CLI",
@@ -40,6 +41,7 @@ const CONTENT_RECEIVED_ERROR_CODES = Object.freeze(new Set([
   "claude_error",
   "gemini_error",
   "kimi_error",
+  "agy_error",
   "grok_error",
   "deepseek_error",
   "glm_error",
@@ -59,6 +61,7 @@ export const PRE_TARGET_NOT_SENT_ERROR_CODES = Object.freeze(new Set([
   "cli_contract_mismatch",
   "git_binary_rejected",
   "preflight_stale",
+  "prompt_sidecar_failed",
   "prompt_too_large",
   "scope_failed",
   "source_packet_too_large",

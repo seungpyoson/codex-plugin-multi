@@ -65,6 +65,18 @@ function grokSourceReviewDocPaths() {
   ];
 }
 
+function agySourceReviewDocPaths() {
+  return [
+    "plugins/agy/commands/agy-review.md",
+    "plugins/agy/commands/agy-adversarial-review.md",
+    "plugins/agy/commands/agy-custom-review.md",
+    "plugins/agy/skills/agy-review/SKILL.md",
+    "plugins/agy/skills/agy-adversarial-review/SKILL.md",
+    "plugins/agy/skills/agy-custom-review/SKILL.md",
+    "plugins/agy/skills/agy-delegation/SKILL.md",
+  ];
+}
+
 function assertRepoPathExists(rel, label) {
   if (/^https?:\/\//.test(rel) || rel.startsWith("/private/") || /^missing:/i.test(rel)) return;
   assert.equal(existsSync(path.join(REPO_ROOT, rel)), true, `${label} points at missing repo path ${rel}`);
@@ -531,6 +543,48 @@ test("companion reviewer docs require sandbox-first source-send execution", () =
       `${docPath} must fail closed with sandbox_blocked/not_sent when default sandbox is insufficient`,
     );
   }
+});
+
+test("AGY reviewer docs avoid direct API approval-token wording", () => {
+  for (const docPath of agySourceReviewDocPaths()) {
+    const doc = readRepoFile(docPath);
+    assert.match(doc, /Google Antigravity CLI/, docPath);
+    assert.doesNotMatch(doc, /approval_token\.value|grant_approval_token|approval-request/, docPath);
+    assert.doesNotMatch(doc, /direct API|direct_api/i, docPath);
+  }
+});
+
+test("AGY spec docs record verified facts and deferred host packaging boundaries", () => {
+  const research = readRepoFile("specs/002-agy-adapter/research.md");
+  const externalReviews = readRepoFile("specs/002-agy-adapter/external-reviews.md");
+
+  assert.match(research, /## Verified AGY Facts/i);
+  assert.match(research, /command -v agy[\s\S]*agy models[\s\S]*relay-agy-probe/i);
+  assert.match(research, /source-free/i);
+  assert.match(research, /## Deferred AGY Host Packaging Boundaries/i);
+  assert.match(research, /agy plugin validate/i);
+  assert.match(research, /native Antigravity host package/i);
+  assert.match(research, /deferred|follow-up|not shipped/i);
+
+  assert.match(externalReviews, /## Internal Adversarial Review/i);
+  assert.match(externalReviews, /Gemini[\s\S]*Status\*\*: Approved/i);
+  assert.match(externalReviews, /Grok[\s\S]*Status\*\*: Approved/i);
+  assert.match(externalReviews, /GLM[\s\S]*Status\*\*: Approved/i);
+});
+
+test("AGY quickstart keeps source-free probes separate from mocked source-bearing tests", () => {
+  const quickstart = readRepoFile("specs/002-agy-adapter/quickstart.md");
+
+  assert.match(quickstart, /## Source-Free AGY Probes/i);
+  assert.match(quickstart, /agy models/);
+  assert.match(quickstart, /relay-agy-probe/);
+  assert.match(
+    quickstart,
+    /node --test tests\/unit\/agy-dispatcher\.test\.mjs tests\/smoke\/agy-companion\.smoke\.test\.mjs/,
+  );
+  assert.match(quickstart, /mocked AGY smoke/i);
+  assert.match(quickstart, /no source-bearing live AGY test is required/i);
+  assert.match(quickstart, /do not run live source-bearing AGY prompts/i);
 });
 
 test("grok reviewer docs require sandbox-first source-send execution", () => {
