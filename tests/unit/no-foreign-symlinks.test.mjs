@@ -228,27 +228,6 @@ test("CLI rejects a force-added self-referential node_modules symlink", () => {
   });
 });
 
-test("CLI honors a positional path argument (not just process.cwd())", () => {
-  withFixtureRepo("argpath-symlink-", (dir) => {
-    symlinkSync(tmpdir(), path.join(dir, "bad-link"));
-    fixtureGit(dir, ["add", "-A"]);
-    let combined = "";
-    try {
-      execFileSync("node", [CHECK, dir], {
-        cwd: REPO_ROOT,
-        encoding: "utf8",
-        env: fixtureGitEnv(),
-      });
-      assert.fail("expected non-zero exit for the arg-dir offender");
-    } catch (e) {
-      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
-    }
-
-    assert.match(combined, /bad-link ->/);
-    assert.match(combined, /(resolves outside the repo|unresolvable)/);
-  });
-});
-
 test("CLI rejects a nul target as unresolvable", () => {
   withFixtureRepo("nul-symlink-", (dir) => {
     symlinkSync("nul", path.join(dir, "devlink"));

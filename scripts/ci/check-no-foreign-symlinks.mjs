@@ -146,10 +146,13 @@ export function collectTrackedSymlinks(runGit) {
   return collectTrackedSymlinkState(runGit).symlinks;
 }
 
-export function main(cwd = process.cwd()) {
+export function main() {
   // Anchor to the enclosing git toplevel so `git ls-files` covers the whole repo
-  // regardless of the directory the check was invoked from.
-  const toplevel = execFileSync(DEFAULT_GIT_BINARY, ["-C", cwd, "rev-parse", "--show-toplevel"], {
+  // regardless of the directory the check was invoked from. Git runs in the
+  // process's own working directory — no untrusted path argument is accepted, so
+  // a `node check-no-foreign-symlinks.mjs <path>` invocation cannot steer git at
+  // an arbitrary location.
+  const toplevel = execFileSync(DEFAULT_GIT_BINARY, ["rev-parse", "--show-toplevel"], {
     encoding: "utf8",
     env: TRUSTED_GIT_ENV,
     timeout: 15000,
@@ -175,5 +178,5 @@ export function main(cwd = process.cwd()) {
 
 // Execute only when invoked directly (not when imported by tests).
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv[2]);
+  main();
 }
