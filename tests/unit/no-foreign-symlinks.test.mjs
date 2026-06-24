@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  findForeignSymlinks,
+  classifyResolvedSymlink,
   parseLsFilesStage,
   collectTrackedSymlinks,
 } from "../../scripts/ci/check-no-foreign-symlinks.mjs";
@@ -47,84 +47,34 @@ function checkFails(dir) {
 }
 
 // ---------------------------------------------------------------------------
-// Pure-function truth table: a tracked symlink is valid iff its resolved target
-// is a tracked file or tracked-directory prefix.
+// Pure core: an already-resolved real path is valid iff it remains inside the
+// repo and maps to a tracked file or tracked-directory prefix.
 // ---------------------------------------------------------------------------
 
-test("findForeignSymlinks: accepts tracked files, tracked directory prefixes, and safe relatives", () => {
-  const isTrackedPath = tracked([
-    "plugins/api-reviewers/plugin.json",
-    "tests/smoke/claude-mock.mjs",
-    "a/d",
-    "y",
-    "console.mjs",
-    "command.ts",
-    "aux-helper.js",
-  ]);
+const ROOT = "/repo";
 
-  const offenders = findForeignSymlinks(
-    [
-      { path: "relay/relay-api-reviewers", target: "../plugins/api-reviewers" },
-      { path: "tests/smoke/claude", target: "claude-mock.mjs" },
-      { path: "a/b/c", target: "../d" },
-      { path: "x", target: "./y" },
-      { path: "console-link", target: "console.mjs" },
-      { path: "command-link", target: "command.ts" },
-      { path: "aux-link", target: "aux-helper.js" },
-    ],
-    isTrackedPath
-  );
-
-  assert.deepEqual(offenders, []);
+test("classifyResolvedSymlink: accepts a resolved path that is a tracked file", () => {
+  assert.equal(classifyResolvedSymlink("/repo/sub/f.txt", ROOT, tracked(["sub/f.txt"])), null);
 });
 
-test("findForeignSymlinks: accepts a directory target written with a trailing slash", () => {
-  const isTrackedPath = tracked(["pkg/sub/f.txt"]);
-  const offenders = findForeignSymlinks(
-    [
-      { path: "link", target: "pkg/sub/" },
-      { path: "root", target: "./" },
-    ],
-    isTrackedPath
-  );
-
-  assert.deepEqual(offenders, []);
+test("classifyResolvedSymlink: accepts a resolved path that is a tracked directory prefix", () => {
+  assert.equal(classifyResolvedSymlink("/repo/sub", ROOT, tracked(["sub/f.txt"])), null);
 });
 
-test("findForeignSymlinks: rejects empty and absolute targets before membership", () => {
-  const offenders = findForeignSymlinks(
-    [
-      { path: "empty", target: "" },
-      { path: "node_modules", target: "/Users/x/relay/node_modules" },
-      { path: "relay/link", target: "/plugins/api-reviewers" },
-    ],
-    tracked(["Users/x/relay/node_modules", "plugins/api-reviewers/plugin.json"])
-  );
-
-  assert.equal(offenders.length, 3);
-  assert.match(offenders[0].reason, /empty/);
-  assert.match(offenders[1].reason, /absolute/);
-  assert.match(offenders[2].reason, /absolute/);
+test("classifyResolvedSymlink: accepts a resolution to the repo root itself", () => {
+  assert.equal(classifyResolvedSymlink("/repo", ROOT, tracked(["sub/f.txt"])), null);
 });
 
-test("findForeignSymlinks: rejects untracked resolved targets by membership", () => {
-  const entries = [
-    { path: "rootlink", target: "../outside" },
-    { path: "devlink", target: "nul" },
-    { path: "comlink", target: "COM¹" },
-    { path: "node_modules", target: "node_modules" },
-    { path: "slash", target: "sub\\file" },
-    { path: "driverel", target: "C:foo" },
-    { path: "control", target: "safe\n" },
-  ];
+test("classifyResolvedSymlink: rejects a resolved path outside the repo", () => {
+  assert.match(classifyResolvedSymlink("/elsewhere/x", ROOT, tracked(["sub/f.txt"])), /outside the repo/);
+});
 
-  const offenders = findForeignSymlinks(entries, tracked(["tracked/file.txt"]));
+test("classifyResolvedSymlink: rejects a sibling-prefix path outside the repo", () => {
+  assert.match(classifyResolvedSymlink("/repo-evil/x", ROOT, tracked([])), /outside the repo/);
+});
 
-  assert.equal(offenders.length, entries.length);
-  for (const o of offenders) {
-    assert.match(o.reason, /does not resolve to a tracked/);
-    assert.doesNotMatch(o.reason, /reserved|non-portable|space or dot|escapes repo root/);
-  }
+test("classifyResolvedSymlink: rejects a resolved path inside the repo but untracked", () => {
+  assert.match(classifyResolvedSymlink("/repo/nope", ROOT, tracked(["sub/f.txt"])), /untracked/);
 });
 
 test("parseLsFilesStage: parses NUL-delimited (-z) records; tolerates spaces in paths", () => {
@@ -188,11 +138,12 @@ test("CLI passes on the real repo", () => {
 test("CLI rejects the #247 absolute symlink target and names the offender", () => {
   withFixtureRepo("absolute-symlink-", (dir) => {
     writeFileSync(path.join(dir, "real.txt"), "x\n", "utf8");
-    symlinkSync("/Users/someone/elsewhere", path.join(dir, "bad-link"));
+    symlinkSync(tmpdir(), path.join(dir, "bad-link"));
     fixtureGit(dir, ["add", "-A"]);
 
     const combined = checkFails(dir);
-    assert.match(combined, /bad-link -> \/Users\/someone\/elsewhere\s+\(absolute target/);
+    assert.match(combined, /bad-link ->/);
+    assert.match(combined, /(resolves outside the repo|unresolvable)/);
   });
 });
 
@@ -202,27 +153,119 @@ test("CLI rejects a relative symlink that resolves outside tracked paths", () =>
     fixtureGit(dir, ["add", "-A"]);
 
     const combined = checkFails(dir);
-    assert.match(combined, /escaper -> \.\.\/\.\.\/outside-the-repo\s+\(does not resolve to a tracked/);
+    assert.match(combined, /escaper -> \.\.\/\.\.\/outside-the-repo\s+\((unresolvable|resolves outside the repo)/);
   });
 });
 
-test("CLI rejects a nul target by membership", () => {
+test("CLI rejects an intermediate-symlink '..' escape (real git repo)", () => {
+  withFixtureRepo("intermediate-symlink-", (dir) => {
+    writeFileSync(path.join(dir, "safe"), "root safe\n", "utf8");
+    mkdirSync(path.join(dir, "sub", "inside"), { recursive: true });
+    writeFileSync(path.join(dir, "sub", "inside", "file.txt"), "inside\n", "utf8");
+    symlinkSync("sub/inside", path.join(dir, "d"));
+    symlinkSync("d/../safe", path.join(dir, "a"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    const combined = checkFails(dir);
+    assert.match(combined, /a -> d\/\.\.\/safe\s+\((unresolvable|resolves outside the repo|resolves to an untracked path)/);
+    assert.doesNotMatch(combined, /✗ d ->/);
+  });
+});
+
+test("CLI rejects file/.. ENOTDIR resolution through a symlink target", () => {
+  withFixtureRepo("file-dotdot-symlink-", (dir) => {
+    writeFileSync(path.join(dir, "file.txt"), "file\n", "utf8");
+    writeFileSync(path.join(dir, "safe"), "safe\n", "utf8");
+    symlinkSync("file.txt/../safe", path.join(dir, "link"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    const combined = checkFails(dir);
+    assert.match(combined, /link -> file\.txt\/\.\.\/safe\s+\(unresolvable/);
+  });
+});
+
+test("CLI accepts a valid symlink chain", () => {
+  withFixtureRepo("valid-chain-symlink-", (dir) => {
+    writeFileSync(path.join(dir, "real.txt"), "real\n", "utf8");
+    symlinkSync("real.txt", path.join(dir, "b"));
+    symlinkSync("b", path.join(dir, "a"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    const out = execFileSync("node", [CHECK], {
+      cwd: dir,
+      encoding: "utf8",
+      env: fixtureGitEnv(),
+    });
+    assert.match(out, /✓ All 2 tracked symlink\(s\) resolve inside the repo/);
+  });
+});
+
+test("CLI accepts a valid symlink to a tracked directory", () => {
+  withFixtureRepo("valid-dir-symlink-", (dir) => {
+    mkdirSync(path.join(dir, "pkg", "inside"), { recursive: true });
+    writeFileSync(path.join(dir, "pkg", "inside", "f.txt"), "inside\n", "utf8");
+    symlinkSync("pkg/inside", path.join(dir, "link"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    const out = execFileSync("node", [CHECK], {
+      cwd: dir,
+      encoding: "utf8",
+      env: fixtureGitEnv(),
+    });
+    assert.match(out, /✓ All 1 tracked symlink\(s\) resolve inside the repo/);
+  });
+});
+
+test("CLI rejects a force-added self-referential node_modules symlink", () => {
+  withFixtureRepo("selfloop-symlink-", (dir) => {
+    writeFileSync(path.join(dir, ".gitignore"), "node_modules\n", "utf8");
+    symlinkSync("node_modules", path.join(dir, "node_modules"));
+    fixtureGit(dir, ["add", ".gitignore"]);
+    fixtureGit(dir, ["add", "-f", "node_modules"]);
+
+    const combined = checkFails(dir);
+    assert.match(combined, /node_modules -> node_modules\s+\(unresolvable/);
+  });
+});
+
+test("CLI honors a positional path argument (not just process.cwd())", () => {
+  withFixtureRepo("argpath-symlink-", (dir) => {
+    symlinkSync(tmpdir(), path.join(dir, "bad-link"));
+    fixtureGit(dir, ["add", "-A"]);
+    let combined = "";
+    try {
+      execFileSync("node", [CHECK, dir], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        env: fixtureGitEnv(),
+      });
+      assert.fail("expected non-zero exit for the arg-dir offender");
+    } catch (e) {
+      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+    }
+
+    assert.match(combined, /bad-link ->/);
+    assert.match(combined, /(resolves outside the repo|unresolvable)/);
+  });
+});
+
+test("CLI rejects a nul target as unresolvable", () => {
   withFixtureRepo("nul-symlink-", (dir) => {
     symlinkSync("nul", path.join(dir, "devlink"));
     fixtureGit(dir, ["add", "-A"]);
 
     const combined = checkFails(dir);
-    assert.match(combined, /devlink -> nul\s+\(does not resolve to a tracked/);
+    assert.match(combined, /devlink -> nul\s+\(unresolvable/);
   });
 });
 
-test("CLI rejects a COM¹ target by membership", () => {
+test("CLI rejects a COM¹ target as unresolvable", () => {
   withFixtureRepo("com-symlink-", (dir) => {
     symlinkSync("COM¹", path.join(dir, "comlink"));
     fixtureGit(dir, ["add", "-A"]);
 
     const combined = checkFails(dir);
-    assert.match(combined, /comlink -> COM¹\s+\(does not resolve to a tracked/);
+    assert.match(combined, /comlink -> COM¹\s+\(unresolvable/);
   });
 });
 
@@ -231,17 +274,12 @@ test("CLI rejects a trailing control byte preserved in the symlink blob", () => 
     try {
       symlinkSync("safe\n", path.join(dir, "control"));
     } catch {
-      const offenders = findForeignSymlinks(
-        [{ path: "control", target: "safe\n" }],
-        tracked(["safe"])
-      );
-      assert.equal(offenders.length, 1);
-      assert.match(offenders[0].reason, /does not resolve to a tracked/);
+      assert.match(classifyResolvedSymlink(`${ROOT}/safe\n`, ROOT, tracked(["safe"])), /untracked/);
       return;
     }
     fixtureGit(dir, ["add", "-A"]);
 
     const combined = checkFails(dir);
-    assert.match(combined, /control -> safe\n\s+\(does not resolve to a tracked/);
+    assert.match(combined, /control -> safe\n\s+\(unresolvable/);
   });
 });

@@ -1,29 +1,30 @@
 #!/usr/bin/env node
-// Repo-hygiene guard: every tracked symlink (git mode 120000) must resolve to a
-// path that is itself tracked by this repository.
+// Repo-hygiene guard: every tracked symlink (git mode 120000) must resolve via
+// the OS to tracked repository contents.
 //
-// Model: membership, fail-closed. The committed symlink blob is the same bytes
-// on every clone, but a target that is not represented by tracked repo contents
-// may be machine-specific, ignored, or absent on a fresh checkout. A tracked
-// symlink is accepted only when its non-empty, relative target resolves to a
-// tracked file or to a directory prefix containing tracked files. The tracked
-// path set from `git ls-files -s -z` is the single source of truth.
+// Model: kernel realpath + membership, fail-closed. Each tracked symlink is
+// resolved with fs.realpathSync against the materialized working tree and
+// accepted only when the resolved real path stays inside the canonical repo root
+// and names either a tracked file or a directory prefix containing tracked files.
+// The kernel performs resolution, so intermediate symlinks, `..` through
+// symlinks or files (ENOTDIR), cycles (ELOOP), and absolute/escaping targets are
+// handled without hand-rolled path logic. The tracked path set from
+// `git ls-files -s -z` is the membership source of truth.
 //
-// Empty and POSIX-absolute targets are explicit early rejects. All other foreign
-// forms are rejected by membership instead of by predicting every bad filename
-// or platform-specific path spelling.
+// This assumes a clean, materialized checkout, which is the CI case. A symlink
+// whose target is absent, unresolvable, escaping, untracked, or not materialized
+// as a real symlink is rejected.
 //
 // Why this exists (#247): a `node_modules` symlink whose target was the absolute
 // path /Users/.../relay/node_modules was committed to main, because .gitignore's
 // `node_modules/` (directory-only) never matched the symlink form. That ignore
 // rule is now corrected, but an ignore rule NEVER blocks a path that is
 // explicitly `git add`-ed. This check closes the recurrence class for ALL
-// symlinks by requiring their targets to resolve to tracked repo contents.
+// symlinks by requiring the kernel-resolved target to remain inside tracked repo
+// contents. The committed symlink blob is kept only for offender display.
 //
-// Reads the committed blob (not the working-tree link) so it works on a fresh
-// clone where the link target may be absent. Operates on the git repo enclosing
-// the current working directory, so it is correct in worktrees and testable
-// against a throwaway repo.
+// Operates on the git repo enclosing the current working directory, so it is
+// correct in worktrees and testable against a throwaway repo.
 //
 // Git is invoked via the absolute DEFAULT_GIT_BINARY with a fixed safe PATH
 // (the repo-canonical trusted-binary pattern; see provider-readiness-manifest),
@@ -34,7 +35,8 @@
 // Run in CI via `npm run lint`.
 
 import { execFileSync } from "node:child_process";
-import { posix } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_GIT_BINARY, gitEnv } from "../../plugins/api-reviewers/scripts/lib/git-binary.mjs";
 import { cleanGitEnv } from "../../plugins/api-reviewers/scripts/lib/git-env.mjs";
@@ -42,32 +44,47 @@ import { cleanGitEnv } from "../../plugins/api-reviewers/scripts/lib/git-env.mjs
 const TRUSTED_GIT_ENV = gitEnv(cleanGitEnv());
 
 // isTrackedPath: (repoRelativePosixPath) => boolean
-function classifyForeignTarget(linkPath, target, isTrackedPath) {
-  if (target === "") {
-    return "empty target";
+export function classifyResolvedSymlink(realPath, repoRoot, isTrackedPath) {
+  if (realPath !== repoRoot && !realPath.startsWith(repoRoot + path.sep)) {
+    return `resolves outside the repo (${realPath})`;
   }
-  // MUST stay explicit and BEFORE the join: posix.join(".", "/plugins/x") strips the
-  // leading "/", which would alias an absolute target onto the tracked relative path
-  // "plugins/x" and false-green. (Proven.)
-  if (posix.isAbsolute(target)) {
-    return "absolute target (machine-specific)";
-  }
-  // A directory target may carry a trailing "/" (e.g. "pkg/sub/"); posix.normalize keeps
-  // it, but "pkg/sub/" and "pkg/sub" name the same directory. Strip it before membership.
-  // Safe: posix-absolute targets are already rejected above, so `resolved` is never "/".
-  const resolved = posix.normalize(posix.join(posix.dirname(linkPath), target)).replace(/\/+$/, "");
-  if (!isTrackedPath(resolved)) {
-    return `does not resolve to a tracked in-repo file (resolves to ${resolved})`;
+  const rel = path.relative(repoRoot, realPath).split(path.sep).join("/");
+  if (rel !== "" && !isTrackedPath(rel)) {
+    return `resolves to an untracked path (${rel})`;
   }
   return null;
 }
 
-// Pure core: given tracked symlink entries [{ path, target }] (repo-relative,
-// POSIX paths), return offenders [{ path, target, reason }].
-export function findForeignSymlinks(entries, isTrackedPath) {
+function errorCode(e) {
+  return e && typeof e === "object" && "code" in e ? e.code : "UNKNOWN";
+}
+
+function resolveTrackedSymlink(absPath) {
+  let st;
+  try {
+    st = lstatSync(absPath);
+  } catch (e) {
+    return { reason: `missing from the working tree (${errorCode(e)})` };
+  }
+  if (!st.isSymbolicLink()) {
+    return { reason: "not a materialized symlink (is core.symlinks disabled?)" };
+  }
+  try {
+    return { realPath: realpathSync(absPath) };
+  } catch (e) {
+    return { reason: `unresolvable (${errorCode(e)})` };
+  }
+}
+
+// symlinks: [{ path, target }] where target is kept only for the offender message.
+// repoRoot: canonical absolute repo root.
+export function findForeignSymlinks(symlinks, repoRoot, isTrackedPath) {
   const offenders = [];
-  for (const { path: linkPath, target } of entries) {
-    const reason = classifyForeignTarget(linkPath, target, isTrackedPath);
+  for (const { path: linkPath, target } of symlinks) {
+    const abs = path.join(repoRoot, linkPath);
+    const resolved = resolveTrackedSymlink(abs);
+    const reason =
+      resolved.reason ?? classifyResolvedSymlink(resolved.realPath, repoRoot, isTrackedPath);
     if (reason) {
       offenders.push({ path: linkPath, target, reason });
     }
@@ -137,10 +154,11 @@ export function main(cwd = process.cwd()) {
     env: TRUSTED_GIT_ENV,
     timeout: 15000,
   }).trim();
+  const repoRoot = realpathSync(toplevel);
   const runGit = makeRunGit(toplevel);
 
   const { symlinks, isTrackedPath } = collectTrackedSymlinkState(runGit);
-  const offenders = findForeignSymlinks(symlinks, isTrackedPath);
+  const offenders = findForeignSymlinks(symlinks, repoRoot, isTrackedPath);
   if (offenders.length > 0) {
     process.stderr.write("Foreign-symlink check FAILED:\n");
     for (const o of offenders) {
@@ -157,5 +175,5 @@ export function main(cwd = process.cwd()) {
 
 // Execute only when invoked directly (not when imported by tests).
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main();
+  main(process.argv[2]);
 }
