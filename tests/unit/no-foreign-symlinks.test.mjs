@@ -16,123 +16,122 @@ import { fixtureGit, fixtureGitEnv } from "../helpers/fixture-git.mjs";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CHECK = path.join(REPO_ROOT, "scripts/ci/check-no-foreign-symlinks.mjs");
 
+const tracked = (paths) => {
+  const set = new Set(paths);
+  return (p) => p === "" || p === "." || set.has(p) || [...set].some((f) => f.startsWith(p + "/"));
+};
+
+function initFixtureRepo(dir) {
+  fixtureGit(dir, ["init"]);
+  fixtureGit(dir, ["config", "user.email", "test@example.com"]);
+  fixtureGit(dir, ["config", "user.name", "Test User"]);
+}
+
+function withFixtureRepo(prefix, fn) {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  try {
+    initFixtureRepo(dir);
+    fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function checkFails(dir) {
+  try {
+    execFileSync("node", [CHECK], { cwd: dir, encoding: "utf8", env: fixtureGitEnv() });
+  } catch (e) {
+    return `${e.stdout ?? ""}${e.stderr ?? ""}`;
+  }
+  assert.fail("expected the check to exit non-zero");
+}
+
 // ---------------------------------------------------------------------------
-// Pure-function truth table — the recurrence-prevention logic for #247.
+// Pure-function truth table: a tracked symlink is valid iff its resolved target
+// is a tracked file or tracked-directory prefix.
 // ---------------------------------------------------------------------------
 
-test("findForeignSymlinks: flags an absolute (machine-specific) target — the #247 bug", () => {
-  const offenders = findForeignSymlinks([
-    { path: "node_modules", target: "/Users/x/relay/node_modules" },
+test("findForeignSymlinks: accepts tracked files, tracked directory prefixes, and safe relatives", () => {
+  const isTrackedPath = tracked([
+    "plugins/api-reviewers/plugin.json",
+    "tests/smoke/claude-mock.mjs",
+    "a/d",
+    "y",
+    "console.mjs",
+    "command.ts",
+    "aux-helper.js",
   ]);
-  assert.equal(offenders.length, 1);
-  assert.equal(offenders[0].path, "node_modules");
-  assert.match(offenders[0].reason, /absolute/);
+
+  const offenders = findForeignSymlinks(
+    [
+      { path: "relay/relay-api-reviewers", target: "../plugins/api-reviewers" },
+      { path: "tests/smoke/claude", target: "claude-mock.mjs" },
+      { path: "a/b/c", target: "../d" },
+      { path: "x", target: "./y" },
+      { path: "console-link", target: "console.mjs" },
+      { path: "command-link", target: "command.ts" },
+      { path: "aux-link", target: "aux-helper.js" },
+    ],
+    isTrackedPath
+  );
+
+  assert.deepEqual(offenders, []);
 });
 
-// The guard is an allowlist: it accepts only a non-empty, relative, forward-slash
-// target that resolves inside the repo, and rejects everything else. The next
-// three tests pin the three rejection sub-classes; each row is a whole class, not
-// a single enumerated syntax.
+test("findForeignSymlinks: accepts a directory target written with a trailing slash", () => {
+  const isTrackedPath = tracked(["pkg/sub/f.txt"]);
+  const offenders = findForeignSymlinks(
+    [
+      { path: "link", target: "pkg/sub/" },
+      { path: "root", target: "./" },
+    ],
+    isTrackedPath
+  );
 
-test("findForeignSymlinks: rejects any backslash target (Windows sep / UNC / drive+backslash / \\-escape)", () => {
-  // ONE rule (`includes("\\")`) subsumes all of these — they are non-portable on
-  // every clone, so the guard never has to enumerate the individual forms.
-  const offenders = findForeignSymlinks([
-    { path: "a", target: "C:\\Windows\\system32" }, // drive + backslash
-    { path: "b", target: "\\\\server\\share" }, // UNC
-    { path: "c", target: "\\Windows\\System32" }, // single-backslash current-drive root
-    { path: "toplink", target: "..\\outside" }, // backslash escape from root
-    { path: "sub/nestlink", target: "..\\..\\outside" }, // nested backslash escape
-    { path: "z", target: "sub\\file" }, // diverges across OSes (sub/file on Win, literal on POSIX)
-  ]);
-  assert.equal(offenders.length, 6);
-  for (const o of offenders) assert.match(o.reason, /non-portable/);
+  assert.deepEqual(offenders, []);
 });
 
-test("findForeignSymlinks: rejects forward-slash POSIX-absolute targets", () => {
-  const offenders = findForeignSymlinks([
-    { path: "n", target: "/Users/x/relay/node_modules" }, // the #247 bug
-    { path: "e", target: "/etc/passwd" },
-  ]);
-  assert.equal(offenders.length, 2);
-  for (const o of offenders) assert.match(o.reason, /machine-specific/);
-});
+test("findForeignSymlinks: rejects empty and absolute targets before membership", () => {
+  const offenders = findForeignSymlinks(
+    [
+      { path: "empty", target: "" },
+      { path: "node_modules", target: "/Users/x/relay/node_modules" },
+      { path: "relay/link", target: "/plugins/api-reviewers" },
+    ],
+    tracked(["Users/x/relay/node_modules", "plugins/api-reviewers/plugin.json"])
+  );
 
-test("findForeignSymlinks: rejects a segment with a Windows-illegal char (':' drive/stream, control bytes, < > | ? * \")", () => {
-  // ':' subsumes the old drive-qualifier special case (C:foo, C:, C:/x) AND NTFS
-  // alternate-data-streams (name:stream); the control range covers NUL/newline.
-  const offenders = findForeignSymlinks([
-    { path: "a", target: "C:/Windows" }, // drive + forward slash -> ':' illegal
-    { path: "b", target: "C:foo" }, // drive-relative -> ':' illegal
-    { path: "c", target: "C:" }, // bare drive -> ':' illegal
-    { path: "d", target: "foo:bar" }, // NTFS stream / colon mid-segment
-    { path: "e", target: "a|b" },
-    { path: "f", target: "a?b" },
-    { path: "g", target: "a*b" },
-    { path: "h", target: 'a"b' },
-    { path: "i", target: "a<b" },
-    { path: "j", target: "ctrl" + String.fromCharCode(0) + "byte" }, // embedded control byte (NUL)
-  ]);
-  assert.equal(offenders.length, 10);
-  for (const o of offenders) assert.match(o.reason, /non-portable character/);
-});
-
-test("findForeignSymlinks: rejects Windows reserved device-name segments (CON, NUL, COM1 …)", () => {
-  const offenders = findForeignSymlinks([
-    { path: "a", target: "nul" },
-    { path: "b", target: "con.txt" }, // reserved + extension still reserved
-    { path: "c", target: "AUX" }, // case-insensitive
-    { path: "d", target: "prn" },
-    { path: "e", target: "com1" },
-    { path: "f", target: "lpt9" },
-    { path: "g", target: "sub/con" }, // reserved as a non-leading segment
-  ]);
-  assert.equal(offenders.length, 7);
-  for (const o of offenders) assert.match(o.reason, /reserved device name/);
-});
-
-test("findForeignSymlinks: rejects a segment ending in a space or dot (Windows strips them)", () => {
-  const offenders = findForeignSymlinks([
-    { path: "a", target: "trail." },
-    { path: "b", target: "trail " },
-    { path: "c", target: "sub/baz." },
-  ]);
-  assert.equal(offenders.length, 3);
-  for (const o of offenders) assert.match(o.reason, /space or dot/);
-});
-
-test("findForeignSymlinks: rejects empty target and forward-slash escapes above the repo root", () => {
-  const offenders = findForeignSymlinks([
-    { path: "x", target: "" }, // empty — fail closed
-    { path: "link", target: "../outside" },
-    { path: "a/b/link", target: "../../../etc/passwd" },
-  ]);
   assert.equal(offenders.length, 3);
   assert.match(offenders[0].reason, /empty/);
-  assert.match(offenders[1].reason, /escapes repo root/);
-  assert.match(offenders[2].reason, /escapes repo root/);
+  assert.match(offenders[1].reason, /absolute/);
+  assert.match(offenders[2].reason, /absolute/);
 });
 
-test("findForeignSymlinks: allows safe relative forward-slash targets, incl. names that merely contain reserved substrings", () => {
-  const offenders = findForeignSymlinks([
-    { path: "relay/relay-api-reviewers", target: "../plugins/api-reviewers" },
-    { path: "tests/smoke/claude", target: "claude-mock.mjs" },
-    { path: "a/b/c", target: "../d" }, // -> a/d, still inside
-    { path: "x", target: "./y" }, // -> y, inside
-    // No over-match: these CONTAIN reserved names but are not reserved segments.
-    { path: "p", target: "console.mjs" }, // "con" but not the CON segment
-    { path: "q", target: "command.ts" }, // "com" with no digit
-    { path: "r", target: "aux-helper.js" }, // "aux" then "-"
-    { path: "s", target: "nullable.json" }, // "nul" then "l"
-    { path: "t", target: "lpt-notes.md" }, // "lpt" then "-"
-  ]);
-  assert.deepEqual(offenders, []);
+test("findForeignSymlinks: rejects untracked resolved targets by membership", () => {
+  const entries = [
+    { path: "rootlink", target: "../outside" },
+    { path: "devlink", target: "nul" },
+    { path: "comlink", target: "COM¹" },
+    { path: "node_modules", target: "node_modules" },
+    { path: "slash", target: "sub\\file" },
+    { path: "driverel", target: "C:foo" },
+    { path: "control", target: "safe\n" },
+  ];
+
+  const offenders = findForeignSymlinks(entries, tracked(["tracked/file.txt"]));
+
+  assert.equal(offenders.length, entries.length);
+  for (const o of offenders) {
+    assert.match(o.reason, /does not resolve to a tracked/);
+    assert.doesNotMatch(o.reason, /reserved|non-portable|space or dot|escapes repo root/);
+  }
 });
 
 test("parseLsFilesStage: parses NUL-delimited (-z) records; tolerates spaces in paths", () => {
   const out =
     "120000 be9723c077bfb81c7747f25dfa964da1f3134e24 0\tnode_modules\0" +
     "100644 def4560000000000000000000000000000000000 0\tdir/some file.txt\0";
+
   assert.deepEqual(parseLsFilesStage(out), [
     { mode: "120000", sha: "be9723c077bfb81c7747f25dfa964da1f3134e24", path: "node_modules" },
     { mode: "100644", sha: "def4560000000000000000000000000000000000", path: "dir/some file.txt" },
@@ -140,184 +139,109 @@ test("parseLsFilesStage: parses NUL-delimited (-z) records; tolerates spaces in 
 });
 
 test("parseLsFilesStage: preserves special bytes in a path (no C-quoting under -z)", () => {
-  // A name with a non-ASCII byte and a space — `-z` keeps it verbatim, so the
-  // escape check sees the real dirname (the quoting-bypass that motivated -z).
-  const out = "120000 abc 0\tsub/né me/link\0";
+  const out = "120000 abc 0\tsub/spaced link\0";
+
   assert.deepEqual(parseLsFilesStage(out), [
-    { mode: "120000", sha: "abc", path: "sub/né me/link" },
+    { mode: "120000", sha: "abc", path: "sub/spaced link" },
   ]);
 });
 
-test("collectTrackedSymlinks: filters to mode 120000 and reads the blob target", () => {
+test("collectTrackedSymlinks: filters to mode 120000 and preserves blob targets verbatim", () => {
+  const calls = [];
   const lsFiles =
     "100644 aaa 0\treal.txt\0" +
-    "120000 bbb 0\tlink-abs\0" +
+    "120000 bbb 0\tlink-control\0" +
     "120000 ccc 0\tsub/link-rel\0";
-  const blobs = { bbb: "/abs/target\n", ccc: "../inside" };
+  const blobs = { bbb: "foo\n", ccc: "../inside" };
   const runGit = (args) => {
-    if (args[0] === "ls-files") {
-      assert.deepEqual(args, ["ls-files", "-s", "-z"]); // NUL-delimited form
-      return lsFiles;
-    }
+    calls.push(args);
+    if (args[0] === "ls-files") return lsFiles;
     if (args[0] === "cat-file") return blobs[args[2]];
     throw new Error(`unexpected git ${args.join(" ")}`);
   };
+
   assert.deepEqual(collectTrackedSymlinks(runGit), [
-    { path: "link-abs", target: "/abs/target" }, // trailing newline stripped
+    { path: "link-control", target: "foo\n" },
     { path: "sub/link-rel", target: "../inside" },
+  ]);
+  assert.deepEqual(calls, [
+    ["ls-files", "-s", "-z"],
+    ["cat-file", "blob", "bbb"],
+    ["cat-file", "blob", "ccc"],
   ]);
 });
 
 // ---------------------------------------------------------------------------
-// Integration — the CLI end-to-end against real git repos.
+// Integration: the CLI end-to-end against real git repos.
 // ---------------------------------------------------------------------------
 
-test("CLI passes on the real repo (the 2 legit relative symlinks resolve inside)", () => {
+test("CLI passes on the real repo", () => {
   const out = execFileSync("node", [CHECK], {
     cwd: REPO_ROOT,
     encoding: "utf8",
     env: fixtureGitEnv(),
   });
+
   assert.match(out, /✓ All \d+ tracked symlink\(s\) resolve inside the repo/);
 });
 
-test("CLI exits non-zero and names the offender when a foreign symlink is committed (fail-on-revert)", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "foreign-symlink-"));
-  try {
-    fixtureGit(dir, ["init"]);
-    fixtureGit(dir, ["config", "user.email", "test@example.com"]);
-    fixtureGit(dir, ["config", "user.name", "Test User"]);
+test("CLI rejects the #247 absolute symlink target and names the offender", () => {
+  withFixtureRepo("absolute-symlink-", (dir) => {
     writeFileSync(path.join(dir, "real.txt"), "x\n", "utf8");
-    // Absolute target need not exist; git records the symlink as mode 120000.
     symlinkSync("/Users/someone/elsewhere", path.join(dir, "bad-link"));
     fixtureGit(dir, ["add", "-A"]);
 
-    let threw = false;
-    let combined = "";
-    try {
-      execFileSync("node", [CHECK], { cwd: dir, encoding: "utf8", env: fixtureGitEnv() });
-    } catch (e) {
-      threw = true;
-      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
-    }
-    assert.ok(threw, "expected the check to exit non-zero on a foreign symlink");
-    assert.match(combined, /FAILED/);
-    assert.match(combined, /bad-link/);
-    assert.match(combined, /absolute target/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    const combined = checkFails(dir);
+    assert.match(combined, /bad-link -> \/Users\/someone\/elsewhere\s+\(absolute target/);
+  });
 });
 
-test("CLI flags a relative symlink that escapes the repo root", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "escaping-symlink-"));
-  try {
-    fixtureGit(dir, ["init"]);
-    fixtureGit(dir, ["config", "user.email", "test@example.com"]);
-    fixtureGit(dir, ["config", "user.name", "Test User"]);
+test("CLI rejects a relative symlink that resolves outside tracked paths", () => {
+  withFixtureRepo("escaping-symlink-", (dir) => {
     symlinkSync("../../outside-the-repo", path.join(dir, "escaper"));
     fixtureGit(dir, ["add", "-A"]);
 
-    let threw = false;
-    let combined = "";
-    try {
-      execFileSync("node", [CHECK], { cwd: dir, encoding: "utf8", env: fixtureGitEnv() });
-    } catch (e) {
-      threw = true;
-      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
-    }
-    assert.ok(threw, "expected the check to exit non-zero on an escaping symlink");
-    assert.match(combined, /escaper/);
-    assert.match(combined, /escapes repo root/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    const combined = checkFails(dir);
+    assert.match(combined, /escaper -> \.\.\/\.\.\/outside-the-repo\s+\(does not resolve to a tracked/);
+  });
 });
 
-// Forms found by external review (Kimi/GPT) and reproduced as real committable
-// blobs from POSIX — CI false-greens on a Windows clone of the #247 class under
-// the old POSIX-only guard. End-to-end through git, on POSIX. These cover the two
-// rejection mechanisms a forward-slash-only test cannot reach: a backslash byte,
-// and a drive qualifier with no backslash and no leading slash.
-test("CLI flags a backslash-bearing symlink target (Windows separator / UNC / \\-escape)", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "backslash-symlink-"));
-  try {
-    fixtureGit(dir, ["init"]);
-    fixtureGit(dir, ["config", "user.email", "test@example.com"]);
-    fixtureGit(dir, ["config", "user.name", "Test User"]);
-    // `\Windows\System32`: absolute on Windows, literal filename on POSIX — git
-    // stores the bytes verbatim. The backslash alone makes it non-portable.
-    symlinkSync("\\Windows\\System32", path.join(dir, "winlink"));
-    fixtureGit(dir, ["add", "-A"]);
-
-    let threw = false;
-    let combined = "";
-    try {
-      execFileSync("node", [CHECK], { cwd: dir, encoding: "utf8", env: fixtureGitEnv() });
-    } catch (e) {
-      threw = true;
-      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
-    }
-    assert.ok(threw, "expected the check to exit non-zero on a backslash target");
-    assert.match(combined, /winlink/);
-    assert.match(combined, /non-portable/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("CLI flags a Windows drive-relative target with no backslash (C:foo)", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "driverel-symlink-"));
-  try {
-    fixtureGit(dir, ["init"]);
-    fixtureGit(dir, ["config", "user.email", "test@example.com"]);
-    fixtureGit(dir, ["config", "user.name", "Test User"]);
-    // `C:foo`: drive-relative on Windows (binds to drive C:'s cwd), literal name
-    // on POSIX. No backslash and not POSIX-absolute, so the illegal-character rule
-    // (the ':') catches it. Assert that specific reason, not the static footer.
-    symlinkSync("C:foo", path.join(dir, "driverel"));
-    fixtureGit(dir, ["add", "-A"]);
-
-    let threw = false;
-    let combined = "";
-    try {
-      execFileSync("node", [CHECK], { cwd: dir, encoding: "utf8", env: fixtureGitEnv() });
-    } catch (e) {
-      threw = true;
-      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
-    }
-    assert.ok(threw, "expected the check to exit non-zero on a drive-relative target");
-    assert.match(combined, /driverel/);
-    assert.match(combined, /non-portable character/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-// Kimi's BLOCK repro, end-to-end: a symlink target `nul` is a relative,
-// forward-slash, in-repo-looking name on POSIX, but resolves to the NUL DEVICE on
-// a Windows clone — the allowlist's missing "portable filename" half. Pins the fix.
-test("CLI flags a Windows reserved device-name target (nul)", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "reserved-symlink-"));
-  try {
-    fixtureGit(dir, ["init"]);
-    fixtureGit(dir, ["config", "user.email", "test@example.com"]);
-    fixtureGit(dir, ["config", "user.name", "Test User"]);
+test("CLI rejects a nul target by membership", () => {
+  withFixtureRepo("nul-symlink-", (dir) => {
     symlinkSync("nul", path.join(dir, "devlink"));
     fixtureGit(dir, ["add", "-A"]);
 
-    let threw = false;
-    let combined = "";
+    const combined = checkFails(dir);
+    assert.match(combined, /devlink -> nul\s+\(does not resolve to a tracked/);
+  });
+});
+
+test("CLI rejects a COM¹ target by membership", () => {
+  withFixtureRepo("com-symlink-", (dir) => {
+    symlinkSync("COM¹", path.join(dir, "comlink"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    const combined = checkFails(dir);
+    assert.match(combined, /comlink -> COM¹\s+\(does not resolve to a tracked/);
+  });
+});
+
+test("CLI rejects a trailing control byte preserved in the symlink blob", () => {
+  withFixtureRepo("control-symlink-", (dir) => {
     try {
-      execFileSync("node", [CHECK], { cwd: dir, encoding: "utf8", env: fixtureGitEnv() });
-    } catch (e) {
-      threw = true;
-      combined = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+      symlinkSync("safe\n", path.join(dir, "control"));
+    } catch {
+      const offenders = findForeignSymlinks(
+        [{ path: "control", target: "safe\n" }],
+        tracked(["safe"])
+      );
+      assert.equal(offenders.length, 1);
+      assert.match(offenders[0].reason, /does not resolve to a tracked/);
+      return;
     }
-    assert.ok(threw, "expected the check to exit non-zero on a reserved device name");
-    assert.match(combined, /devlink/);
-    assert.match(combined, /reserved device name/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    fixtureGit(dir, ["add", "-A"]);
+
+    const combined = checkFails(dir);
+    assert.match(combined, /control -> safe\n\s+\(does not resolve to a tracked/);
+  });
 });
