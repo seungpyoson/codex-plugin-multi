@@ -33,7 +33,9 @@ const companionSrc = readFileSync(agyCompanionPath, "utf8");
 const fnStart = companionSrc.indexOf("function withMutationReviewFailure(");
 if (fnStart < 0) throw new Error("withMutationReviewFailure not found at HEAD");
 // Walk braces to capture the whole function body.
-let depth = 0, i = companionSrc.indexOf("{", fnStart), end = -1;
+const openBrace = companionSrc.indexOf("{", fnStart);
+if (openBrace < 0) throw new Error("opening brace for withMutationReviewFailure not found at HEAD");
+let depth = 0, i = openBrace, end = -1;
 for (; i < companionSrc.length; i++) {
   const c = companionSrc[i];
   if (c === "{") depth++;

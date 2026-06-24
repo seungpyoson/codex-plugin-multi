@@ -28,6 +28,10 @@ if (!existsSync(companionPath)) {
 const companionSrc = readFileSync(companionPath, "utf8");
 // Grab the body of `function hasSubstantiveReview(text) { ... }`
 const fnStart = companionSrc.indexOf("function hasSubstantiveReview");
+if (fnStart < 0) {
+  console.error("FATAL: function hasSubstantiveReview not found in AGY companion source (renamed?).");
+  process.exit(2);
+}
 const fnBody = companionSrc.slice(fnStart, fnStart + 400);
 // Reconstruct the function from the real source so we test the real predicate.
 // We isolate the two regex literals + the boolean combinator exactly as written.
