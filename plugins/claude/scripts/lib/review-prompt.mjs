@@ -1324,7 +1324,7 @@ const TINY_SOURCE_MAX_LINES = 5;
 // set. hasDefectCue() is the single entry point used everywhere CONCRETE_FINDING_DEFECT_CUE was.
 const DEFECT_CUE_PHRASE = /\b(?:instead of|rather than|should (?:be|use|return|call|not)|fails to|does not (?:handle|close|await|free|release))\b/i;
 const DEFECT_CUE_TERM = /\b(?:off-by-one|null deref|use-after-free|race condition|overflow|underflow|incorrect|returns? the wrong|wrong (?:order|sign|value|index))\b/i;
-const DEFECT_CUE_VERB_A = /\b(?:subtract(?:s|ed)?|adds? to|drops?|leaks?)\b/i;
+const DEFECT_CUE_VERB_A = /\b(?:subtracts?|adds? to|drops?|leaks?)\b/i;
 const DEFECT_CUE_VERB_B = /\b(?:swallows?|throws?|never (?:called|awaited|closed))\b/i;
 function hasDefectCue(clause) {
   return DEFECT_CUE_PHRASE.test(clause) || DEFECT_CUE_TERM.test(clause)

@@ -4417,42 +4417,6 @@ test("root2 detector3: attested concise source loci still count after grounding"
   }
 });
 
-test("root2 detector3: grounded member loci with past-tense defect cue still count", async () => {
-  const sourceFiles = [{
-    path: "src/cart.js",
-    text: [
-      "export class Cart {",
-      "  constructor(items) { this.items = items; }",
-      "  total() {",
-      "    let sum = 0;",
-      "    for (const item of this.items) { sum = sum - item.price; }",
-      "    return sum;",
-      "  }",
-      "}",
-    ].join("\n"),
-  }];
-  const result = "Verdict: REQUEST_CHANGES. this.items is iterated but item.price is subtracted, returning the wrong total.";
-  for (const [name, file] of REVIEW_PROMPT_MODULES) {
-    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
-    const manifest = targetBuildReviewAuditManifest({
-      prompt: "rendered prompt",
-      sourceFiles,
-      result,
-      status: "completed",
-      errorCode: null,
-    });
-    assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] grounded past-tense member finding should not look shallow`);
-    assert.equal(
-      manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
-      false,
-      `[${name}] grounded past-tense member finding should not include shallow_output`,
-    );
-    assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] grounded past-tense member finding should count`);
-    assert.equal(manifest.review_slot.verdict, "request_changes", `[${name}] grounded past-tense member finding should count as request_changes`);
-    assert.equal(manifest.review_slot.not_counted_reason, "none", `[${name}] grounded past-tense member finding should have no not-counted reason`);
-  }
-});
-
 test("root2 detector3: source symbol grounding remains linear on large source packets", async () => {
   const largeSource = `${"const attested = 1;\n".repeat(10000)}export function realHandler() { return attested; }\n`;
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
@@ -4876,7 +4840,6 @@ test("root2 detector3: hasDefectCue split-identity — every defect-cue alternat
     "returns the wrong index",
     "uses the wrong order",
     "subtracts one too many",
-    "is subtracted from the total",
     "adds to the wrong bucket",
     "drops the last element",
     "leaks the buffer",
