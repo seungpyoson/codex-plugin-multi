@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   classifyResolvedSymlink,
+  classifyTargetPortability,
   parseLsFilesStage,
   collectTrackedSymlinks,
 } from "../../scripts/ci/check-no-foreign-symlinks.mjs";
@@ -77,6 +78,42 @@ test("classifyResolvedSymlink: rejects a resolved path inside the repo but untra
   assert.match(classifyResolvedSymlink("/repo/nope", ROOT, tracked(["sub/f.txt"])), /untracked/);
 });
 
+// ---------------------------------------------------------------------------
+// Gate 1 (pure): the committed target FORM is portable iff it is relative and
+// lexically stays within the repo root. realpath cannot see this class (#247),
+// because an absolute or escape-and-re-enter target still resolves inside on the
+// checkout that authored it.
+// ---------------------------------------------------------------------------
+
+test("classifyTargetPortability: accepts a same-directory relative target", () => {
+  assert.equal(classifyTargetPortability("tests/smoke/claude", "claude-mock.mjs"), null);
+});
+
+test("classifyTargetPortability: accepts a relative target that stays inside via ..", () => {
+  assert.equal(classifyTargetPortability("relay/relay-api-reviewers", "../plugins/api-reviewers"), null);
+});
+
+test("classifyTargetPortability: rejects an absolute target (machine-specific)", () => {
+  assert.match(classifyTargetPortability("abslink", "/private/var/tmp/x/safe.txt"), /absolute target/);
+});
+
+test("classifyTargetPortability: rejects an absolute target pointing at a directory", () => {
+  assert.match(classifyTargetPortability("absdir", "/private/var/tmp/x/pkg"), /absolute target/);
+});
+
+test("classifyTargetPortability: rejects a target that escapes the repo root", () => {
+  assert.match(classifyTargetPortability("escaper", "../../outside"), /escapes the repo root/);
+});
+
+test("classifyTargetPortability: rejects an escape-and-re-enter-by-name target", () => {
+  // Resolves inside on a checkout named `relay`, but breaks on any other clone.
+  assert.match(classifyTargetPortability("reenter", "../relay/safe.txt"), /escapes the repo root/);
+});
+
+test("classifyTargetPortability: rejects a bare .. target", () => {
+  assert.match(classifyTargetPortability("up", ".."), /escapes the repo root/);
+});
+
 test("parseLsFilesStage: parses NUL-delimited (-z) records; tolerates spaces in paths", () => {
   const out =
     "120000 be9723c077bfb81c7747f25dfa964da1f3134e24 0\tnode_modules\0" +
@@ -143,7 +180,33 @@ test("CLI rejects the #247 absolute symlink target and names the offender", () =
 
     const combined = checkFails(dir);
     assert.match(combined, /bad-link ->/);
-    assert.match(combined, /(resolves outside the repo|unresolvable)/);
+    assert.match(combined, /absolute target/);
+  });
+});
+
+// The #247 portability class proper: an ABSOLUTE target that happens to point at
+// tracked content inside the *current* checkout. realpath resolves it inside, so
+// gate 2 alone would accept it; gate 1 rejects it on form.
+test("CLI rejects an absolute symlink that resolves to a tracked file in this checkout", () => {
+  withFixtureRepo("absolute-inside-file-", (dir) => {
+    writeFileSync(path.join(dir, "safe.txt"), "safe\n", "utf8");
+    symlinkSync(path.join(dir, "safe.txt"), path.join(dir, "abslink"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    const combined = checkFails(dir);
+    assert.match(combined, /abslink ->.*\(absolute target/s);
+  });
+});
+
+test("CLI rejects an absolute symlink that resolves to a tracked directory in this checkout", () => {
+  withFixtureRepo("absolute-inside-dir-", (dir) => {
+    mkdirSync(path.join(dir, "pkg", "inside"), { recursive: true });
+    writeFileSync(path.join(dir, "pkg", "inside", "f.txt"), "x\n", "utf8");
+    symlinkSync(path.join(dir, "pkg"), path.join(dir, "absdir"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    const combined = checkFails(dir);
+    assert.match(combined, /absdir ->.*\(absolute target/s);
   });
 });
 
@@ -153,7 +216,38 @@ test("CLI rejects a relative symlink that resolves outside tracked paths", () =>
     fixtureGit(dir, ["add", "-A"]);
 
     const combined = checkFails(dir);
-    assert.match(combined, /escaper -> \.\.\/\.\.\/outside-the-repo\s+\((unresolvable|resolves outside the repo)/);
+    assert.match(combined, /escaper -> \.\.\/\.\.\/outside-the-repo\s+\(target escapes the repo root/);
+  });
+});
+
+// Escape-and-re-enter by the checkout's directory name: realpath resolves it
+// inside on a repo cloned under that exact name, but it breaks anywhere else.
+test("CLI rejects a relative symlink that escapes then re-enters by the repo basename", () => {
+  withFixtureRepo("reenter-symlink-", (dir) => {
+    writeFileSync(path.join(dir, "safe.txt"), "safe\n", "utf8");
+    const base = path.basename(dir);
+    symlinkSync(`../${base}/safe.txt`, path.join(dir, "reenter"));
+    fixtureGit(dir, ["add", "-A"]);
+
+    const combined = checkFails(dir);
+    assert.match(combined, /reenter ->.*\(target escapes the repo root/s);
+  });
+});
+
+// Gate 1 validates the committed BLOB, so a dirty working tree cannot mask a
+// non-portable staged symlink: the index blob is absolute even though the
+// working-tree link was swapped to a benign relative target (gate 2 alone, which
+// resolves the working tree, would accept it).
+test("CLI rejects a non-portable staged blob even when the working tree was swapped", () => {
+  withFixtureRepo("dirty-blob-symlink-", (dir) => {
+    writeFileSync(path.join(dir, "safe.txt"), "safe\n", "utf8");
+    symlinkSync("/etc/passwd", path.join(dir, "link")); // stage an absolute blob
+    fixtureGit(dir, ["add", "-A"]);
+    unlinkSync(path.join(dir, "link"));
+    symlinkSync("safe.txt", path.join(dir, "link")); // swap working tree to safe
+
+    const combined = checkFails(dir);
+    assert.match(combined, /link -> \/etc\/passwd\s+\(absolute target/);
   });
 });
 

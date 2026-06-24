@@ -2,14 +2,30 @@
 // Repo-hygiene guard: every tracked symlink (git mode 120000) must resolve via
 // the OS to tracked repository contents.
 //
-// Model: kernel realpath + membership, fail-closed. Each tracked symlink is
-// resolved with fs.realpathSync against the materialized working tree and
-// accepted only when the resolved real path stays inside the canonical repo root
-// and names either a tracked file or a directory prefix containing tracked files.
-// The kernel performs resolution, so intermediate symlinks, `..` through
-// symlinks or files (ENOTDIR), cycles (ELOOP), and absolute/escaping targets are
-// handled without hand-rolled path logic. The tracked path set from
-// `git ls-files -s -z` is the membership source of truth.
+// Model: two complementary, fail-closed gates per tracked symlink.
+//
+// 1. Portability of form (pure, on the committed blob target). A target is
+//    portable across clones only when it is relative AND, resolved lexically
+//    against the link's own directory, stays within the repo root. An absolute
+//    target is pinned to one machine's filesystem; a `..` target that climbs
+//    above the root depends on whatever sits outside the repo on a given clone.
+//    Both can still resolve "inside" on the checkout that authored them, so a
+//    realpath check alone cannot see them (realpath erases the absolute/relative
+//    distinction and reports only the final resolved path). This is the #247
+//    class and is checked directly on the blob string.
+//
+// 2. Actual resolution (kernel realpath + membership). The materialized symlink
+//    is resolved with fs.realpathSync against the working tree and accepted only
+//    when the real path stays inside the canonical repo root and names either a
+//    tracked file or a directory prefix containing tracked files. The kernel
+//    performs resolution, so intermediate symlinks, `..` through symlinks or
+//    files (ENOTDIR), and cycles (ELOOP) need no hand-rolled path logic. The
+//    tracked path set from `git ls-files -s -z` is the membership source of truth.
+//
+// A symlink must pass BOTH gates. Gate 1 only adds rejections, so it can never
+// turn a realpath rejection into an accept; its worst case is a fail-closed
+// rejection of an exotic target that escapes lexically yet stays in-repo via an
+// intermediate symlink — acceptable hygiene, never a silent accept.
 //
 // This assumes a clean, materialized checkout, which is the CI case. A symlink
 // whose target is absent, unresolvable, escaping, untracked, or not materialized
@@ -43,6 +59,25 @@ import { cleanGitEnv } from "../../plugins/api-reviewers/scripts/lib/git-env.mjs
 
 const TRUSTED_GIT_ENV = gitEnv(cleanGitEnv());
 
+// Gate 1 — portability of the committed target FORM (pure; no filesystem).
+// linkPath is the git-tracked POSIX path of the symlink; target is its blob.
+// Returns a rejection reason, or null when the form is portable. Because this is
+// AND-ed with the realpath gate it can only add rejections, never relax one.
+export function classifyTargetPortability(linkPath, target) {
+  if (path.posix.isAbsolute(target)) {
+    return "absolute target (machine-specific; breaks other clones)";
+  }
+  // Resolve the target lexically (plain path arithmetic, no symlink-following)
+  // against the link's own directory. A result that climbs to or above the repo
+  // root cannot be relocated to another clone's checkout root.
+  const resolvedRel = path.posix.join(path.posix.dirname(linkPath), target);
+  if (resolvedRel === ".." || resolvedRel.startsWith("../")) {
+    return `target escapes the repo root (${target})`;
+  }
+  return null;
+}
+
+// Gate 2 — actual resolution + membership.
 // isTrackedPath: (repoRelativePosixPath) => boolean
 export function classifyResolvedSymlink(realPath, repoRoot, isTrackedPath) {
   if (realPath !== repoRoot && !realPath.startsWith(repoRoot + path.sep)) {
@@ -81,6 +116,11 @@ function resolveTrackedSymlink(absPath) {
 export function findForeignSymlinks(symlinks, repoRoot, isTrackedPath) {
   const offenders = [];
   for (const { path: linkPath, target } of symlinks) {
+    const portability = classifyTargetPortability(linkPath, target);
+    if (portability) {
+      offenders.push({ path: linkPath, target, reason: portability });
+      continue;
+    }
     const abs = path.join(repoRoot, linkPath);
     const resolved = resolveTrackedSymlink(abs);
     const reason =
