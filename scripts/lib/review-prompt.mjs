@@ -1324,7 +1324,7 @@ const TINY_SOURCE_MAX_LINES = 5;
 // set. hasDefectCue() is the single entry point used everywhere CONCRETE_FINDING_DEFECT_CUE was.
 const DEFECT_CUE_PHRASE = /\b(?:instead of|rather than|should (?:be|use|return|call|not)|fails to|does not (?:handle|close|await|free|release))\b/i;
 const DEFECT_CUE_TERM = /\b(?:off-by-one|null deref|use-after-free|race condition|overflow|underflow|incorrect|returns? the wrong|wrong (?:order|sign|value|index))\b/i;
-const DEFECT_CUE_VERB_A = /\b(?:subtracts?|adds? to|drops?|leaks?)\b/i;
+const DEFECT_CUE_VERB_A = /\b(?:subtract(?:s|ed)?|adds? to|drops?|leaks?)\b/i;
 const DEFECT_CUE_VERB_B = /\b(?:swallows?|throws?|never (?:called|awaited|closed))\b/i;
 function hasDefectCue(clause) {
   return DEFECT_CUE_PHRASE.test(clause) || DEFECT_CUE_TERM.test(clause)
@@ -1341,11 +1341,6 @@ function hasDefectCue(clause) {
 const CONCRETE_FINDING_PATH_LOCUS = /(?<![\w./-])((?:[\w./-]{0,255}\/)?[\w-]{1,128}\.[a-z]\w{0,4})(?::\d{1,9})?(?![\w/])/ig;
 const CONCRETE_FINDING_CALL_LOCUS = /(?<![\w.])([A-Za-z_$][\w$]{0,128})\s{0,16}\(/g;
 const CONCRETE_FINDING_MEMBER_LOCUS = /(?<![\w.])([A-Za-z_$][\w$]{0,128})\.([A-Za-z_$][\w$]{0,128})/g;
-const CONCRETE_FINDING_CODE_LOCUS = [
-  CONCRETE_FINDING_PATH_LOCUS,
-  CONCRETE_FINDING_CALL_LOCUS,
-  CONCRETE_FINDING_MEMBER_LOCUS,
-];
 // A concise review is a concrete finding when a clause co-locates a defect cue with a code locus
 // and is NOT framed as confirmation/praise or a dismissal. Both suppressors are evaluated on the
 // ORIGINAL clause (no cue-strip — stripping mistook ordinary words like "no bounds check"/"clean
@@ -1441,28 +1436,20 @@ function splitReviewClauses(text) {
   return clauses;
 }
 
-function hasSourceGrounding(sourceSymbols) {
-  return sourceSymbols !== null && typeof sourceSymbols === "object";
-}
-
 function hasGroundedConcreteFindingCodeLocus(clause, sourceSymbols = null) {
-  const shouldGround = hasSourceGrounding(sourceSymbols);
   for (const match of clause.matchAll(CONCRETE_FINDING_PATH_LOCUS)) {
-    if (!shouldGround) return true;
     const basename = sourcePathBasename(match[1]).toLowerCase();
-    if (sourceSymbols.basenames?.has(basename)) return true;
+    if (sourceSymbols?.basenames?.has(basename)) return true;
   }
   for (const match of clause.matchAll(CONCRETE_FINDING_CALL_LOCUS)) {
-    if (!shouldGround) return true;
-    if (sourceSymbols.identifiers?.has(match[1].toLowerCase())) return true;
+    if (sourceSymbols?.identifiers?.has(match[1].toLowerCase())) return true;
   }
   for (const match of clause.matchAll(CONCRETE_FINDING_MEMBER_LOCUS)) {
-    if (!shouldGround) return true;
     // Member loci are grounded without retaining source text: both sides must be
     // attested as identifiers somewhere in the selected source packet.
     if (
-      sourceSymbols.identifiers?.has(match[1].toLowerCase())
-      && sourceSymbols.identifiers?.has(match[2].toLowerCase())
+      sourceSymbols?.identifiers?.has(match[1].toLowerCase())
+      && sourceSymbols?.identifiers?.has(match[2].toLowerCase())
     ) {
       return true;
     }

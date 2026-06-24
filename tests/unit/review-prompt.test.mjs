@@ -4309,17 +4309,68 @@ test("root2 detector3: fabricated concise concrete loci still demote against sou
       assert.equal(manifest.review_slot.verdict, "failed_slot", `[${name}] fabricated locus should be demoted: ${result}`);
       assert.equal(manifest.review_slot.not_counted_reason, "source_sent_unusable", `[${name}] fabricated locus should not count: ${result}`);
     }
-    const noSource = targetBuildReviewAuditManifest({
+  }
+});
+
+const NO_SOURCE_CONCISE_CASES = [
+  ["spoof init", "Verdict: APPROVE. init() leaks a buffer."],
+  ["spoof foo", "Verdict: APPROVE. foo() should return early."],
+  ["genuine terse", "Verdict: REQUEST CHANGES. realHandler() drops the retry delay instead of preserving backoff."],
+];
+
+for (const [caseName, result] of NO_SOURCE_CONCISE_CASES) {
+  test(`root2 detector3: no-source concise concrete-looking review demotes without grounding (${caseName})`, async () => {
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
       prompt: "rendered prompt",
       sourceFiles: [],
-      result: "Verdict: APPROVE. init() leaks a buffer.",
+      result,
       status: "completed",
       errorCode: null,
     });
-    assert.equal(noSource.review_quality.looks_shallow, false, `[${name}] no-source fallback should preserve text-only concrete finding`);
-    assert.equal(noSource.review_quality.failed_review_slot, false, `[${name}] no-source fallback should still count the review`);
-    assert.equal(noSource.review_slot.verdict, "approved", `[${name}] no-source fallback approval should count`);
-    assert.equal(noSource.review_slot.not_counted_reason, "none", `[${name}] no-source fallback should have no not-counted reason`);
+    assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] no-source concise locus should look shallow for: ${result}`);
+    assert.equal(
+      manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
+      true,
+      `[${name}] no-source concise locus should include shallow_output for: ${result}`,
+    );
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] no-source concise locus should fail the review slot: ${result}`);
+    assert.equal(manifest.review_slot.verdict, "failed_slot", `[${name}] no-source concise locus should be demoted: ${result}`);
+    assert.notEqual(manifest.review_slot.not_counted_reason, "none", `[${name}] no-source concise locus should not count: ${result}`);
+  }
+  });
+}
+
+test("root2 detector3: no-source substantive reviews still count outside the concise exemption", async () => {
+  const substantiveReview = [
+    "Verdict: REQUEST CHANGES.",
+    "Blocking finding: realHandler() drops the retry delay instead of preserving the configured backoff.",
+    "The failure path retries immediately, which can create a tight loop when the upstream service is down.",
+    "The fix should carry the computed delay into the retry scheduler and preserve the cancellation check before enqueueing the next attempt.",
+    "I also checked the non-blocking notes and did not find any unrelated concerns that need to block this change.",
+    ROOT2_PAD,
+    ROOT2_PAD,
+  ].join("\n");
+  assert.ok(substantiveReview.length >= 500, "test review must stay outside the concise-review threshold");
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [],
+      result: substantiveReview,
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] no-source substantive review must not look shallow`);
+    assert.equal(
+      manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
+      false,
+      `[${name}] no-source substantive review must not include shallow_output`,
+    );
+    assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] no-source substantive review should count`);
+    assert.equal(manifest.review_slot.verdict, "request_changes", `[${name}] no-source substantive request-changes review should count`);
+    assert.equal(manifest.review_slot.not_counted_reason, "none", `[${name}] no-source substantive review should have no not-counted reason`);
   }
 });
 
@@ -4363,6 +4414,42 @@ test("root2 detector3: attested concise source loci still count after grounding"
       assert.equal(manifest.review_slot.verdict, "request_changes", `[${name}] request-changes review should count: ${result}`);
       assert.equal(manifest.review_slot.not_counted_reason, "none", `[${name}] attested locus should have no not-counted reason: ${result}`);
     }
+  }
+});
+
+test("root2 detector3: grounded member loci with past-tense defect cue still count", async () => {
+  const sourceFiles = [{
+    path: "src/cart.js",
+    text: [
+      "export class Cart {",
+      "  constructor(items) { this.items = items; }",
+      "  total() {",
+      "    let sum = 0;",
+      "    for (const item of this.items) { sum = sum - item.price; }",
+      "    return sum;",
+      "  }",
+      "}",
+    ].join("\n"),
+  }];
+  const result = "Verdict: REQUEST_CHANGES. this.items is iterated but item.price is subtracted, returning the wrong total.";
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles,
+      result,
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] grounded past-tense member finding should not look shallow`);
+    assert.equal(
+      manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
+      false,
+      `[${name}] grounded past-tense member finding should not include shallow_output`,
+    );
+    assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] grounded past-tense member finding should count`);
+    assert.equal(manifest.review_slot.verdict, "request_changes", `[${name}] grounded past-tense member finding should count as request_changes`);
+    assert.equal(manifest.review_slot.not_counted_reason, "none", `[${name}] grounded past-tense member finding should have no not-counted reason`);
   }
 });
 
@@ -4488,7 +4575,7 @@ test("root2 detector3: negated-finding variant does not count as concrete (still
 });
 
 test("root2 detector3: bounded code-locus regexes stay linear-time on adversarial input (ReDoS S5852 guard)", async () => {
-  // CONCRETE_FINDING_CODE_LOCUS runs on adversarial external-review text. After bounding every
+  // The concrete-finding code-locus regexes run on adversarial external-review text. After bounding every
   // quantifier (the S5852 fix), all three locus regexes must stay linear-time. This input is a
   // defect-cue-bearing clause (so hasConcreteFinding evaluates every locus regex) followed by a
   // 200k-char pathological run with no terminating dot/paren — forcing each regex to scan to the
@@ -4789,6 +4876,7 @@ test("root2 detector3: hasDefectCue split-identity — every defect-cue alternat
     "returns the wrong index",
     "uses the wrong order",
     "subtracts one too many",
+    "is subtracted from the total",
     "adds to the wrong bucket",
     "drops the last element",
     "leaks the buffer",
