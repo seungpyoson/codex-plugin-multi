@@ -33,7 +33,7 @@ import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { verifyPidInfo } from "./lib/identity.mjs";
-import { buildJobRecord, externalReviewForInvocation } from "./lib/job-record.mjs";
+import { buildJobRecord, externalReviewForInvocation, resolveErrorSinkDisclosure } from "./lib/job-record.mjs";
 import { sourceContentTransmissionForExecution } from "./lib/external-review.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import {
@@ -82,6 +82,30 @@ const AGY_WRITABLE_SIDECARS = new Set(["git-status-before.txt", "git-status-afte
 // / state-dir resolution under a mid-run .git boundary topology change) that escape cmdRun
 // to main().catch. One CLI invocation per process, so a set-once latch is sufficient.
 let sourceSentToTarget = false;
+
+// Read/query commands (status/result/cancel) inspect an existing job's persisted state — they
+// spawn no target and transmit nothing, so a bare top-level "not_sent" on their error envelopes
+// is misleading (the job's real disclosure is nested at external_review.source_content_transmission
+// on the record). They omit the field (#240). EVERY other command keeps disclosing: run carries
+// the honest sent/not_sent, and continue/resume fail-closes with "not_sent" to assert that no
+// source was resent. Fail-safe — the default is to DISCLOSE; only this explicit read set omits.
+const DISCLOSURE_OMITTING_COMMANDS = new Set(["status", "result", "cancel"]);
+let commandOmitsErrorDisclosure = false;
+
+// Disclosure field for the top-level error sinks (fail / main().catch). The decision (and its
+// full truth table / rationale) is the single-source resolveErrorSinkDisclosure in lib/job-record.mjs,
+// beside classifyExecution; this just feeds it the two runtime flags so the fail() and main().catch
+// sinks cannot drift. Read/query commands omit; the latch overrides so a genuinely-sent source is
+// ALWAYS disclosed (never the dangerous under-warning direction).
+function errorSinkDisclosure() {
+  return resolveErrorSinkDisclosure({ commandOmitsErrorDisclosure, sourceSentToTarget });
+}
+
+// Diagnostic commands (doctor / preflight) invoke AGY for readiness or run a local scope dry-run
+// only — they NEVER spawn the review target with the source packet, so their disclosure is a
+// structural constant, NOT the latch-aware error-sink decision (resolveErrorSinkDisclosure). One
+// home for that constant so the invariant ("this command transmits no source") cannot drift.
+const NON_TRANSMITTING_DISCLOSURE = Object.freeze({ source_content_transmission: "not_sent" });
 
 const ROUTE_CAPABILITIES = Object.freeze({
   source_packet: Object.freeze({
@@ -158,7 +182,7 @@ function doctor(rest) {
       ready: false,
       error_code: "not_found",
       error_message: result.error.message,
-      source_content_transmission: "not_sent",
+      ...NON_TRANSMITTING_DISCLOSURE,
     });
     process.exit(1);
   }
@@ -168,7 +192,7 @@ function doctor(rest) {
       ready: false,
       error_code: "not_ready",
       error_message: String(result.stderr ?? "").trim() || "agy models failed",
-      source_content_transmission: "not_sent",
+      ...NON_TRANSMITTING_DISCLOSURE,
     });
     process.exit(1);
   }
@@ -178,7 +202,7 @@ function doctor(rest) {
     ready: true,
     status: "ok",
     models,
-    source_content_transmission: "not_sent",
+    ...NON_TRANSMITTING_DISCLOSURE,
   });
 }
 
@@ -929,7 +953,6 @@ function cmdPreflight(rest) {
       target: "agy",
       mode: mode ?? null,
       cwd,
-      source_content_transmission: "not_sent",
       ...preflightSafetyFields(),
       disclosure_note: preflightDisclosure(PROVIDER_DISPLAY),
     });
@@ -971,7 +994,7 @@ function cmdPreflight(rest) {
       scope: profile.scope,
       scope_base: resolvedScopeBase,
       scope_paths: resolvedScopePaths,
-      source_content_transmission: "not_sent",
+      ...NON_TRANSMITTING_DISCLOSURE,
       ...summary,
       ...preflightSafetyFields(),
       disclosure_note: preflightDisclosure(PROVIDER_DISPLAY),
@@ -990,7 +1013,7 @@ function cmdPreflight(rest) {
       scope: profile.scope,
       scope_base: resolvedScopeBase,
       scope_paths: resolvedScopePaths,
-      source_content_transmission: "not_sent",
+      ...NON_TRANSMITTING_DISCLOSURE,
       error,
       error_message: e.message,
       ...preflightSafetyFields(),
@@ -1014,7 +1037,7 @@ async function run(rest) {
   });
   const mode = options.mode;
   if (!["review", "adversarial-review", "custom-review"].includes(mode)) {
-    printJson({ target: "agy", status: "failed", error_code: "bad_mode", source_content_transmission: "not_sent" });
+    printJson({ target: "agy", status: "failed", error_code: "bad_mode", ...errorSinkDisclosure() });
     process.exit(1);
   }
   if (options.background) {
@@ -1492,10 +1515,13 @@ function fail(code, message, details = {}) {
     error_code: code,
     message,
     error_message: message,
+    ...details,
     // Honor whether the target already received the source (see sourceSentToTarget):
     // a post-spawn failure reaching this generic sink must not falsely report not_sent.
-    source_content_transmission: sourceSentToTarget ? "sent" : "not_sent",
-    ...details,
+    // Read/query commands omit the field entirely (errorSinkDisclosure, #240). Spread LAST so the
+    // latch-driven decision is authoritative — a stray source_content_transmission in details can
+    // never override it (never the dangerous under-warning direction).
+    ...errorSinkDisclosure(),
   });
   process.exit(1);
 }
@@ -1617,6 +1643,8 @@ function cancel(rest) {
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  // Read/query commands omit the error-envelope disclosure; every other command discloses (#240).
+  commandOmitsErrorDisclosure = DISCLOSURE_OMITTING_COMMANDS.has(command);
   if (command === "doctor" || command === "setup") {
     doctor(rest);
     return;
@@ -1658,7 +1686,8 @@ main().catch((error) => {
     status: "failed",
     error_code: "agy_companion_error",
     error_message: error.message,
-    source_content_transmission: sourceSentToTarget ? "sent" : "not_sent",
+    // See fail()/errorSinkDisclosure: read/query commands omit; the latch overrides (#240).
+    ...errorSinkDisclosure(),
   });
   process.exit(1);
 });

@@ -295,6 +295,29 @@ export function classifyExecution(execution) {
   });
 }
 
+// Disclosure object for AGY's top-level error sinks (fail() / main().catch). The job's REAL
+// disclosure lives nested on the persisted record (classifyExecution / externalReviewForInvocation);
+// this governs only the bare top-level field on the *error envelope*. Inputs:
+//   commandOmitsErrorDisclosure  true for read/query commands (status/result/cancel) that spawn no
+//                                target and transmit nothing — a bare top-level "not_sent" on their
+//                                error envelopes is misleading, so they omit the field (#240).
+//   sourceSentToTarget           the run-path latch (set at execve). It OVERRIDES the omit: a
+//                                genuinely-sent source is ALWAYS disclosed "sent", never omitted —
+//                                fail-safe toward over-disclosure, never the dangerous under-warning.
+// Truth table (the contract this enforces):
+//   (omit=false, latch=false) -> { source_content_transmission: "not_sent" }  run pre-spawn / continue
+//   (omit=false, latch=true)  -> { source_content_transmission: "sent" }      run post-spawn -> generic sink
+//   (omit=true,  latch=false) -> { }                                          read/query: omit (#240)
+//   (omit=true,  latch=true)  -> { source_content_transmission: "sent" }      defense-in-depth override
+// This is the single source of truth for that decision; the companion only holds the runtime flags
+// and delegates here, so the rule cannot drift between the fail() and main().catch sinks.
+export function resolveErrorSinkDisclosure({ commandOmitsErrorDisclosure, sourceSentToTarget }) {
+  if (commandOmitsErrorDisclosure && !sourceSentToTarget) {
+    return {};
+  }
+  return { source_content_transmission: sourceSentToTarget ? "sent" : "not_sent" };
+}
+
 function classifyProviderParsedFailure({ execution, parsed }) {
   if (
     parsed?.reason === "prompt_sidecar_failed"
