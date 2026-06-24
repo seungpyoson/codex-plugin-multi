@@ -115,6 +115,12 @@ function resolveTrackedSymlink(absPath, blobTarget) {
   // would let realpath validate a surface that never ships. Refuse to trust a
   // divergent working tree — fail closed. In a clean checkout (CI) a materialized
   // symlink always equals its blob, so this never fires there.
+  //
+  // The comparison is exact-string. A path-equivalent but non-identical
+  // working-tree target (e.g. `./x` vs a staged `x`) is therefore also treated as
+  // dirty — that is not a guard defect: the working tree genuinely differs from
+  // the index, and the rejection message tells the developer to `git add` the
+  // symlink so the check sees the target they intend to commit.
   let wtTarget;
   try {
     wtTarget = readlinkSync(absPath);
