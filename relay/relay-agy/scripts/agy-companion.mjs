@@ -69,7 +69,12 @@ const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-r
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "AGY FILE";
 const AGY_SOURCE_PACKET_MAX_BYTES = 256 * 1024;
 const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
-const AGY_WRITABLE_SIDECARS = new Set(["git-status-before.txt", "git-status-after.txt"]);
+const AGY_WRITABLE_SIDECARS = new Set([
+  "git-status-before.txt",
+  "git-status-after.txt",
+  "stdout.log",
+  "stderr.log",
+]);
 
 // Set true once the AGY target process has spawned (onSpawn fires on execve), which is
 // the point the selected source packet is delivered to it via --print argv. The top-level
@@ -278,12 +283,7 @@ function promptFor({ userPrompt, selectedFiles, mode, cwd, scope, scopeBase, sco
   return [contractPrompt, selectedSource].filter(Boolean).join("\n\n");
 }
 
-function hasSubstantiveReview(text) {
-  return /Verdict:\s*(APPROVE|REQUEST_CHANGES|COMMENT|FAIL|REJECT)/i.test(text)
-    && /Blocking findings/i.test(text);
-}
-
-function sourceFilesForRedaction(selectedFiles) {
+function sourceFilesForRedaction(selectedFiles = []) {
   return selectedFiles.map(({ path, text, content }) => ({
     path,
     text: typeof text === "string"
@@ -311,6 +311,13 @@ function redactionFieldsForPrompt(prompt) {
       sourceRedactionRequired: sourceFilesHaveBodies(sourceFilesForRedaction),
       sourceFilesForRedaction,
     }
+    : {};
+}
+
+function redactionFieldsForSelected(selectedFiles) {
+  const files = sourceFilesForRedaction(selectedFiles);
+  return files.length > 0
+    ? { sourceRedactionRequired: sourceFilesHaveBodies(files), sourceFilesForRedaction: files }
     : {};
 }
 
@@ -384,6 +391,15 @@ function writeSidecar(workspaceRoot, jobId, name, contents) {
   const file = agySidecarPath(workspaceRoot, jobId, name);
   prepareSidecarJobDirectory(workspaceRoot, file);
   writeFileAtomicDurable(file, contents ?? "");
+}
+
+function writeExecutionSidecars(workspaceRoot, jobId, execution) {
+  for (const [name, contents] of [["stdout.log", execution.stdout], ["stderr.log", execution.stderr]]) {
+    try { writeSidecar(workspaceRoot, jobId, name, contents); }
+    catch (e) {
+      process.stderr.write(`agy-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
+    }
+  }
 }
 
 function gitStatus(args, cwd, workspaceRoot = null) {
@@ -815,8 +831,7 @@ function executionForRecord({ status, pidInfo = null, parsed = null, exitCode = 
     pidInfo,
     agySessionId: parsed?.sessionId ?? null,
     reviewAuditManifest,
-    sourceFilesForRedaction: sourceFilesForRedaction(selectedFiles),
-    sourceRedactionRequired: true,
+    ...redactionFieldsForSelected(selectedFiles),
   };
 }
 
@@ -1310,8 +1325,7 @@ async function run(rest) {
       process.exit(0);
     }
     const preliminarilyCompleted = execution.parsed.ok
-      && execution.exitCode === 0
-      && hasSubstantiveReview(execution.parsed.result ?? "");
+      && execution.exitCode === 0;
     let parsed = preliminarilyCompleted
       ? execution.parsed
       : {
@@ -1319,7 +1333,7 @@ async function run(rest) {
         ok: false,
         reason: execution.parsed.reason ?? "review_not_completed",
         error: execution.parsed.error ?? "AGY did not produce a substantive review verdict",
-        result: null,
+        result: execution.parsed.result ?? (execution.parsed.reason ? null : ""),
       };
     let recordStatus = preliminarilyCompleted ? "completed" : "failed";
     let recordErrorCode = preliminarilyCompleted ? null : (parsed.reason ?? execution.parsed.reason ?? "review_not_completed");
@@ -1344,7 +1358,7 @@ async function run(rest) {
           ok: false,
           reason: "git_binary_rejected",
           error: error?.message ?? String(error),
-          result: null,
+          result: parsed.result ?? execution.parsed.result ?? "",
         };
         recordStatus = "failed";
         recordErrorCode = "git_binary_rejected";
@@ -1362,7 +1376,7 @@ async function run(rest) {
         ok: false,
         reason: parsed.reason ?? "review_not_completed",
         error: parsed.error ?? "AGY did not produce a usable review under the shared review-quality contract",
-        result: null,
+        result: parsed.result ?? execution.parsed.result ?? "",
       };
       recordStatus = "failed";
       recordErrorCode = parsed.reason ?? "review_not_completed";
@@ -1371,7 +1385,7 @@ async function run(rest) {
         selectedFiles,
         timeoutMs,
         invocation,
-        result: "",
+        result: parsed.result ?? "",
         status: recordStatus,
         errorCode: recordErrorCode,
         pidInfo: execution.pidInfo ?? null,
@@ -1386,10 +1400,10 @@ async function run(rest) {
         reviewAuditManifest,
         execution.runtimeDiagnostics ?? null,
       ),
-      sourceFilesForRedaction: sourceFilesForRedaction(selectedFiles),
-      sourceRedactionRequired: true,
+      ...redactionFieldsForSelected(selectedFiles),
     }, mutationContext.mutations);
     persistRecord(invocation.workspace_root, record);
+    writeExecutionSidecars(invocation.workspace_root, invocation.job_id, execution);
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
     printLifecycleJson(record, lifecycleEvents);
     process.exit(record.status === "completed" ? 0 : 1);
@@ -1476,15 +1490,14 @@ function finalizeRunGitPolicyEscape({
           ok: false,
           reason: "git_binary_rejected",
           error: message,
-          result: null,
+          result: execution.parsed?.result ?? "",
         },
         reviewAuditManifest,
         runtimeDiagnostics: sourcePacketRuntimeDiagnosticsForManifest(
           reviewAuditManifest,
           execution.runtimeDiagnostics ?? null,
         ),
-        sourceFilesForRedaction: sourceFilesForRedaction(selectedFiles),
-        sourceRedactionRequired: true,
+        ...redactionFieldsForSelected(selectedFiles),
       }
       : executionForRecord({
         status: "failed",
