@@ -100,45 +100,6 @@ function sourceManifest(sourceFiles = []) {
   });
 }
 
-const SOURCE_SYMBOL_IDENTIFIER = /[A-Za-z_$][\w$]{0,127}/g;
-
-function sourcePathBasename(path) {
-  const value = String(path ?? "");
-  const slash = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
-  return slash === -1 ? value : value.slice(slash + 1);
-}
-
-function sourcePathStem(basename) {
-  const value = String(basename ?? "");
-  const dot = value.lastIndexOf(".");
-  return dot > 0 ? value.slice(0, dot) : value;
-}
-
-function sourceSymbolIndex(sourceFiles = []) {
-  const files = Array.isArray(sourceFiles) ? sourceFiles : [];
-  if (files.length === 0) return null;
-  const identifiers = new Set();
-  const basenames = new Set();
-  for (const file of files) {
-    const basename = sourcePathBasename(file?.path).toLowerCase();
-    if (basename) {
-      basenames.add(basename);
-      const stem = sourcePathStem(basename);
-      if (stem) basenames.add(stem);
-    }
-    const content = contentBuffer(file);
-    const text = typeof file?.text === "string" ? file.text : content.toString("utf8");
-    SOURCE_SYMBOL_IDENTIFIER.lastIndex = 0;
-    for (let match = SOURCE_SYMBOL_IDENTIFIER.exec(text); match; match = SOURCE_SYMBOL_IDENTIFIER.exec(text)) {
-      identifiers.add(match[0].toLowerCase());
-    }
-  }
-  return Object.freeze({
-    identifiers: Object.freeze(identifiers),
-    basenames: Object.freeze(basenames),
-  });
-}
-
 function isWordBoundary(char) {
   if (!char) return true;
   const code = char.charCodeAt(0);
@@ -1338,9 +1299,11 @@ function hasDefectCue(clause) {
 // text (verified: 0 divergences on the realistic corpus) and the bounded language is a
 // strict SUBSET of the unbounded one, so the detector still only narrows (fails toward
 // flagging). Do NOT relax these back to *,+ without restoring the linear-time guarantee.
-const CONCRETE_FINDING_PATH_LOCUS = /(?<![\w./-])((?:[\w./-]{0,255}\/)?[\w-]{1,128}\.[a-z]\w{0,4})(?::\d{1,9})?(?![\w/])/ig;
-const CONCRETE_FINDING_CALL_LOCUS = /(?<![\w.])([A-Za-z_$][\w$]{0,128})\s{0,16}\(/g;
-const CONCRETE_FINDING_MEMBER_LOCUS = /(?<![\w.])([A-Za-z_$][\w$]{0,128})\.([A-Za-z_$][\w$]{0,128})/g;
+const CONCRETE_FINDING_CODE_LOCUS = [
+  /(?<![\w./-])(?:[\w./-]{0,255}\/)?[\w-]{1,128}\.[a-z]\w{0,4}(?::\d{1,9})?(?![\w/])/i,
+  /(?<![\w.])[A-Za-z_$][\w$]{0,128}\s{0,16}\(/,
+  /(?<![\w.])[A-Za-z_$][\w$]{0,128}\.[A-Za-z_$][\w$]{0,128}/,
+];
 // A concise review is a concrete finding when a clause co-locates a defect cue with a code locus
 // and is NOT framed as confirmation/praise or a dismissal. Both suppressors are evaluated on the
 // ORIGINAL clause (no cue-strip — stripping mistook ordinary words like "no bounds check"/"clean
@@ -1402,67 +1365,12 @@ function firstContrastIndex(lowerClause) {
   return best;
 }
 
-function isCodeTokenChar(char) {
-  if (!char) return false;
-  const code = char.charCodeAt(0);
-  return (code >= 48 && code <= 57)
-    || (code >= 65 && code <= 90)
-    || (code >= 97 && code <= 122)
-    || char === "_"
-    || char === "$"
-    || char === "-";
-}
-
-function isInternalCodeTokenPeriod(text, index) {
-  return isCodeTokenChar(text[index - 1]) && isCodeTokenChar(text[index + 1]);
-}
-
-function splitReviewClauses(text) {
-  const clauses = [];
-  let start = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    const split = char === "\n"
-      || char === ";"
-      || char === "!"
-      || char === "?"
-      || (char === "." && !isInternalCodeTokenPeriod(text, index));
-    if (split) {
-      clauses.push(text.slice(start, index));
-      start = index + 1;
-    }
-  }
-  clauses.push(text.slice(start));
-  return clauses;
-}
-
-function hasGroundedConcreteFindingCodeLocus(clause, sourceSymbols = null) {
-  for (const match of clause.matchAll(CONCRETE_FINDING_PATH_LOCUS)) {
-    const basename = sourcePathBasename(match[1]).toLowerCase();
-    if (sourceSymbols?.basenames?.has(basename)) return true;
-  }
-  for (const match of clause.matchAll(CONCRETE_FINDING_CALL_LOCUS)) {
-    if (sourceSymbols?.identifiers?.has(match[1].toLowerCase())) return true;
-  }
-  for (const match of clause.matchAll(CONCRETE_FINDING_MEMBER_LOCUS)) {
-    // Member loci are grounded without retaining source text: both sides must be
-    // attested as identifiers somewhere in the selected source packet.
-    if (
-      sourceSymbols?.identifiers?.has(match[1].toLowerCase())
-      && sourceSymbols?.identifiers?.has(match[2].toLowerCase())
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasConcreteFinding(text, sourceSymbols = null) {
+function hasConcreteFinding(text) {
   const value = String(text ?? "");
-  const clauses = splitReviewClauses(value);
+  const clauses = value.split(/[\n.;!?]+/);
   return clauses.some((clause) => {
     if (!hasDefectCue(clause)) return false;
-    if (!hasGroundedConcreteFindingCodeLocus(clause, sourceSymbols)) return false;
+    if (!CONCRETE_FINDING_CODE_LOCUS.some((pattern) => pattern.test(clause))) return false;
     // Contrast override: when the clause's praise/dismissal head is followed by an adversative
     // whose TAIL carries its own independent defect cue and is not itself a dismissal/praise, the
     // tail is a real finding ("works as expected, but the empty-input branch throws and crashes"),
@@ -1492,7 +1400,6 @@ function qualityFlags({
   status = null,
   errorCode = null,
   selectedSource = null,
-  sourceSymbols = null,
 } = {}) {
   const text = String(result ?? "");
   const lowerText = normalizeReviewSearchText(text).toLowerCase();
@@ -1517,7 +1424,7 @@ function qualityFlags({
     && hasBlockingSection
     && hasNonBlockingSection
     && mentionsSelectedSourceInspection(lowerText, selectedSource);
-  const conciseConcreteReview = hasVerdictFlag && hasConcreteFinding(text, sourceSymbols);
+  const conciseConcreteReview = hasVerdictFlag && hasConcreteFinding(text);
   const looksShallow = text.trim().length > 0
     && text.trim().length < 500
     && !conciseTinyReview
@@ -1569,7 +1476,6 @@ export function buildReviewAuditManifest({
   errorCode = null,
 } = {}) {
   const selectedSource = sourceManifest(sourceFiles);
-  const sourceSymbols = sourceSymbolIndex(sourceFiles);
   const renderedPromptHash = hashObject(prompt);
   const routeStep = route.routeStep ?? null;
   const routeSteps = Array.isArray(route.routeSteps)
@@ -1631,7 +1537,7 @@ export function buildReviewAuditManifest({
         "Do not launch another same-packet review until the packet is split, the provider is switched, the slot is waived, or an explicit override artifact is recorded.",
     })
     : sourcePacketPolicy;
-  const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource, sourceSymbols });
+  const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource });
   const effectiveErrorCode = errorCode ?? reviewQualityPacketRecoveryErrorCode(reviewQuality);
   const sourceContentTransmission =
     effectiveSourcePacketPolicy.source_send_allowed === false
