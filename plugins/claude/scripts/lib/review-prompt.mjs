@@ -1274,116 +1274,6 @@ const TINY_SOURCE_MAX_FILES = 1;
 const TINY_SOURCE_MAX_BYTES = 512;
 const TINY_SOURCE_MAX_LINES = 5;
 
-// A short review is substantive (not shallow) when SOME single clause names a
-// concrete code locus AND describes a specific defect/change at it, and that
-// clause is not a negation/absence/praise assertion. Requires co-location so a
-// bare verdict ("Verdict: APPROVE", "Looks fine"), a vague claim ("something
-// seems incorrect"), or a praise/absence LGTM ("correctly throws ... missing
-// nothing") never qualifies. Defect-cue oriented: a terse APPROVE that only
-// asserts correctness stays flagged (conservative — fail toward flagging).
-// Split into three small sub-patterns (each under the regex-complexity cap); their union is the cue
-// set. hasDefectCue() is the single entry point used everywhere CONCRETE_FINDING_DEFECT_CUE was.
-const DEFECT_CUE_PHRASE = /\b(?:instead of|rather than|should (?:be|use|return|call|not)|fails to|does not (?:handle|close|await|free|release))\b/i;
-const DEFECT_CUE_TERM = /\b(?:off-by-one|null deref|use-after-free|race condition|overflow|underflow|incorrect|returns? the wrong|wrong (?:order|sign|value|index))\b/i;
-const DEFECT_CUE_VERB_A = /\b(?:subtracts?|adds? to|drops?|leaks?)\b/i;
-const DEFECT_CUE_VERB_B = /\b(?:swallows?|throws?|never (?:called|awaited|closed))\b/i;
-function hasDefectCue(clause) {
-  return DEFECT_CUE_PHRASE.test(clause) || DEFECT_CUE_TERM.test(clause)
-    || DEFECT_CUE_VERB_A.test(clause) || DEFECT_CUE_VERB_B.test(clause);
-}
-// Every quantifier here is UPPER-BOUNDED (no unbounded *,+ on a character class):
-// these run on adversarial external-review text, so each must be provably linear-time
-// (S5852 / ReDoS hardening). The bounds (path-prefix 255, filename 128, line# 9 digits,
-// identifier 128, inter-token whitespace 16) sit far above any real path/identifier, so
-// bounding only clips pathological >bound runs — it never changes a match on real review
-// text (verified: 0 divergences on the realistic corpus) and the bounded language is a
-// strict SUBSET of the unbounded one, so the detector still only narrows (fails toward
-// flagging). Do NOT relax these back to *,+ without restoring the linear-time guarantee.
-const CONCRETE_FINDING_CODE_LOCUS = [
-  /(?<![\w./-])(?:[\w./-]{0,255}\/)?[\w-]{1,128}\.[a-z]\w{0,4}(?::\d{1,9})?(?![\w/])/i,
-  /(?<![\w.])[A-Za-z_$][\w$]{0,128}\s{0,16}\(/,
-  /(?<![\w.])[A-Za-z_$][\w$]{0,128}\.[A-Za-z_$][\w$]{0,128}/,
-];
-// A concise review is a concrete finding when a clause co-locates a defect cue with a code locus
-// and is NOT framed as confirmation/praise or a dismissal. Both suppressors are evaluated on the
-// ORIGINAL clause (no cue-strip — stripping mistook ordinary words like "no bounds check"/"clean
-// teardown" for dismissals). CONCRETE_FINDING_PRAISE = the cue describes CORRECT behavior ("throws
-// ... as expected/promised"). CONCRETE_FINDING_DISMISSAL = a negation BOUND to a defect noun ("no
-// off-by-one", "should not be a problem") or correctness-praise / LGTM — NOT a bare negation word
-// that merely appears in the finding ("never called", "none of the keys match"). Surface-ambiguous
-// praise that reuses defect vocabulary with no confirmation/dismissal marker ("throws sensibly",
-// "should not matter", a lone "throws() helpful errors" clause) is an accepted residual of keyword
-// classification and is routed to advisory disposition in #236 (Way 2), not patched by enumeration.
-// PRAISE: the cue is already required by the caller, so a bare "as <confirmation>" suffices to mark
-// the cue as describing CORRECT behavior. DISMISSAL is split into small sub-patterns (each well under
-// the regex-complexity cap) plus an includesAny LGTM list; a negation only dismisses when BOUND to a
-// defect noun within two words ("no off-by-one"), so a bare negation in the finding ("never called",
-// "none of the keys") does not suppress it.
-const CONCRETE_FINDING_PRAISE = /\bas (?:expected|intended|designed|documented|planned|specified|promised|required|appropriate|advertised|warranted)\b/i;
-// Each kept under the regex-complexity cap by splitting wide alternations across paired patterns
-// (the union is identical). The bare "n['o]?t" negation was dropped: the leading \b makes it
-// unmatchable inside contractions ("isn't"), so it never fired.
-const DISMISSAL_NEGATED_DEFECT_A = /\b(?:no|not|never|none|without)\b(?: \w+){0,2} (?:issues?|problems?|bugs?|concerns?)\b/i;
-const DISMISSAL_NEGATED_DEFECT_B = /\b(?:no|not|never|none|without)\b(?: \w+){0,2} (?:defects?|regressions?|blockers?|off-by-one)\b/i;
-const DISMISSAL_SHOULD_NOT = /\bshould not (?:be (?:an? )?(?:problem|issue|concern|blocker|big deal)|cause|regress|matter|break|hurt|harm|affect)\b/i;
-// PASSIVE/copular reassurance: "X should not be affected/impacted/touched/...". The active branch
-// above handles "should not <verb>"; the past-participle impact words are a distinct surface that the
-// a5c2868 regex split dropped ("be affected"), letting a hand-wave APPROVE pass as a concrete finding.
-// Kept as a separate small pattern so the split-identity property test below pins every alternative.
-const DISMISSAL_SHOULD_NOT_PASSIVE = /\bshould not be (?:affected|impacted|touched|altered|changed|disturbed|disrupted|noticeable|visible|a factor)\b/i;
-const DISMISSAL_NOTHING = /\bnothing (?:wrong|concerning|of concern|problematic|improper|improperly|amiss|untoward|alarming|broken|to (?:flag|note|fix|report))\b/i;
-const DISMISSAL_ABSENCE = /\bmissing nothing\b|\bdoes not appear\b/i;
-const DISMISSAL_NO_X = /\bno (?:concerns?|issues?|problems?|blockers?|objections?)\b/i;
-const DISMISSAL_CORRECTLY_A = /\bcorrectly (?:handles?|handled|throws?|works?|working|closes?|closed)\b/i;
-const DISMISSAL_CORRECTLY_B = /\bcorrectly (?:returns?|catches?|caught|falls? back)\b/i;
-const DISMISSAL_LOOKS = /\b(?:looks?|seems?|is|are|all) (?:fine|clean|good|correct|solid|right|reasonable|ok|okay|sensible|acceptable)\b/i;
-const DISMISSAL_LGTM_PHRASES = ["lgtm", "ship it", "nicely done", "well done", "good work", "solid work", "looks solid", "that is acceptable", "that's acceptable"];
-const CONTRAST_WORDS = [" but ", " yet ", " however", " whereas ", " though ", " although ", " instead ", " nevertheless", " nonetheless"];
-
-function clauseIsDismissal(clause) {
-  return DISMISSAL_NEGATED_DEFECT_A.test(clause)
-    || DISMISSAL_NEGATED_DEFECT_B.test(clause)
-    || DISMISSAL_SHOULD_NOT.test(clause)
-    || DISMISSAL_SHOULD_NOT_PASSIVE.test(clause)
-    || DISMISSAL_NOTHING.test(clause)
-    || DISMISSAL_ABSENCE.test(clause)
-    || DISMISSAL_NO_X.test(clause)
-    || DISMISSAL_CORRECTLY_A.test(clause)
-    || DISMISSAL_CORRECTLY_B.test(clause)
-    || DISMISSAL_LOOKS.test(clause)
-    || includesAny(clause.toLowerCase(), DISMISSAL_LGTM_PHRASES);
-}
-function clauseIsPraiseOrDismissal(clause) {
-  return CONCRETE_FINDING_PRAISE.test(clause) || clauseIsDismissal(clause);
-}
-function firstContrastIndex(lowerClause) {
-  let best = -1;
-  for (const word of CONTRAST_WORDS) {
-    const at = lowerClause.indexOf(word);
-    if (at !== -1 && (best === -1 || at < best)) best = at;
-  }
-  return best;
-}
-
-function hasConcreteFinding(text) {
-  const value = String(text ?? "");
-  const clauses = value.split(/[\n.;!?]+/);
-  return clauses.some((clause) => {
-    if (!hasDefectCue(clause)) return false;
-    if (!CONCRETE_FINDING_CODE_LOCUS.some((pattern) => pattern.test(clause))) return false;
-    // Contrast override: when the clause's praise/dismissal head is followed by an adversative
-    // whose TAIL carries its own independent defect cue and is not itself a dismissal/praise, the
-    // tail is a real finding ("works as expected, but the empty-input branch throws and crashes"),
-    // so the head marker must not suppress it.
-    const advIdx = firstContrastIndex(clause.toLowerCase());
-    if (advIdx !== -1) {
-      const tail = clause.slice(advIdx);
-      if (hasDefectCue(tail) && !clauseIsPraiseOrDismissal(tail)) return true;
-    }
-    return !clauseIsPraiseOrDismissal(clause);
-  });
-}
-
 function isTinySelectedSource(selectedSource) {
   const totals = selectedSource?.totals;
   return Number.isInteger(totals?.files)
@@ -1424,11 +1314,9 @@ function qualityFlags({
     && hasBlockingSection
     && hasNonBlockingSection
     && mentionsSelectedSourceInspection(lowerText, selectedSource);
-  const conciseConcreteReview = hasVerdictFlag && hasConcreteFinding(text);
   const looksShallow = text.trim().length > 0
     && text.trim().length < 500
-    && !conciseTinyReview
-    && !conciseConcreteReview;
+    && !conciseTinyReview;
   const isFinalReviewAttempt = !["approval_request", "preflight_failed", "queued", "running"].includes(status);
   const failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
   if (isFinalReviewAttempt && status === "completed" && !hasVerdictFlag) {

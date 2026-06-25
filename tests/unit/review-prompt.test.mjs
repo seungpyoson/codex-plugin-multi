@@ -4240,46 +4240,6 @@ test("root2 detector2: foreign-path gap WITHOUT proven selected-source inspectio
 
 // Detector 3 — shallow_output ------------------------------------------------
 
-test("root2 detector3: terse-but-concrete reviews do not flag shallow_output", async () => {
-  const cases = [
-    {
-      selected: "src/cart.js",
-      result: "Verdict: REQUEST CHANGES. src/cart.js total() subtracts item.price instead of adding; the reduce should use sum + item.price. That is the only blocker.",
-    },
-    {
-      selected: "parser.mjs",
-      result: "Request changes: parser.mjs scanDigits() has an off-by-one; the loop should use index <= len, not index < len.",
-    },
-    {
-      selected: "utils.js",
-      result: "Verdict: REQUEST CHANGES. utils.js:42 slice() drops the last element; it should be slice(0, len) not slice(0, len-1).",
-    },
-  ];
-  for (const [name, file] of REVIEW_PROMPT_MODULES) {
-    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
-    for (const { selected, result } of cases) {
-      const manifest = targetBuildReviewAuditManifest({
-        prompt: "rendered prompt",
-        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
-        result,
-        status: "completed",
-        errorCode: null,
-      });
-      assert.equal(
-        manifest.review_quality.looks_shallow,
-        false,
-        `[${name}] looks_shallow should be false for: ${result}`,
-      );
-      assert.equal(
-        manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
-        false,
-        `[${name}] shallow_output should be absent for: ${result}`,
-      );
-      assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] failed_review_slot should be false for: ${result}`);
-    }
-  }
-});
-
 test("root2 detector3: bare-LGTM with no verdict still flags shallow_output", async () => {
   // Also yields missing_verdict (Root-3-owned); assert only shallow_output here.
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
@@ -4346,8 +4306,7 @@ test("root2 detector3: defect-flavored words with no code locus still flag shall
 });
 
 test("root2 detector3: praise/absence clauses do not count as concrete findings (still flags)", async () => {
-  // ADVERSARIAL GUARD REGRESSION: every cue sits in a negated/praise clause ->
-  // hasConcreteFinding false -> looks_shallow true.
+  // Short non-tiny reviews stay shallow regardless of praise/absence wording.
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
     const manifest = targetBuildReviewAuditManifest({
@@ -4364,7 +4323,7 @@ test("root2 detector3: praise/absence clauses do not count as concrete findings 
 });
 
 test("root2 detector3: negated-finding variant does not count as concrete (still flags)", async () => {
-  // ADVERSARIAL GUARD REGRESSION: negated-finding clauses -> stays flagged.
+  // Short non-tiny reviews stay shallow regardless of negated-finding wording.
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
     const manifest = targetBuildReviewAuditManifest({
@@ -4380,121 +4339,59 @@ test("root2 detector3: negated-finding variant does not count as concrete (still
   }
 });
 
-test("root2 detector3: bounded code-locus regexes stay linear-time on adversarial input (ReDoS S5852 guard)", async () => {
-  // CONCRETE_FINDING_CODE_LOCUS runs on adversarial external-review text. After bounding every
-  // quantifier (the S5852 fix), all three locus regexes must stay linear-time. This input is a
-  // defect-cue-bearing clause (so hasConcreteFinding evaluates every locus regex) followed by a
-  // 200k-char pathological run with no terminating dot/paren — forcing each regex to scan to the
-  // end without matching. A backtracking regression (re-introducing an unbounded *,+) would blow
-  // this from ~10ms to seconds+; the generous 2000ms budget catches that without CI flake.
-  const adversarialReview = "Verdict: REQUEST_CHANGES\nthe handler throws " + "a".repeat(200000);
+test("root2 detector3: short concrete non-tiny review still flags shallow_output", async () => {
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
-    const start = process.hrtime.bigint();
     const manifest = targetBuildReviewAuditManifest({
       prompt: "rendered prompt",
-      sourceFiles: [{ path: "sample.js", text: "export const value = 1;\n" }],
-      result: adversarialReview,
+      sourceFiles: [
+        { path: "src/cart.js", text: "export function total(items) {\n  return items.length;\n}\n" },
+        { path: "src/tax.js", text: "export const tax = 0;\n" },
+      ],
+      result: "Verdict: REQUEST CHANGES. src/cart.js total() has an off-by-one and should use the item price.",
       status: "completed",
       errorCode: null,
     });
-    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
-    assert.ok(
-      elapsedMs < 2000,
-      `[${name}] buildReviewAuditManifest took ${elapsedMs.toFixed(1)}ms on a 200k-char adversarial review; ` +
-        "the bounded locus regexes must be linear (<2000ms). A super-linear regression likely re-introduced an unbounded quantifier.",
-    );
-    // A 200k-char review is long, so it is never "shallow" regardless of locus matching.
-    assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] a 200k-char review must not be flagged shallow`);
+    assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] short non-tiny concrete review should be shallow`);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
   }
 });
 
-test("root2 detector3: long-but-realistic call loci still escape the shallow flag after bounding", async () => {
-  // EQUIVALENCE ANCHOR: the identifier bound ({0,128}) sits far above any real identifier, so a
-  // concise review whose only concrete finding cites a long-but-realistic function call must still
-  // be recognized (looks_shallow=false). Guards against tightening the bound far enough to clip
-  // real loci and re-introduce the Root-2 false positive. (Only the call locus is asserted here:
-  // hasConcreteFinding splits clauses on ".", so path/member loci are evaluated on dot-free clauses
-  // — that pre-existing reachability gap is tracked separately, not relied on by this fix.)
-  const cases = [
-    {
-      selected: "src/services/auth/scheduler.js",
-      result: "Verdict: REQUEST CHANGES. The function validateAndRefreshAuthToken() returns the wrong expiry instead of the computed deadline",
-    },
-    {
-      selected: "lib/persistence/pool.js",
-      result: "Request changes: acquireConnectionWithRetry() leaks the socket and the cleanup path swallows the close error",
-    },
-    {
-      selected: "webhooks.js",
-      result: "Verdict: REQUEST CHANGES. processIncomingWebhookPayload() drops the signature header instead of validating it first",
-    },
-  ];
+test("root2 detector3: structured tiny-source short review still counts", async () => {
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
-    for (const { selected, result } of cases) {
-      const manifest = targetBuildReviewAuditManifest({
-        prompt: "rendered prompt",
-        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
-        result,
-        status: "completed",
-        errorCode: null,
-      });
-      assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] looks_shallow should be false for: ${result}`);
-      assert.equal(
-        manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
-        false,
-        `[${name}] shallow_output should be absent for: ${result}`,
-      );
-      assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] failed_review_slot should be false for: ${result}`);
-    }
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "README.md", text: "# E2E\n" }],
+      result: [
+        "Verdict: APPROVE.",
+        "Blocking findings: No blocking findings apply to README.md.",
+        "Non-blocking concerns: None for README.md.",
+        "Inspection statement: I inspected README.md.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] structured tiny-source review should not be shallow`);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), false, `[${name}] shallow_output should be absent`);
+    assert.equal(manifest.review_quality.failed_review_slot, false, `[${name}] failed_review_slot should be false`);
   }
 });
 
-test("root2 detector3: negation-bearing defect cues do not mis-flag concrete reviews as shallow (PR #237 comment 2)", async () => {
-  // Regression: valid defect cues that contain negation words ("never called", "should not",
-  // "does not free") must not trip CONCRETE_FINDING_NEGATION when they carry a real call locus.
-  // Guard: a clause that strips to a GENUINE negation/absence must STAY flagged (no over-rescue).
-  const NOT_SHALLOW = [
-    { selected: "socket.js", result: "Verdict: REQUEST CHANGES. The socket close() is never called on the error path" },
-    { selected: "validator.js", result: "Verdict: REQUEST CHANGES. validateInput() should not return early on empty arrays" },
-    { selected: "pool.js", result: "Verdict: REQUEST CHANGES. acquire() does not free the slot when the request times out" },
-  ];
-  const STILL_SHALLOW = [
-    { selected: "socket.js", result: "Verdict: APPROVE. close() is never called but that is no real problem here" },
-    { selected: "parser.js", result: "Verdict: APPROVE\nThe parseConfig() function correctly throws on bad input and the schema is missing nothing important." },
-  ];
+test("root2 detector3: tiny concrete unstructured review still flags shallow_output", async () => {
   for (const [name, file] of REVIEW_PROMPT_MODULES) {
     const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
-    for (const { selected, result } of NOT_SHALLOW) {
-      const manifest = targetBuildReviewAuditManifest({
-        prompt: "rendered prompt",
-        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
-        result,
-        status: "completed",
-        errorCode: null,
-      });
-      assert.equal(manifest.review_quality.looks_shallow, false, `[${name}] looks_shallow should be false for: ${result}`);
-      assert.equal(
-        manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
-        false,
-        `[${name}] shallow_output should be absent for: ${result}`,
-      );
-    }
-    for (const { selected, result } of STILL_SHALLOW) {
-      const manifest = targetBuildReviewAuditManifest({
-        prompt: "rendered prompt",
-        sourceFiles: [{ path: selected, text: "export const value = 1;\n" }],
-        result,
-        status: "completed",
-        errorCode: null,
-      });
-      assert.equal(
-        manifest.review_quality.semantic_failure_reasons.includes("shallow_output"),
-        true,
-        `[${name}] shallow_output must STAY present (genuine negation/absence) for: ${result}`,
-      );
-    }
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: "rendered prompt",
+      sourceFiles: [{ path: "src/tiny.js", text: "export const value = 1;\n" }],
+      result: "Verdict: REQUEST CHANGES. src/tiny.js value() has an off-by-one and should return the next value.",
+      status: "completed",
+      errorCode: null,
+    });
+    assert.equal(manifest.review_quality.looks_shallow, true, `[${name}] unstructured tiny concrete review should be shallow`);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present`);
+    assert.equal(manifest.review_quality.failed_review_slot, true, `[${name}] failed_review_slot should be true`);
   }
 });
 
@@ -4531,93 +4428,6 @@ test("root2 detector1: reviewer-process blocks (contraction/paraphrase/unicode) 
   }
 });
 
-test("root2 detector3: praise/confirmation reusing defect vocabulary flags shallow_output; real findings stay clean", async () => {
-  // Reviewer/sweep-found false-negatives (decidable subset): "should not <defect-noun>",
-  // "<cue> as expected/promised", LGTM, and the passive "should not be affected" family (F2, below).
-  // The positive-sentiment praise subclass ("throws sensibly", "drops cleanly", "throws a helpful
-  // error") is SURFACE-UNDECIDABLE — it is token-identical to a real finding ("cleanly drops the
-  // final page"), so a keyword classifier cannot separate them without flagging correct reviews;
-  // a 76-case adversarial sweep disproved the lexicon approach (14 FPs + unbounded synonym leaks).
-  // That subclass, and the off-lexicon dismissal tail ("harmless"/"benign"/"no real risk"), are
-  // tracked in #236/#238 for the Way-2 advisory-disposition redesign, not patched by enumeration.
-  const FLAG = [
-    "Verdict: APPROVE\nfoo() should not be a problem",
-    "Verdict: APPROVE\nparseConfig() should not cause issues",
-    "Verdict: APPROVE\ncache.get() should not regress",
-    "Verdict: APPROVE. parseConfig() throws on bad input as expected.",
-    "Verdict: APPROVE\nThe close() handler throws as promised on bad input.",
-  ];
-  // Genuine concise findings — including the negation-strip-leftover FP cases — must STAY clean.
-  const CLEAN = [
-    "Verdict: REQUEST CHANGES. socket close() is never called",
-    "Verdict: REQUEST CHANGES. acquire() does not free the slot",
-    "Verdict: REQUEST CHANGES. validateInput() should not return early",
-    "Verdict: REQUEST CHANGES. parseInt() returns the wrong index",
-    "Verdict: REQUEST_CHANGES\nindexInto() returns the wrong value because no bounds check guards the array access.",
-    "Verdict: REQUEST_CHANGES\nlookup() returns the wrong index when none of the keys match, instead of throwing.",
-    "Verdict: REQUEST_CHANGES\nthe happy path of encode() works as expected, but the empty-input branch throws and crashes.",
-  ];
-  for (const [name, file] of REVIEW_PROMPT_MODULES) {
-    const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
-    for (const result of FLAG) {
-      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
-      assert.equal(m.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] shallow_output should be present for: ${result}`);
-    }
-    for (const result of CLEAN) {
-      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
-      assert.equal(m.review_quality.looks_shallow, false, `[${name}] real finding must stay clean for: ${result}`);
-    }
-  }
-});
-
-// F2 + split-identity. The a5c2868 "behavior-identical" regex split silently dropped the passive
-// "should not be affected" dismissal alternative, so a hand-wave APPROVE passed as a concrete
-// finding (UNSAFE). This test pins the passive family AND enumerates a canonical phrase for every
-// pre-split DISMISSAL_SHOULD_NOT alternative, so a future split cannot silently narrow a dismissal
-// again (the root cause that let F2 ship). Each phrase co-locates a "should not" cue with a code
-// locus, so the dismissal regex is the load-bearing classifier.
-test("root2 detector3 F2: passive + every pre-split should-not dismissal flags shallow_output (split-identity)", async () => {
-  const SHOULD_NOT_CANON = [
-    // F2 passive reassurance — EVERY impact participle in IMPACT_REASSURANCE_NEG (all 9, was 5/10).
-    "should not be affected",
-    "should not be impacted",
-    "should not be touched",
-    "should not be altered",
-    "should not be disturbed",
-    "should not be changed",
-    "should not be disrupted",
-    "should not be noticeable",
-    "should not be visible",
-    "should not be a factor",
-    // pre-split copular reassurance
-    "should not be a problem",
-    "should not be an issue",
-    "should not be a concern",
-    "should not be a blocker",
-    "should not be a big deal",
-    // pre-split active branches
-    "should not cause problems",
-    "should not cause trouble",
-    "should not create problems",
-    "should not introduce a regression",
-    "should not regress",
-    "should not matter",
-    "should not break",
-    "should not hurt",
-    "should not harm",
-    "should not affect anything",
-    "should not affect the output",
-  ];
-  for (const [name, file] of REVIEW_PROMPT_MODULES) {
-    const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
-    for (const tail of SHOULD_NOT_CANON) {
-      const result = `Verdict: APPROVE\nfoo() ${tail}`;
-      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
-      assert.equal(m.review_quality.semantic_failure_reasons.includes("shallow_output"), true, `[${name}] should-not dismissal must flag shallow_output: ${tail}`);
-    }
-  }
-});
-
 // --- PR #237 review round 2 (GLM/GPT/Claude): fixes verified through buildReviewAuditManifest ---
 
 // B1 revert reproductions. The a2a7be1 permission-praise suppressor let a GENUINELY blocked APPROVE
@@ -4646,45 +4456,6 @@ test("root2 detector1: genuinely-blocked APPROVE with EACCES handling-praise fla
       const m = target({ prompt: "p", sourceFiles: [{ path: "src/auth.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
       assert.equal(m.review_quality.semantic_failure_reasons.includes("permission_blocked"), true, `[${name}] permission_blocked must be present for: ${body}`);
       assert.equal(m.review_quality.failed_review_slot, true, `[${name}] failed_review_slot must be true for: ${body}`);
-    }
-  }
-});
-
-// hasDefectCue four-way split oracle: each DEFECT_CUE_* alternative, used ALONE next to a code locus,
-// must register a concrete finding (looks_shallow:false). If a future "behavior-identical" split drops
-// any alternative, the corresponding case flips to shallow and this fails (the MAJOR test-gap closed).
-test("root2 detector3: hasDefectCue split-identity — every defect-cue alternative escapes shallow alone", async () => {
-  const CUES = [
-    "uses a global instead of the injected client",
-    "mutates the array rather than copying it",
-    "should return the count",
-    "fails to close the handle",
-    "does not free the slot",
-    "has an off-by-one",
-    "has a null deref",
-    "has a use-after-free",
-    "has a race condition",
-    "can overflow",
-    "can underflow",
-    "is incorrect",
-    "returns the wrong index",
-    "uses the wrong order",
-    "subtracts one too many",
-    "adds to the wrong bucket",
-    "drops the last element",
-    "leaks the buffer",
-    "swallows the error",
-    "throws on empty input",
-    "is never called",
-    "is never awaited",
-    "is never closed",
-  ];
-  for (const [name, file] of REVIEW_PROMPT_MODULES) {
-    const { buildReviewAuditManifest: target } = await loadReviewPromptModule(file);
-    for (const cue of CUES) {
-      const result = `Verdict: REQUEST CHANGES\nnextPage() ${cue}.`;
-      const m = target({ prompt: "p", sourceFiles: [{ path: "x.js", text: "export const value = 1;\n" }], result, status: "completed", errorCode: null });
-      assert.equal(m.review_quality.looks_shallow, false, `[${name}] defect cue must register a concrete finding: ${cue}`);
     }
   }
 });
