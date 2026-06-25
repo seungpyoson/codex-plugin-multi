@@ -1054,6 +1054,12 @@ function isSelectedSourceInspectionMechanicsDiscussionLine(lower) {
   ]);
 }
 
+// A could-not-inspect line is suppressed ONLY when the reviewer EXPLICITLY marks it
+// out of scope. Inferring out-of-scope from "a foreign file is named + the selected
+// source was (claimed) inspected" was tried (PR #237) and reverted: any text-based
+// inspection signal is spoofable, and the only non-spoofable alternative (named file
+// is provably not in the packet) silently suppresses a no-engagement APPROVE, which
+// breaks the fail-toward-flagging invariant. The explicit marker is the contract.
 function isOutOfScopeInspectionGapLine(lower) {
   if (!includesAny(lower, ["could not inspect", "unable to inspect", "not inspected", "not reviewed"])) return false;
   return includesAny(lower, [
@@ -1152,7 +1158,8 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
   const semanticText = semanticLines
     .filter((line) => {
       const lower = unmarkReviewText(line).toLowerCase();
-      return !isOutOfScopeInspectionGapLine(lower) && !isPriorReviewCommentsGapLine(lower);
+      return !isOutOfScopeInspectionGapLine(lower)
+        && !isPriorReviewCommentsGapLine(lower);
     })
     .join("\n")
     .toLowerCase();
@@ -1253,6 +1260,11 @@ function isNegatedPermissionBlockLine(line) {
   );
 }
 
+// Used only by the tiny-source concise-review exemption (conciseTinyReview). This is a best-effort
+// signal, NOT a security gate: a text inspection claim is spoofable, so it must never be used to
+// SUPPRESS a not_reviewed flag (that was the reverted PR #237 foreign-path branch). Here it only
+// grants a length exemption to an already-structured review of a <512-byte source, where a false
+// claim buys nothing material.
 function mentionsSelectedSourceInspection(lowerText, selectedSource) {
   if (!includesAny(lowerText, SELECTED_SOURCE_INSPECTION_VERBS)) return false;
   return mentionsSelectedSourcePath(lowerText, selectedSource);

@@ -862,6 +862,8 @@ async function assertCopyHelperBranches(mod, plugin) {
     error_code: "scope_empty",
     error_message: "scope failed",
     error_summary: "copy scope failed",
+    http_status: 400,
+    suggested_action: "retry with explicit copy scope",
     external_review: {
       marker: "EXTERNAL REVIEW",
       provider: plugin,
@@ -881,6 +883,8 @@ async function assertCopyHelperBranches(mod, plugin) {
   assert.match(lifecycleMarkdown, /\| Error \| scope_empty \|/);
   assert.match(lifecycleMarkdown, /\| Message \| scope failed \|/);
   assert.match(lifecycleMarkdown, /\| Summary \| copy scope failed \|/);
+  assert.match(lifecycleMarkdown, /\| HTTP \| 400 \|/);
+  assert.match(lifecycleMarkdown, /\| Action \| retry with explicit copy scope \|/);
   assert.equal(mod.parseLifecycleEventsMode(undefined), null);
   assert.equal(mod.parseLifecycleEventsMode(false), null);
   assert.equal(mod.parseLifecycleEventsMode("jsonl"), "jsonl");
