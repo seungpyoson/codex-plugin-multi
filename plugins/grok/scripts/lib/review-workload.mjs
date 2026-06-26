@@ -1,7 +1,7 @@
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { classifyHolder, capturePidInfo, currentBootId } from "./process-identity.mjs";
 
 export const PROVIDER_WORKLOAD_BLOCKED_CODE = "provider_workload_blocked";
@@ -241,14 +241,28 @@ export function acquireProviderWorkloadGate(file, env, capture, pidInfo) {
         release: () => releaseProviderWorkloadGate(gateDir, token),
       });
     } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      if (tryReclaimProviderWorkloadGate(gateDir, env, capture)) continue;
+      if (error?.code !== "EEXIST" && error?.code !== "ENOENT") throw error;
       if (Date.now() >= deadline) {
         return Object.freeze({
           ok: false,
           holder: parseGateOwner(readGateOwnerRaw(gateDir)),
         });
       }
+      // ENOENT from mkdirSync itself means the lock root (gateDir's parent) vanished
+      // under us — a concurrent teardown, not the gate-dir mid-acquire race. Reclaim
+      // would loop with no progress (renameSync also ENOENTs → true → continue), so
+      // re-establish the parent and sleep-pace: a persistently-missing root degrades
+      // to a bounded poll, never a CPU hot-loop. The race ENOENT instead comes from
+      // the owner-file open (syscall !== "mkdir") and falls through to reclaim, where
+      // the next mkdir succeeds. The parent here is gateDir's own dirname (the
+      // caller-provided lockRoot), recreated rather than an env default so the
+      // in-use root — not some other path — is what heals.
+      if (error?.code === "ENOENT" && error?.syscall === "mkdir") {
+        try { mkdirSync(dirname(gateDir), { recursive: true, mode: 0o700 }); } catch { /* best effort */ }
+        sleepSync(GATE_POLL_MS);
+        continue;
+      }
+      if (tryReclaimProviderWorkloadGate(gateDir, env, capture)) continue;
       sleepSync(GATE_POLL_MS);
     }
   }
