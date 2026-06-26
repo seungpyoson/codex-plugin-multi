@@ -255,6 +255,71 @@ test("empty-source completed AGY review persists through buildJobRecord", async 
   assert.equal(record.result, reviewBody);
 });
 
+test("source-bearing AGY review redacts the canonical record while the raw sidecar stays local-only", () => {
+  // I1 boundary (PR #218): the spawn-based companion contract persists RAW
+  // stdout.log/stderr.log diagnostics in the owner-only job dir
+  // (docs/artifact-cleanup-inventory.md line 19), but the transmitted/canonical
+  // JobRecord MUST stay redacted. This pins both surfaces in one source-bearing
+  // run so a future change that routes raw target output into record.result
+  // (the exact leak the review panel split on) fails loudly here.
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-i1-boundary-cwd-"));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "agy-i1-boundary-data-"));
+  const sentinel = "SOURCELEAKSENTINELq7zX";
+  // One contiguous line > MAX_SOURCE_CONTIGUOUS_CHARS (200) so the privacy
+  // redactor collapses the whole run (sentinel included) to the excerpt marker.
+  const sourceLine = `leak probe ${"A".repeat(110)}${sentinel}${"B".repeat(110)} end`;
+  assert.ok(sourceLine.length > 200, "probe source line must exceed the contiguous redaction threshold");
+  const reviewBody = [
+    "Verdict: APPROVE",
+    "",
+    "Blocking findings:",
+    "- None. I inspected the selected source packet and found no blocking issue.",
+    ...padReviewLines(),
+    "",
+    "Quoted source under review:",
+    sourceLine,
+    "",
+    "Non-blocking concerns:",
+    "- Residual risk: no additional non-blocking concerns were found after reviewing the selected source packet.",
+    "",
+  ].join("\n");
+  const stderrText = `worker diagnostics carrying the raw packet ${sentinel}\n`;
+  const binary = writeAgyReviewMock(cwd, "agy-i1-boundary-mock", { body: reviewBody, stderr: stderrText });
+  const { base } = fixtureBranchDiffRepo(cwd, {
+    changedFileName: "secret-source.js",
+    changedFileContents: `${sourceLine}\n`,
+  });
+  const run = runCompanion(
+    ["run", "--mode", "review", "--foreground", "--lifecycle-events", "jsonl",
+      "--binary", binary, "--cwd", cwd, "--scope-base", base, "--", "review redaction boundary"],
+    { cwd, dataDir },
+  );
+  try {
+    assert.equal(run.status, 0, `exit ${run.status}: ${run.stderr || run.stdout}`);
+    const record = terminalRecord(run);
+    assert.equal(record.status, "completed", `status ${record.status}: ${JSON.stringify(record.review_quality)}`);
+
+    // Canonical/transmitted surface: the source excerpt is redacted out.
+    const resultRun = runCompanion(["result", "--job", record.job_id, "--cwd", cwd], { cwd, dataDir });
+    assert.equal(resultRun.status, 0, `exit ${resultRun.status}: ${resultRun.stderr || resultRun.stdout}`);
+    const persisted = JSON.parse(resultRun.stdout);
+    assert.doesNotMatch(persisted.result, new RegExp(sentinel),
+      `canonical JobRecord.result must not carry the raw source excerpt; got: ${persisted.result}`);
+    assert.match(persisted.result, /\[redacted_source_excerpt\]/,
+      "the >200-char source run must collapse to the redaction marker in the record");
+
+    // Local diagnostic surface: raw, owner-only, never transmitted (line-19 contract).
+    const dir = jobDir(dataDir, record.job_id);
+    assert.match(readFileSync(path.join(dir, "stdout.log"), "utf8"), new RegExp(sentinel),
+      "stdout.log sidecar must preserve the raw target output verbatim");
+    assert.match(readFileSync(path.join(dir, "stderr.log"), "utf8"), new RegExp(sentinel),
+      "stderr.log sidecar must preserve the raw target diagnostics verbatim");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("AGY finalize path writes stdout and stderr sidecars", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "agy-sidecar-cwd-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "agy-sidecar-data-"));
