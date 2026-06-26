@@ -218,6 +218,18 @@ function acquireProviderWorkloadGate(file, env) {
           holder: parseGateOwner(readGateOwnerRaw(gateDir)),
         });
       }
+      // ENOENT from mkdirSync itself means the lock root (gateDir's parent) vanished
+      // under us — a concurrent teardown, not the gate-dir mid-acquire race. Reclaim
+      // would loop with no progress (renameSync also ENOENTs → true → continue), so
+      // re-establish the parent and sleep-pace: a persistently-missing root degrades
+      // to a bounded poll, never a CPU hot-loop. The race ENOENT instead comes from
+      // the owner-file open (syscall !== "mkdir") and falls through to reclaim, where
+      // the next mkdir succeeds.
+      if (error?.code === "ENOENT" && error?.syscall === "mkdir") {
+        try { mkdirSync(lockRoot(env), { recursive: true, mode: 0o700 }); } catch { /* best effort */ }
+        sleepSync(GATE_POLL_MS);
+        continue;
+      }
       if (tryReclaimProviderWorkloadGate(gateDir, env)) continue;
       sleepSync(GATE_POLL_MS);
     }

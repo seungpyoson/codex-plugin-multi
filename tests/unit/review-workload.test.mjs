@@ -157,6 +157,66 @@ export function writeFileSync(path, data, options) {
   }
 });
 
+test("provider workload gate recovers when the lock root vanishes mid-acquire instead of hot-looping", async () => {
+  const { root, env } = tempEnv();
+  const raceEnv = { ...env, RELAY_PROVIDER_WORKLOAD_GATE_TIMEOUT_MS: "750" };
+  const moduleRoot = mkdtempSync(join(tmpdir(), "provider-workload-root-vanish-module-"));
+  try {
+    const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
+    const shimPath = join(moduleRoot, "fs-root-vanish-shim.mjs");
+    const modulePath = join(moduleRoot, "review-workload-root-vanish.mjs");
+    writeFileSync(shimPath, `
+import * as fs from "node:fs";
+
+export const linkSync = fs.linkSync;
+export const lstatSync = fs.lstatSync;
+export const readFileSync = fs.readFileSync;
+export const renameSync = fs.renameSync;
+export const rmSync = fs.rmSync;
+export const unlinkSync = fs.unlinkSync;
+export const writeFileSync = fs.writeFileSync;
+
+let injected = false;
+
+export function mkdirSync(path, options) {
+  const p = String(path);
+  if (!injected && p.endsWith(".json.gate")) {
+    injected = true;
+    // Concurrent teardown removes the whole lock root exactly as we try to create
+    // the gate dir: the gate mkdir then fails ENOENT because its parent is gone.
+    fs.rmSync(p.slice(0, p.lastIndexOf("/")), { recursive: true, force: true });
+    const error = new Error("injected mkdir ENOENT (lock root vanished)");
+    error.code = "ENOENT";
+    error.syscall = "mkdir";
+    throw error;
+  }
+  return fs.mkdirSync(path, options);
+}
+`, "utf8");
+    writeFileSync(
+      modulePath,
+      source.replace('from "node:fs";', `from ${JSON.stringify(pathToFileURL(shimPath).href)};`),
+      "utf8",
+    );
+
+    const workload = await import(pathToFileURL(modulePath).href);
+    const acquired = workload.acquireProviderWorkloadLease({
+      provider: "grok",
+      jobId: "root-vanish-job",
+      cwd: "/tmp/root-vanish",
+      sourceBearing: true,
+      env: raceEnv,
+    });
+    assert.equal(acquired.ok, true,
+      "must re-establish the vanished lock root and acquire, not spin the catch loop to the deadline");
+    assert.equal(JSON.parse(readFileSync(join(root, "grok.json"), "utf8")).job_id, "root-vanish-job");
+    workload.releaseProviderWorkloadLease(acquired.lease);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(moduleRoot, { recursive: true, force: true });
+  }
+});
+
 test("provider workload lease release unregisters exit cleanup listener", () => {
   const { root, env } = tempEnv();
   const before = process.listenerCount("exit");
