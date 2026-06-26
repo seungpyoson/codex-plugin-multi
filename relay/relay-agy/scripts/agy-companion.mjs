@@ -315,7 +315,7 @@ function redactionFieldsForPrompt(prompt) {
 }
 
 function redactionFieldsForSelected(selectedFiles) {
-  const files = sourceFilesForRedaction(selectedFiles);
+  const files = sourceFilesForRedaction(selectedFiles ?? []);
   return files.length > 0
     ? { sourceRedactionRequired: sourceFilesHaveBodies(files), sourceFilesForRedaction: files }
     : {};
@@ -394,10 +394,11 @@ function writeSidecar(workspaceRoot, jobId, name, contents) {
 }
 
 function writeExecutionSidecars(workspaceRoot, jobId, execution) {
+  if (!execution) return;
   for (const [name, contents] of [["stdout.log", execution.stdout], ["stderr.log", execution.stderr]]) {
     try { writeSidecar(workspaceRoot, jobId, name, contents); }
     catch (e) {
-      process.stderr.write(`agy-companion: warning: sidecar ${name} write failed: ${e.message}\n`);
+      process.stderr.write(`agy-companion: warning: sidecar ${name} write failed: ${e?.message ?? String(e)}\n`);
     }
   }
 }
