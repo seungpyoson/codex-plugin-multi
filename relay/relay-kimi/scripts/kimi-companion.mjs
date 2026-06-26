@@ -3,10 +3,10 @@ import { fileURLToPath } from "node:url";
 import { basename as basenamePath, dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync,
-  writeFileSync, chmodSync, readdirSync, statSync, lstatSync,
+  writeFileSync, chmodSync, readdirSync, statSync, lstatSync, realpathSync,
 } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 
 import { parseArgs } from "./lib/args.mjs";
 import { configureState, resolveJobsDir, resolveJobFile, resolveStateDir, writeJobFile, upsertJob, listJobs, commitJobRecord } from "./lib/state.mjs";
@@ -23,7 +23,9 @@ import { gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-bina
 import { spawnKimi } from "./lib/kimi.mjs";
 import { KimiContractMismatchError } from "./lib/kimi-capabilities.mjs";
 import {
+  CONCURRENCY_FACTS,
   latestSourcePacketPreviousAttempt,
+  resolveConcurrencyAdmission,
   selectProviderRoute,
   sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketCanResumeWithoutResendFromJobRecord,
@@ -60,6 +62,7 @@ import { diffSourceFiles } from "./lib/diff-source.mjs";
 import {
   acquireProviderWorkloadLease,
   providerWorkloadBlockedExecution,
+  concurrencyAdmissionBlockedExecution,
   releaseProviderWorkloadLease,
 } from "./lib/review-workload.mjs";
 
@@ -79,6 +82,43 @@ const DEFAULT_KIMI_PING_TIMEOUT_MS = 900000;
 const KIMI_READINESS_PREFLIGHT_TIMEOUT_MS = 900000;
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "KIMI FILE";
 const KIMI_SOURCE_PACKET_MAX_BYTES = 32 * 1024;
+
+function processHomeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+
+function resolveKimiCodeHomeDir(env = process.env) {
+  return resolvePath(env.KIMI_CODE_HOME || joinPath(processHomeDir(env), ".kimi-code"));
+}
+
+function resolveSharedStateDir(pathValue) {
+  mkdirSync(pathValue, { recursive: true });
+  return realpathSync(pathValue);
+}
+
+function resolveKimiAdmissionContext(provider, route, env = process.env) {
+  const fact = CONCURRENCY_FACTS[provider]?.[route];
+  if (!fact) {
+    throw new Error(`missing concurrency fact for source-bearing route ${provider}.${route}`);
+  }
+  const sharedStateIdentity = resolveSharedStateDir(resolveKimiCodeHomeDir(env));
+  return resolveConcurrencyAdmission({
+    category: fact.category,
+    declaredLimit: fact.limit,
+    limitEnv: fact.limit_env,
+    sharedStateIdentity,
+    provider,
+    route,
+    env,
+  });
+}
+
+function assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing) {
+  if (workloadAdmission.ok && sourceBearing && workloadAdmission.lease == null) {
+    process.stderr.write("kimi-companion: source-bearing admission returned no workload lease\n");
+    process.exit(2);
+  }
+}
 
 const ROUTE_CAPABILITIES = Object.freeze({
   subscription: Object.freeze({
@@ -1280,14 +1320,50 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     process.exit(2);
   }
 
+  const sourceBearing = modeSendsSelectedSource(invocation.mode);
+  let admissionContext = {};
+  if (sourceBearing) {
+    const route = "subscription";
+    try {
+      admissionContext = resolveKimiAdmissionContext(invocation.target, route, process.env);
+    } catch {
+      const workloadPreflight = concurrencyAdmissionBlockedExecution(invocation.target, route);
+      workloadPreflight.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containment.path, workloadPreflight);
+      if (neutralCwd) {
+        try { rmSync(neutralCwd, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
+      if (disposeEffective) {
+        try { containment.cleanup(); } catch { /* best-effort */ }
+      }
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: workloadPreflight.exitCode,
+        endedAt: workloadPreflight.endedAt,
+        parsed: workloadPreflight.parsed,
+        pidInfo: null,
+        kimiSessionId: null,
+        errorMessage: workloadPreflight.errorMessage,
+        reviewAuditManifest: workloadPreflight.reviewAuditManifest,
+        runtimeDiagnostics: workloadPreflight.runtimeDiagnostics,
+        ...redactionFieldsForPrompt(prompt),
+      }, mutations);
+      writeJobFile(workspaceRoot, jobId, errorRecord);
+      upsertJob(workspaceRoot, errorRecord);
+      if (foreground) printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
+  }
+
   const workloadAdmission = acquireProviderWorkloadLease({
+    ...admissionContext,
     provider: invocation.target,
     jobId,
     cwd,
-    sourceBearing: modeSendsSelectedSource(invocation.mode),
+    sourceBearing,
+    env: process.env,
   });
   let workloadLease = null;
   if (workloadAdmission.ok) {
+    assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing);
     workloadLease = workloadAdmission.lease;
   } else {
     const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);

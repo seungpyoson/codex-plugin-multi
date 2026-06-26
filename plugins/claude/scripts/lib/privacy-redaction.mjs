@@ -249,6 +249,20 @@ function configuredSecrets(env, configuredSecretNames = []) {
   return [...new Set(values)].sort((a, b) => b.length - a.length);
 }
 
+export function sanitizeProviderWorkloadDiagnostic(input, redactText = (value) => value) {
+  if (!input || typeof input !== "object") return null;
+  const capInput = input.capacity && typeof input.capacity === "object" ? input.capacity : null;
+  const capacity = capInput ? {
+    active_count: Number.isSafeInteger(capInput.active_count) ? capInput.active_count : null,
+    limit: Number.isSafeInteger(capInput.limit) ? capInput.limit : null,
+  } : null;
+
+  return {
+    reason: typeof input.reason === "string" ? redactText(input.reason) : null,
+    capacity,
+  };
+}
+
 export function buildPrivacyRedactor({
   env = process.env,
   configuredSecretNames = [],

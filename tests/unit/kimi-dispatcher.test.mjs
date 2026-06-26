@@ -1,8 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { MODE_PROFILES } from "../../plugins/kimi/scripts/lib/mode-profiles.mjs";
 import { providerApiCapability, sanitizeTargetEnv } from "../../plugins/kimi/scripts/lib/provider-env.mjs";
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+function assertSourceMatches(source, pattern, message) {
+  assert.ok(pattern.test(source), message);
+}
 
 // kimi-code has no per-invocation tool restriction and no step budget, so the
 // adapter no longer carries any tool-allowlist or max-step authority on the
@@ -83,4 +92,21 @@ test("providerApiCapability: exposes one canonical Grok direct API env name", ()
     credential_env_names: ["XAI_API_KEY"],
   });
   assert.deepEqual(providerApiCapability("unknown"), null);
+});
+
+test("kimi source-bearing admission uses canonical facts, shared-state home identity, and fail-loud lease invariant", () => {
+  const source = readFileSync(path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs"), "utf8");
+
+  assertSourceMatches(source, /CONCURRENCY_FACTS/, "missing CONCURRENCY_FACTS import/use");
+  assertSourceMatches(source, /resolveConcurrencyAdmission/, "missing resolveConcurrencyAdmission import/use");
+  assertSourceMatches(source, /resolveKimiCodeHomeDir/, "missing kimi home resolver");
+  assertSourceMatches(source, /KIMI_CODE_HOME/, "missing KIMI_CODE_HOME override");
+  assertSourceMatches(source, /\.kimi-code/, "missing ~/.kimi-code fallback");
+  assertSourceMatches(source, /realpathSync/, "missing realpathSync identity");
+  assertSourceMatches(source, /sharedStateIdentity/, "missing sharedStateIdentity");
+  assertSourceMatches(source, /CONCURRENCY_FACTS\[[^\]]+\]\?\.\[[^\]]+\]/, "missing fail-closed fact lookup");
+  assertSourceMatches(source, /providerWorkloadBlockedExecution/, "missing providerWorkloadBlockedExecution failure path");
+  assertSourceMatches(source, /acquireProviderWorkloadLease\(\{\s*\.\.\.admissionContext/s, "missing admission context spread into lease");
+  assertSourceMatches(source, /workloadAdmission\.ok[\s\S]{0,100}workloadAdmission\.lease\s*==\s*null/, "missing null-lease invariant");
+  assertSourceMatches(source, /source-bearing admission returned no workload lease/, "missing fail-loud invariant message");
 });

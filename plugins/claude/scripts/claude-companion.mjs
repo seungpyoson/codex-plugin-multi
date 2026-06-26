@@ -27,8 +27,8 @@
 
 import { fileURLToPath } from "node:url";
 import { basename as basenamePath, dirname, isAbsolute, join as joinPath, relative as relativePath, resolve as resolvePath } from "node:path";
-import { tmpdir } from "node:os";
-import { writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, rmSync, statSync, lstatSync, readFileSync as _readFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, renameSync, unlinkSync, readdirSync, rmSync, statSync, lstatSync, realpathSync, readFileSync as _readFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
@@ -59,8 +59,10 @@ import {
   resolveAuthSelection as resolveAuthSelectionForProvider,
 } from "./lib/auth-selection.mjs";
 import {
+  CONCURRENCY_FACTS,
   latestSourcePacketPreviousAttempt,
   normalizeApprovalScope,
+  resolveConcurrencyAdmission,
   sourcePacketCanResumeWithoutResendFromPreviousAttempt,
   sourcePacketCanResumeWithoutResendFromJobRecord,
   sourcePacketPreviousAttemptForContinuation,
@@ -95,6 +97,7 @@ import { buildProviderAccountIdentity } from "./lib/provider-identity.mjs";
 import {
   acquireProviderWorkloadLease,
   providerWorkloadBlockedExecution,
+  concurrencyAdmissionBlockedExecution,
   releaseProviderWorkloadLease,
 } from "./lib/review-workload.mjs";
 
@@ -120,6 +123,43 @@ const DEFAULT_REVIEW_PERMISSION_MODE_LADDER = Object.freeze(["dontAsk", "auto", 
 const ALLOWED_REVIEW_PERMISSION_MODES = new Set(["default", "plan", "acceptEdits", "dontAsk", "auto", "bypassPermissions"]);
 const PERMISSION_MODE_RETRYABLE_ERROR_CODES = new Set(["parse_error", "claude_error"]);
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "CLAUDE FILE";
+
+function processHomeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+
+function resolveClaudeConfigDir(env = process.env) {
+  return resolvePath(env.CLAUDE_CONFIG_DIR || joinPath(processHomeDir(env), ".claude"));
+}
+
+function resolveSharedStateDir(pathValue) {
+  mkdirSync(pathValue, { recursive: true });
+  return realpathSync(pathValue);
+}
+
+function resolveClaudeAdmissionContext(provider, route, env = process.env) {
+  const fact = CONCURRENCY_FACTS[provider]?.[route];
+  if (!fact) {
+    throw new Error(`missing concurrency fact for source-bearing route ${provider}.${route}`);
+  }
+  const sharedStateIdentity = resolveSharedStateDir(resolveClaudeConfigDir(env));
+  return resolveConcurrencyAdmission({
+    category: fact.category,
+    declaredLimit: fact.limit,
+    limitEnv: fact.limit_env,
+    sharedStateIdentity,
+    provider,
+    route,
+    env,
+  });
+}
+
+function assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing) {
+  if (workloadAdmission.ok && sourceBearing && workloadAdmission.lease == null) {
+    process.stderr.write("claude-companion: source-bearing admission returned no workload lease\n");
+    process.exit(2);
+  }
+}
 
 function isExplicitRelativeBinary(binary) {
   return binary === "." ||
@@ -1555,14 +1595,43 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
     process.exit(2);
   }
 
+  const sourceBearing = modeSendsSelectedSource(invocation.mode);
+  let admissionContext = {};
+  if (sourceBearing) {
+    const route = "subscription";
+    try {
+      admissionContext = resolveClaudeAdmissionContext(invocation.target, route, process.env);
+    } catch {
+      const workloadPreflight = concurrencyAdmissionBlockedExecution(invocation.target, route);
+      const finalRecord = buildClaudeFinalRecord(
+        invocation,
+        workloadPreflight,
+        null,
+        mutationContext.mutations,
+        prompt,
+        executionScope.addDir,
+        runtimeDiagnostics,
+      );
+      const { metaError, stateError } = commitJobRecord(workspaceRoot, jobId, finalRecord);
+      writeExecutionSidecars(workspaceRoot, jobId, workloadPreflight);
+      exitIfFinalizationFailed(invocation, workloadPreflight, finalRecord, mutationContext, executionScope, { metaError, stateError });
+      cleanupExecutionResources(executionScope, mutationContext);
+      if (foreground) printLifecycleJson(finalRecord, lifecycleEvents);
+      process.exit(2);
+    }
+  }
+
   const workloadAdmission = acquireProviderWorkloadLease({
+    ...admissionContext,
     provider: invocation.target,
     jobId,
     cwd: invocation.cwd,
-    sourceBearing: modeSendsSelectedSource(invocation.mode),
+    sourceBearing,
+    env: process.env,
   });
   let workloadLease = null;
   if (workloadAdmission.ok) {
+    assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing);
     workloadLease = workloadAdmission.lease;
   } else {
     const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);

@@ -202,7 +202,6 @@ const VERBATIM_FILES = [
   "args.mjs",
   "git.mjs",
   "git-binary.mjs",
-  "identity.mjs",
   "scope.mjs",
   "cancel-marker.mjs",
   "companion-common.mjs",
@@ -212,6 +211,13 @@ const VERBATIM_FILES = [
   "external-review.mjs",
   "time.mjs",
   "usage-limit.mjs",
+  // identity.mjs is now a thin re-export shim (capturePidInfo lives in the
+  // shared process-identity.mjs); newJobId/attachPidCapture/verifyPidInfo carry
+  // no provider-specific logic, so all three companions must stay byte-identical.
+  // Guarded across the full companion set (claude/gemini/kimi) — previously this
+  // file was only guarded across claude/gemini, which let Task 1 (#234) diverge
+  // the kimi copy undetected.
+  "identity.mjs",
 ];
 
 const CLAUDE_GEMINI_VERBATIM_FILES = [
@@ -942,6 +948,17 @@ test("lib/review-workload.mjs: reviewer packaging copies match the canonical sha
   }
 });
 
+test("lib/process-identity.mjs: reviewer packaging copies match the canonical shared source", () => {
+  const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/process-identity.mjs"), "utf8");
+  for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
+    const copy = readFileSync(
+      path.join(REPO_ROOT, `plugins/${plugin}/scripts/lib/process-identity.mjs`),
+      "utf8"
+    );
+    assert.equal(copy, canonical, `process-identity.mjs packaging copy drifted in ${plugin}`);
+  }
+});
+
 test("lib/provider-identity.mjs: reviewer packaging copies match the canonical shared source", () => {
   const canonical = readFileSync(path.join(REPO_ROOT, "scripts/lib/provider-identity.mjs"), "utf8");
   for (const plugin of REVIEW_PROMPT_PLUGIN_TARGETS) {
@@ -956,6 +973,7 @@ test("lib/provider-identity.mjs: reviewer packaging copies match the canonical s
 test("lint:sync includes fixers for provider reliability shared files", () => {
   const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
   assert.match(packageJson.scripts["lint:sync"], /sync-review-workload\.mjs --check/);
+  assert.match(packageJson.scripts["lint:sync"], /sync-process-identity\.mjs --check/);
   assert.match(packageJson.scripts["lint:sync"], /sync-provider-identity\.mjs --check/);
 });
 

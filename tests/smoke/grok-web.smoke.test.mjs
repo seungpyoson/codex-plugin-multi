@@ -108,6 +108,7 @@ function grokSmokeEnv(cwd, env = {}, defaultTransportEnv = {}) {
     ...defaultTransportEnv,
     ...env,
     RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+    RELAY_WORKLOAD_TEST_MODE: "1",
   };
 }
 
@@ -777,6 +778,8 @@ test("Grok CLI lifecycle markdown streams running card before source-bearing CLI
         GROK_CLI_BINARY: grokPath,
         GROK_CLI_AUTH_HOME: authHome,
         GROK_PLUGIN_DATA: dataDir,
+        RELAY_PROVIDER_WORKLOAD_LOCK_DIR: path.join(dataDir, ".provider-workload"),
+        RELAY_WORKLOAD_TEST_MODE: "1",
         GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
         CODEX_PLUGIN_EXTERNAL_REVIEW_HEARTBEAT_MS: "25",
       }),
@@ -842,6 +845,8 @@ test("Grok CLI timeout escalates when source-bearing process ignores SIGTERM", {
         GROK_CLI_BINARY: grokPath,
         GROK_CLI_AUTH_HOME: authHome,
         GROK_PLUGIN_DATA: dataDir,
+        RELAY_PROVIDER_WORKLOAD_LOCK_DIR: path.join(dataDir, ".provider-workload"),
+        RELAY_WORKLOAD_TEST_MODE: "1",
         GROK_WEB_BASE_URL: "http://127.0.0.1:9/v1",
         GROK_CLI_TIMEOUT_MS: "3000",
       }),

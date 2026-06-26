@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildProviderPolicyContract } from "../../scripts/lib/provider-route-policy.mjs";
+import { buildProviderPolicyContract, CONCURRENCY_FACTS } from "../../scripts/lib/provider-route-policy.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DIRECT_API_RELAY_PROVIDERS = ["deepseek", "glm"];
@@ -127,6 +127,12 @@ function assertSchemaAllowsValue(root, schema, value, label) {
   }
   if (resolved.enum) {
     assert.equal(resolved.enum.includes(value), true, `${label} enum mismatch`);
+  }
+  if (typeof resolved.minLength === "number" && typeof value === "string") {
+    assert.equal(value.length >= resolved.minLength, true, `${label} minLength mismatch`);
+  }
+  if (typeof resolved.minimum === "number" && typeof value === "number") {
+    assert.equal(value >= resolved.minimum, true, `${label} minimum mismatch`);
   }
   if (resolved.additionalProperties === false && value && typeof value === "object" && !Array.isArray(value)) {
     assertOnlyKeys(value, Object.keys(resolved.properties ?? {}), label);
@@ -972,6 +978,7 @@ test("provider architecture parity table is machine-validatable and complete", (
     "docs",
     "packaged copies",
     "sync rules",
+    "concurrency budget",
   ];
   const policyNames = new Set(table.policy_areas.map((area) => area.name));
   const expectedProviders = [...table.providers].sort();
@@ -1095,6 +1102,65 @@ test("provider architecture parity table is machine-validatable and complete", (
   assert.equal(claudeAuth.difference_type, "adapter_capability_fact");
   assert.match(claudeAuth.capability_fact, /claude auth login/i);
   assert.match(claudeAuth.current_behavior, /oauth_inference_rejected/i);
+});
+
+test("concurrency budget section mirrors CONCURRENCY_FACTS exactly (declarative drift guard, #234 Task 8)", () => {
+  const table = readRepoJson("docs/provider-parity-table.json");
+  // The code (CONCURRENCY_FACTS) is the single source of truth; the parity table's
+  // concurrency_budget must mirror it exactly so a future fact change cannot drift the doc.
+  const expected = [];
+  for (const [provider, routes] of Object.entries(CONCURRENCY_FACTS)) {
+    for (const [route, fact] of Object.entries(routes)) {
+      expected.push({ provider, route, category: fact.category, limit: fact.limit, limit_env: fact.limit_env ?? null });
+    }
+  }
+  const documented = table.concurrency_budget.map((row) => ({
+    provider: row.provider, route: row.route, category: row.category, limit: row.limit, limit_env: row.limit_env ?? null,
+  }));
+  const byKey = (a, b) => `${a.provider}.${a.route}`.localeCompare(`${b.provider}.${b.route}`);
+  assert.deepEqual(documented.slice().sort(byKey), expected.slice().sort(byKey));
+
+  // Spot-pin the headline #234 facts so the intent is explicit, not merely structurally equal.
+  const find = (p, r) => documented.find((row) => row.provider === p && row.route === r);
+  assert.deepEqual(
+    find("grok-web", "subscription_web"),
+    { provider: "grok-web", route: "subscription_web", category: "shared_state", limit: 1, limit_env: null },
+  );
+  assert.equal(find("deepseek", "direct_api").limit, 4);
+  assert.equal(find("glm", "direct_api").limit, 4);
+  assert.equal(find("custom", "direct_api").limit, 1);
+});
+
+test("provider parity concurrency budget rows validate against the concurrency_fact schema", () => {
+  const schema = readRepoJson("docs/contracts/provider-parity-table.schema.json");
+  const table = readRepoJson("docs/provider-parity-table.json");
+  const concurrencyFact = schema.$defs.concurrency_fact;
+
+  table.concurrency_budget.forEach((row, index) => {
+    assertSchemaAllowsValue(schema, concurrencyFact, row, `concurrency_budget[${index}]`);
+  });
+
+  assert.throws(
+    () => assertSchemaAllowsValue(schema, concurrencyFact, {
+      provider: "deepseek",
+      route: "direct_api",
+      category: "stateless",
+      limit: 0,
+      limit_env: null,
+    }, "concurrency_budget.invalid_limit"),
+    /minimum/,
+  );
+  assert.throws(
+    () => assertSchemaAllowsValue(schema, concurrencyFact, {
+      provider: "deepseek",
+      route: "direct_api",
+      category: "stateless",
+      limit: 1,
+      limit_env: null,
+      holder: { pid: 123 },
+    }, "concurrency_budget.invalid_extra"),
+    /unsupported keys/,
+  );
 });
 
 

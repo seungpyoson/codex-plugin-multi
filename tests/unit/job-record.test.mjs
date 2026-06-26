@@ -28,6 +28,12 @@ import {
   SCHEMA_VERSION as KIMI_SCHEMA_VERSION,
 } from "../../plugins/kimi/scripts/lib/job-record.mjs";
 import {
+  buildRecord as buildApiReviewerRecord,
+} from "../../plugins/api-reviewers/scripts/api-reviewer.mjs";
+import {
+  buildRecord as buildGrokRecord,
+} from "../../plugins/grok/scripts/grok-web-reviewer.mjs";
+import {
   buildJobRecord as buildAgyJobRecord,
   EXPECTED_KEYS as AGY_EXPECTED_KEYS,
   SCHEMA_VERSION as AGY_SCHEMA_VERSION,
@@ -1957,7 +1963,7 @@ test("buildJobRecord: drops malformed source packet and provider identity diagno
   }
 });
 
-test("buildJobRecord: preserves provider workload blocked diagnostics across companion providers", () => {
+test("buildJobRecord: keeps counts-only provider workload blocked diagnostics (no holder identity) across companion providers", () => {
   const providers = [
     [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
     [
@@ -1986,6 +1992,7 @@ test("buildJobRecord: preserves provider workload blocked diagnostics across com
       runtimeDiagnostics: {
         provider_workload: {
           reason: "active_same_provider_job",
+          capacity: { active_count: 1, limit: 1 },
           holder: {
             provider: invocation.target,
             job_id: "job-active",
@@ -2002,19 +2009,156 @@ test("buildJobRecord: preserves provider workload blocked diagnostics across com
       ...sessionFields,
     }, []);
 
+    // §8/§9: counts are kept; the entire holder identity (and its token) is dropped.
     assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
       reason: "active_same_provider_job",
-      holder: {
-        provider: invocation.target,
-        job_id: "job-active",
-        pid: 12345,
-        hostname: "dev-host",
-        cwd: "/tmp/src",
-        started_at: "2026-05-28T02:45:52.446Z",
-        lock_file: "/tmp/relay/provider-workload/provider.json",
-      },
+      capacity: { active_count: 1, limit: 1 },
     });
-    assert.doesNotMatch(JSON.stringify(rec), /must-not-persist/);
+    assert.equal(rec.runtime_diagnostics.provider_workload.holder, undefined);
+    assert.doesNotMatch(JSON.stringify(rec), /must-not-persist|job-active|dev-host/);
+  }
+});
+
+test("provider workload blocked diagnostics are counts-only across every terminal record consumer", () => {
+  const providerWorkload = {
+    reason: "active_same_provider_job",
+    capacity: { active_count: 3, limit: 4 },
+    holder: {
+      pid: 54321,
+      hostname: "leaky-hostname",
+      cwd: "/tmp/leaky-cwd",
+      lock_file: "/tmp/leaky-lock-file.json",
+      token: "leaky-token",
+      job_id: "leaky-job-id",
+      argv0: "leaky-argv0",
+    },
+  };
+  const expected = {
+    reason: "active_same_provider_job",
+    capacity: { active_count: 3, limit: 4 },
+  };
+  const forbidden = [
+    "54321",
+    "leaky-hostname",
+    "/tmp/leaky-cwd",
+    "/tmp/leaky-lock-file.json",
+    "leaky-token",
+    "leaky-job-id",
+    "leaky-argv0",
+  ];
+  const blockedParsed = (provider) => ({
+    ok: false,
+    reason: "provider_workload_blocked",
+    error: `${provider} source-bearing review is already active`,
+    structured: null,
+    denials: [],
+  });
+  const startedAt = "2026-05-29T00:00:00.000Z";
+  const endedAt = "2026-05-29T00:00:01.000Z";
+  const scopeInfo = {
+    cwd: "/tmp/src",
+    workspaceRoot: "/tmp/src",
+    scope: "custom",
+    scope_base: null,
+    scope_paths: ["README.md"],
+    files: [],
+  };
+  const apiEnvName = "RELAY_F7_API_KEY";
+  const oldApiEnv = process.env[apiEnvName];
+  process.env[apiEnvName] = "test-api-key";
+  try {
+    const records = [
+      ["claude", buildJobRecord(makeInvocation(), {
+        exitCode: null,
+        parsed: blockedParsed("claude"),
+        pidInfo: null,
+        runtimeDiagnostics: { provider_workload: providerWorkload },
+        errorMessage: "provider_workload_blocked: source-bearing review is already active",
+        claudeSessionId: CLAUDE_UUID,
+      }, [])],
+      ["gemini", buildGeminiJobRecord(
+        makeInvocation({ target: "gemini", binary: "gemini", review_prompt_provider: "Gemini CLI" }),
+        {
+          exitCode: null,
+          parsed: blockedParsed("gemini"),
+          pidInfo: null,
+          runtimeDiagnostics: { provider_workload: providerWorkload },
+          errorMessage: "provider_workload_blocked: source-bearing review is already active",
+          geminiSessionId: GEMINI_UUID,
+        },
+        [],
+      )],
+      ["kimi", buildKimiJobRecord(
+        makeInvocation({ target: "kimi", binary: "kimi", review_prompt_provider: "Kimi Code" }),
+        {
+          exitCode: null,
+          parsed: blockedParsed("kimi"),
+          pidInfo: null,
+          runtimeDiagnostics: { provider_workload: providerWorkload },
+          errorMessage: "provider_workload_blocked: source-bearing review is already active",
+          kimiSessionId: "kimi-session-123",
+        },
+        [],
+      )],
+      ["api-reviewer", buildApiReviewerRecord({
+        provider: "deepseek",
+        cfg: {
+          display_name: "DeepSeek",
+          model: "deepseek-chat",
+          auth_mode: "api_key",
+          env_keys: [apiEnvName],
+          base_url: "https://api.deepseek.example.invalid/v1",
+          request_defaults: null,
+        },
+        mode: "custom-review",
+        options: { jobId: UUID, prompt: "", reviewSlotPriorAttempts: [] },
+        scopeInfo,
+        execution: {
+          exitCode: null,
+          parsed: blockedParsed("deepseek"),
+          pidInfo: null,
+          payload_sent: false,
+          diagnostics: { provider_workload: providerWorkload },
+        },
+        startedAt,
+        endedAt,
+      })],
+      ["grok", buildGrokRecord({
+        cfg: {
+          provider: "grok-web",
+          canonical_provider: "grok",
+          display_name: "Grok",
+          model: "grok-build",
+          auth_mode: "subscription",
+          transport: "web",
+          base_url: "http://127.0.0.1:8000/v1",
+        },
+        mode: "custom-review",
+        options: { jobId: UUID, prompt: "", reviewSlotPriorAttempts: [] },
+        scopeInfo,
+        execution: {
+          exitCode: null,
+          parsed: blockedParsed("grok"),
+          pidInfo: null,
+          payload_sent: false,
+          diagnostics: { provider_workload: providerWorkload },
+        },
+        startedAt,
+        endedAt,
+      })],
+    ];
+
+    for (const [name, record] of records) {
+      assert.deepEqual(record.runtime_diagnostics.provider_workload, expected, name);
+      assert.equal(record.runtime_diagnostics.provider_workload.holder, undefined, name);
+      const encoded = JSON.stringify(record);
+      for (const value of forbidden) {
+        assert.ok(!encoded.includes(value), `${name} leaked ${value}`);
+      }
+    }
+  } finally {
+    if (oldApiEnv == null) delete process.env[apiEnvName];
+    else process.env[apiEnvName] = oldApiEnv;
   }
 });
 
@@ -2036,6 +2180,7 @@ test("buildJobRecord: malformed provider workload diagnostics stay bounded and r
       pidInfo: null,
       runtimeDiagnostics: {
         provider_workload: {
+          capacity: { active_count: "bad", limit: 2 },
           holder: {
             provider: 123,
             job_id: null,
@@ -2052,17 +2197,11 @@ test("buildJobRecord: malformed provider workload diagnostics stay bounded and r
       claudeSessionId: CLAUDE_UUID,
     }, []);
 
+    // §8: the holder identity is dropped wholesale, so the secrets it carried can never
+    // reach the persisted record; malformed counts null out, valid counts survive.
     assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
       reason: null,
-      holder: {
-        provider: null,
-        job_id: null,
-        pid: null,
-        hostname: "host-[REDACTED]",
-        cwd: "/tmp/[REDACTED]/src",
-        started_at: null,
-        lock_file: "/tmp/[REDACTED]/provider.json",
-      },
+      capacity: { active_count: null, limit: 2 },
     });
     assert.doesNotMatch(JSON.stringify(rec), /secret-test-value|must-not-persist/);
   } finally {
@@ -2071,7 +2210,7 @@ test("buildJobRecord: malformed provider workload diagnostics stay bounded and r
   }
 });
 
-test("buildJobRecord: malformed provider workload holder fields are nulled across companion providers", () => {
+test("buildJobRecord: malformed provider workload capacity fields are nulled and holder is never persisted across companion providers", () => {
   const providers = [
     [buildJobRecord, makeInvocation(), { claudeSessionId: CLAUDE_UUID }],
     [
@@ -2100,6 +2239,10 @@ test("buildJobRecord: malformed provider workload holder fields are nulled acros
       runtimeDiagnostics: {
         provider_workload: {
           reason: 42,
+          capacity: {
+            active_count: "1",
+            limit: false,
+          },
           holder: {
             provider: false,
             job_id: 99,
@@ -2115,22 +2258,18 @@ test("buildJobRecord: malformed provider workload holder fields are nulled acros
       ...sessionFields,
     }, []);
 
+    // Malformed counts null out; the holder identity is dropped wholesale (§8).
     assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
       reason: null,
-      holder: {
-        provider: null,
-        job_id: null,
-        pid: null,
-        hostname: null,
-        cwd: null,
-        started_at: null,
-        lock_file: null,
+      capacity: {
+        active_count: null,
+        limit: null,
       },
     });
   }
 });
 
-test("buildJobRecord: provider workload reason and holder started_at are redacted across companion providers", () => {
+test("buildJobRecord: provider workload keeps counts only — reason redacted, holder identity never persisted (§8/§9) across companion providers", () => {
   const secretName = "RELAY_WORKLOAD_SECRET";
   const oldSecret = process.env[secretName];
   process.env[secretName] = "secret-workload-value";
@@ -2163,6 +2302,7 @@ test("buildJobRecord: provider workload reason and holder started_at are redacte
         runtimeDiagnostics: {
           provider_workload: {
             reason: "secret-workload-value-active",
+            capacity: { active_count: 1, limit: 1 },
             holder: {
               provider: invocation.target,
               job_id: "held-job",
@@ -2179,11 +2319,12 @@ test("buildJobRecord: provider workload reason and holder started_at are redacte
       }, []);
 
       assert.equal(rec.runtime_diagnostics.provider_workload.reason, "[REDACTED]-active");
-      assert.equal(
-        rec.runtime_diagnostics.provider_workload.holder.started_at,
-        "2026-05-29T00:00:00.000Z-[REDACTED]",
-      );
+      // §9: counts survive into the persisted record.
+      assert.deepEqual(rec.runtime_diagnostics.provider_workload.capacity, { active_count: 1, limit: 1 });
+      // §8: the blocking job's holder identity is stripped entirely — never persisted.
+      assert.equal(rec.runtime_diagnostics.provider_workload.holder, undefined);
       assert.doesNotMatch(JSON.stringify(rec), /secret-workload-value/);
+      assert.doesNotMatch(JSON.stringify(rec), /held-job/);
     }
   } finally {
     if (oldSecret == null) delete process.env[secretName];
@@ -2191,7 +2332,7 @@ test("buildJobRecord: provider workload reason and holder started_at are redacte
   }
 });
 
-test("buildJobRecord: provider workload diagnostics without holder preserve the reason only", () => {
+test("buildJobRecord: provider workload diagnostics without capacity preserve the reason only", () => {
   const rec = buildJobRecord(makeInvocation(), {
     exitCode: null,
     parsed: {
@@ -2213,7 +2354,7 @@ test("buildJobRecord: provider workload diagnostics without holder preserve the 
 
   assert.deepEqual(rec.runtime_diagnostics.provider_workload, {
     reason: "lock_file_unreadable",
-    holder: null,
+    capacity: null,
   });
 });
 

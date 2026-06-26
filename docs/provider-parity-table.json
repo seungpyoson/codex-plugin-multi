@@ -367,7 +367,46 @@
       "verdict": "compliant_shared_policy",
       "drift_risk": "low",
       "missing_guardrail": null
+    },
+    {
+      "name": "concurrency budget",
+      "module": "scripts/lib/review-workload.mjs, scripts/lib/provider-route-policy.mjs, scripts/lib/process-identity.mjs",
+      "interface": "CONCURRENCY_FACTS, resolveConcurrencyAdmission, acquireProviderWorkloadLease",
+      "implementation": "Bounded capability-driven counting semaphore for source-bearing review workloads. Each source-bearing route declares a capability fact {category, limit[, limit_env]} in CONCURRENCY_FACTS: shared_state routes (claude/gemini/kimi/grok subscription and grok-web subscription_web) key on a resolved shared-state directory identity (dev:inode of the realpath'd home, e.g. ~/.kimi, ~/.gemini, GROK2API_HOME) and are pinned to limit 1; stateless routes (deepseek/glm direct_api) key on provider.route and admit limit 4 with a per-route env cap that can only lower (Math.min), never raise; custom direct_api stays single-flight at limit 1 until a specific endpoint is proven. resolveConcurrencyAdmission validates fail-closed (shared_state limit>1 throws, unresolved identity throws, malformed category throws); acquireProviderWorkloadLease enforces the bound across processes via per-key slot files with {pid,starttime,argv0} liveness and stale-boot-id reclaim. Limits are mirrored declaratively in this table's concurrency_budget section and audited against CONCURRENCY_FACTS.",
+      "adapters": [
+        "claude",
+        "gemini",
+        "kimi",
+        "grok",
+        "deepseek",
+        "glm"
+      ],
+      "packaged_copies": [
+        "plugins/*/scripts/lib/review-workload.mjs",
+        "plugins/*/scripts/lib/provider-route-policy.mjs",
+        "plugins/*/scripts/lib/process-identity.mjs"
+      ],
+      "sync_guard": "npm run lint:sync runs sync-review-workload.mjs --check, sync-provider-route-policy.mjs --check, sync-process-identity.mjs --check",
+      "tests": [
+        "tests/unit/review-workload.test.mjs",
+        "tests/unit/review-workload-multiprocess.test.mjs",
+        "tests/unit/provider-route-policy.test.mjs",
+        "tests/unit/process-identity.test.mjs"
+      ],
+      "verdict": "compliant_shared_policy",
+      "drift_risk": "low",
+      "missing_guardrail": null
     }
+  ],
+  "concurrency_budget": [
+    { "provider": "claude", "route": "subscription", "category": "shared_state", "limit": 1, "limit_env": null },
+    { "provider": "gemini", "route": "subscription", "category": "shared_state", "limit": 1, "limit_env": null },
+    { "provider": "kimi", "route": "subscription", "category": "shared_state", "limit": 1, "limit_env": null },
+    { "provider": "grok", "route": "subscription", "category": "shared_state", "limit": 1, "limit_env": null },
+    { "provider": "grok-web", "route": "subscription_web", "category": "shared_state", "limit": 1, "limit_env": null },
+    { "provider": "deepseek", "route": "direct_api", "category": "stateless", "limit": 4, "limit_env": "RELAY_DEEPSEEK_CONCURRENCY_LIMIT" },
+    { "provider": "glm", "route": "direct_api", "category": "stateless", "limit": 4, "limit_env": "RELAY_GLM_CONCURRENCY_LIMIT" },
+    { "provider": "custom", "route": "direct_api", "category": "stateless", "limit": 1, "limit_env": "RELAY_CUSTOM_DIRECT_API_CONCURRENCY_LIMIT" }
   ],
   "semantic_drift_policy": {
     "standard": "Provider parity does not require fake parity or fake sameness. Every provider difference must have a clear reason: either an Adapter capability fact consumed by shared policy fields, a documented policy exception with evidence and tests, or an explicitly tracked noncompliance/research gap. Unclassified provider-specific semantics are drift.",

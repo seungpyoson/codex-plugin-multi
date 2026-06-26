@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
-import { constants as fsConstants, lstatSync, readFileSync } from "node:fs";
+import { constants as fsConstants, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { basename, dirname, isAbsolute, resolve, relative } from "node:path";
@@ -18,11 +18,13 @@ import { elapsedMs } from "./lib/time.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
 import { buildExternalModelFailureDiagnostic } from "./lib/external-model-failure-core.mjs";
 import { hasSubstantiveInvalidVerdictReason, reviewQualityFailureState } from "./lib/external-model-review-quality.mjs";
-import { buildPrivacyRedactor } from "./lib/privacy-redaction.mjs";
+import { buildPrivacyRedactor, sanitizeProviderWorkloadDiagnostic } from "./lib/privacy-redaction.mjs";
 import {
   buildPacketRecovery,
+  CONCURRENCY_FACTS,
   latestSourcePacketPreviousAttempt,
   normalizeApprovalScope,
+  resolveConcurrencyAdmission,
   selectProviderRoute,
   sourceSendApprovalTupleFingerprint,
   sourceSentPacketRecoveryReason,
@@ -34,6 +36,7 @@ import {
 import {
   acquireProviderWorkloadLease,
   providerWorkloadBlockedExecution,
+  concurrencyAdmissionBlockedExecution,
   releaseProviderWorkloadLease,
 } from "./lib/review-workload.mjs";
 
@@ -169,6 +172,29 @@ const ALLOWED_REQUEST_DEFAULT_KEYS = new Set(["thinking", "reasoning_effort", "m
 const ACCOUNT_PAYMENT_DIAGNOSTIC_RE = /^(?:stripe-.+|cus_[A-Za-z0-9]{6,}|acct_(?:test_)?[A-Za-z0-9]{5,}|cs_(?:test|live)_[A-Za-z0-9]{6,}|(?:pi|sub|in|ii|ch|seti|setp|price|prod|iv)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{5,})$/i;
 const CREDENTIAL_REDACTION_VALUE = Symbol("credential_redaction_value");
 const REDACTION_SECRET_ENV_PREFIX = "API_REVIEWERS_REDACTION_SECRET";
+
+function resolveApiReviewerAdmissionContext(provider, env = process.env) {
+  const route = "direct_api";
+  const fact = CONCURRENCY_FACTS[provider]?.[route];
+  if (!fact) {
+    throw new Error(`missing concurrency fact for source-bearing route ${provider}.${route}`);
+  }
+  return resolveConcurrencyAdmission({
+    category: fact.category,
+    declaredLimit: fact.limit,
+    limitEnv: fact.limit_env,
+    provider,
+    route,
+    env,
+  });
+}
+
+function assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing) {
+  if (workloadAdmission.ok && sourceBearing && workloadAdmission.lease == null) {
+    process.stderr.write("api-reviewer: source-bearing admission returned no workload lease\n");
+    process.exit(2);
+  }
+}
 
 function configuredPath(envKey, fallbackPath) {
   const value = process.env[envKey];
@@ -3708,7 +3734,7 @@ function buildReviewMetadata(provider, cfg, mode, scopeInfo, execution = null, s
   };
 }
 
-function buildRuntimeDiagnostics(diagnostics) {
+function buildRuntimeDiagnostics(diagnostics, redactText = (value) => value) {
   if (!diagnostics) return null;
   const hasProviderRequest = (
     Object.hasOwn(diagnostics, "configured_timeout_ms") ||
@@ -3749,8 +3775,9 @@ function buildRuntimeDiagnostics(diagnostics) {
   if (diagnostics.review_slot) {
     out.review_slot = diagnostics.review_slot;
   }
-  if (diagnostics.provider_workload) {
-    out.provider_workload = diagnostics.provider_workload;
+  const providerWorkload = sanitizeProviderWorkloadDiagnostic(diagnostics.provider_workload, redactText);
+  if (providerWorkload) {
+    out.provider_workload = providerWorkload;
   }
   return Object.keys(out).length === 0 ? null : out;
 }
@@ -3858,7 +3885,7 @@ function buildRecord({ provider, cfg, mode, options, scopeInfo, execution, start
   });
   const runtimeDiagnostics = buildRuntimeDiagnostics(packetRecovery
     ? { ...(execution.diagnostics ?? {}), packet_recovery: packetRecovery }
-    : execution.diagnostics);
+    : execution.diagnostics, redactSensitiveText);
   return freezeRecord({
     id: options.jobId,
     job_id: options.jobId,
@@ -4336,15 +4363,25 @@ async function cmdRun(options) {
     if (execution) {
       // handled below by the terminal JobRecord path without a launch event
     } else {
-      const workloadAdmission = acquireProviderWorkloadLease({
+      let admissionContext;
+      try {
+        admissionContext = resolveApiReviewerAdmissionContext(provider, process.env);
+      } catch {
+        execution = concurrencyAdmissionBlockedExecution(provider, "direct_api");
+        execution.prompt = renderedPrompt;
+      }
+      const workloadAdmission = execution ? null : acquireProviderWorkloadLease({
+        ...admissionContext,
         provider,
         jobId,
         cwd: scopeInfo.cwd,
         sourceBearing: true,
+        env: process.env,
       });
-      if (workloadAdmission.ok) {
+      if (workloadAdmission?.ok) {
+        assertSourceBearingWorkloadLease(workloadAdmission, true);
         workloadLease = workloadAdmission.lease;
-      } else {
+      } else if (workloadAdmission) {
         execution = providerWorkloadBlockedExecution(workloadAdmission);
         execution.prompt = renderedPrompt;
       }
@@ -4468,9 +4505,39 @@ async function main() {
   throw new Error(`unknown_command:${cmd}`);
 }
 
-try {
-  await main();
-} catch (e) {
-  printJson({ ok: false, error: e.message });
-  process.exit(1);
+async function runCli() {
+  try {
+    await main();
+  } catch (e) {
+    printJson({ ok: false, error: e.message });
+    process.exit(1);
+  }
+}
+
+export {
+  buildRecord,
+  readUtf8ScopeFileWithinLimit,
+  runCli,
+  sameFileIdentity,
+};
+
+function isDirectCliEntry() {
+  if (!process.argv[1]) return false;
+  const modulePath = fileURLToPath(import.meta.url);
+  const argvPath = resolve(process.argv[1]);
+  if (argvPath === modulePath) return true;
+  // Node realpaths the ESM main entry, but process.argv[1] is the raw argv — they
+  // diverge when spawned through a symlinked path (e.g. macOS /tmp -> /private/tmp,
+  // or a packaged/installed copy). Compare canonical real paths so CLI detection
+  // survives symlinked invocation; otherwise runCli() never fires and the process
+  // emits no output (every spawning test then fails on empty-stdout JSON parse).
+  try {
+    return realpathSync(argvPath) === realpathSync(modulePath);
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectCliEntry()) {
+  await runCli();
 }

@@ -20,6 +20,7 @@ import {
   acquireProviderWorkloadLease,
   releaseProviderWorkloadLease,
 } from "../../scripts/lib/review-workload.mjs";
+import { resolveConcurrencyAdmission } from "../../scripts/lib/provider-route-policy.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.mjs");
@@ -39,6 +40,19 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function smokeEnv(dataDir, env = {}) {
+  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
+    ?? path.join(dataDir, "provider-workload");
+  return {
+    ...process.env,
+    GEMINI_BINARY: MOCK,
+    GEMINI_PLUGIN_DATA: dataDir,
+    RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+    RELAY_WORKLOAD_TEST_MODE: "1",
+    ...env,
+  };
+}
+
 function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "gemini-smoke-data-")) } = {}) {
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
@@ -48,15 +62,30 @@ function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmp
   return { ...res, dataDir };
 }
 
-function smokeEnv(dataDir, env = {}) {
-  const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(dataDir, "provider-workload");
+function heldGeminiWorkloadLease({ cwd, dataDir, workloadLockDir }) {
+  const geminiHome = path.join(dataDir, "gemini-home");
+  mkdirSync(geminiHome, { recursive: true });
+  const admissionContext = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: realpathSync(geminiHome),
+    provider: "gemini",
+    route: "subscription",
+    env: {
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+      RELAY_WORKLOAD_TEST_MODE: "1",
+    },
+  });
   return {
-    ...process.env,
-    GEMINI_BINARY: MOCK,
-    GEMINI_PLUGIN_DATA: dataDir,
-    RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
-    ...env,
+    geminiHome,
+    admission: acquireProviderWorkloadLease({
+      ...admissionContext,
+      provider: "gemini",
+      jobId: "held-gemini-job",
+      cwd,
+      sourceBearing: true,
+      env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+    }),
   };
 }
 
@@ -265,13 +294,7 @@ test("gemini custom-review maps held workload lease to provider_workload_blocked
   const dataDir = mkdtempSync(path.join(tmpdir(), "gemini-workload-block-data-"));
   const workloadLockDir = path.join(dataDir, "provider-workload");
   seedMinimalRepo(cwd);
-  const admission = acquireProviderWorkloadLease({
-    provider: "gemini",
-    jobId: "held-gemini-job",
-    cwd,
-    sourceBearing: true,
-    env: { RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
-  });
+  const { geminiHome, admission } = heldGeminiWorkloadLease({ cwd, dataDir, workloadLockDir });
   assert.equal(admission.ok, true);
 
   try {
@@ -283,6 +306,7 @@ test("gemini custom-review maps held workload lease to provider_workload_blocked
         dataDir,
         env: {
           RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+          GEMINI_CONFIG_DIR: geminiHome,
           GEMINI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_GEMINI",
         },
       },
@@ -294,7 +318,14 @@ test("gemini custom-review maps held workload lease to provider_workload_blocked
     assert.equal(record.error_code, "provider_workload_blocked");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(record.runtime_diagnostics.provider_workload.reason, "active_same_provider_job");
-    assert.equal(record.runtime_diagnostics.provider_workload.holder.job_id, "held-gemini-job");
+    // §8/§9: external/persisted block carries counts only — the blocking job's
+    // holder identity (job_id/provider/pid) must never leak into the record or stdout.
+    assert.equal(record.runtime_diagnostics.provider_workload.holder, undefined);
+    assert.deepEqual(
+      Object.keys(record.runtime_diagnostics.provider_workload).sort(),
+      ["capacity", "reason"],
+    );
+    assert.doesNotMatch(stdout, /held-gemini-job/);
     assert.doesNotMatch(stdout, /MUST_NOT_REACH_GEMINI|external_review_launched/);
   } finally {
     releaseProviderWorkloadLease(admission.lease);
@@ -474,7 +505,7 @@ test("gemini rescue background: active job appears in default status", async () 
       const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
         cwd,
         encoding: "utf8",
-        env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+        env: smokeEnv(dataDir),
       });
       assert.equal(statusRes.status, 0, `exit ${statusRes.status}: ${statusRes.stderr}`);
       const parsed = JSON.parse(statusRes.stdout);
@@ -491,7 +522,7 @@ test("gemini rescue background: active job appears in default status", async () 
       const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
         cwd,
         encoding: "utf8",
-        env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+        env: smokeEnv(dataDir),
       });
       assert.equal(statusRes.status, 0, `exit ${statusRes.status}: ${statusRes.stderr}`);
       const parsed = JSON.parse(statusRes.stdout);
@@ -526,7 +557,7 @@ test("gemini cancel: signals a running background job (issue #22 sub-task 1)", a
     while (Date.now() < deadline && !running) {
       const statusRes = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
         cwd, encoding: "utf8",
-        env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+        env: smokeEnv(dataDir),
       });
       assert.equal(statusRes.status, 0, statusRes.stderr);
       const statusObj = JSON.parse(statusRes.stdout);
@@ -540,7 +571,7 @@ test("gemini cancel: signals a running background job (issue #22 sub-task 1)", a
       COMPANION, "cancel", "--job", launched.job_id, "--cwd", cwd,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     // Two acceptable outcomes: signaled (signal landed) or unverifiable
     // (mock spawn raced and pid capture failed). What MUST NOT happen is
@@ -666,7 +697,7 @@ test("gemini _run-worker: cancel marker prevents target spawn, sets status=cance
       COMPANION, "_run-worker", "--cwd", cwd, "--job", record.job_id,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, GEMINI_BINARY: MOCK, GEMINI_PLUGIN_DATA: runRes.dataDir },
+      env: smokeEnv(runRes.dataDir),
     });
     assert.equal(workerRes.status, 0,
       `worker must exit 0 when marker present; stderr=${workerRes.stderr}`);
@@ -740,9 +771,8 @@ test("gemini _run-worker fails before spawn when api_key auth has no provider ke
       cwd,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...smokeEnv(dataDir),
         GEMINI_BINARY: binary,
-        GEMINI_PLUGIN_DATA: dataDir,
         GEMINI_API_KEY: "",
         GOOGLE_API_KEY: "",
       },
@@ -907,7 +937,7 @@ test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not comple
     let running = null;
     while (Date.now() < runDeadline && !running) {
       const sr = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
-        cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+        cwd, encoding: "utf8", env: smokeEnv(dataDir),
       });
       const so = JSON.parse(sr.stdout);
       running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
@@ -917,7 +947,7 @@ test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not comple
 
     const cancelRes = spawnSync("node", [
       COMPANION, "cancel", "--job", launched.job_id, "--cwd", cwd,
-    ], { cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir } });
+    ], { cwd, encoding: "utf8", env: smokeEnv(dataDir) });
     const cancel = JSON.parse(cancelRes.stdout);
     const exitOk =
       (cancel.status === "signaled" && cancelRes.status === 0) ||
@@ -937,7 +967,7 @@ test("gemini cancel: SIGTERM-trapping target classifies as cancelled, not comple
       // --all so the cancelled record (filtered by default cmdStatus on
       // origin/main) is visible to the polling assertion.
       const sr = spawnSync("node", [COMPANION, "status", "--all", "--cwd", cwd], {
-        cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+        cwd, encoding: "utf8", env: smokeEnv(dataDir),
       });
       const so = JSON.parse(sr.stdout);
       terminal = so.jobs.find((j) => j.id === launched.job_id && j.status !== "running");
@@ -973,7 +1003,7 @@ test("gemini cancel: ESRCH after ownership verification is already_dead, not sig
     let running = null;
     while (Date.now() < runDeadline && !running) {
       const sr = spawnSync("node", [COMPANION, "status", "--cwd", cwd], {
-        cwd, encoding: "utf8", env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+        cwd, encoding: "utf8", env: smokeEnv(dataDir),
       });
       const so = JSON.parse(sr.stdout);
       running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
@@ -1000,8 +1030,7 @@ process.kill = (pid, signal) => {
     ], {
       cwd, encoding: "utf8",
       env: {
-        ...process.env,
-        GEMINI_PLUGIN_DATA: dataDir,
+        ...smokeEnv(dataDir),
         NODE_OPTIONS: `--import=${preload}`,
       },
     });
@@ -1029,7 +1058,7 @@ test("gemini cancel: not_found for an unknown job", () => {
       COMPANION, "cancel", "--job", "00000000-0000-4000-8000-000000000999", "--cwd", cwd,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, GEMINI_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.notEqual(cancelRes.status, 0);
     const cancel = JSON.parse(cancelRes.stdout);
@@ -2629,9 +2658,8 @@ test("gemini scope population failure skips target CLI spawn", () => {
     cwd,
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...smokeEnv(dataDir),
       GEMINI_BINARY: binary,
-      GEMINI_PLUGIN_DATA: dataDir,
     },
   });
   try {

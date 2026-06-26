@@ -107,6 +107,7 @@ function seedRepo(cwd) {
 }
 
 function runCompanion(args, { cwd, binary, dataDir, mode }) {
+  const workloadLockDir = path.join(dataDir, "provider-workload");
   const res = spawnSync("node", [companion, ...args], {
     cwd,
     encoding: "utf8",
@@ -115,6 +116,8 @@ function runCompanion(args, { cwd, binary, dataDir, mode }) {
       ...process.env,
       KIMI_BINARY: binary,
       KIMI_PLUGIN_DATA: dataDir,
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+      RELAY_WORKLOAD_TEST_MODE: "1",
       KC_MOCK_MODE: mode,
     },
   });

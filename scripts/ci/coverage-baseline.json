@@ -70,6 +70,11 @@
       "branches": 0,
       "functions": 0
     },
+    "plugins/api-reviewers/scripts/lib/process-identity.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
     "plugins/api-reviewers/scripts/lib/git-env.mjs": {
       "lines": 100,
       "branches": 100,
@@ -186,9 +191,9 @@
       "functions": 100
     },
     "plugins/claude/scripts/lib/identity.mjs": {
-      "lines": 48.45,
-      "branches": 55.56,
-      "functions": 83.33
+      "lines": 96.61,
+      "branches": 86.67,
+      "functions": 100
     },
     "plugins/claude/scripts/lib/job-record.mjs": {
       "lines": 90,
@@ -221,6 +226,11 @@
       "functions": 0
     },
     "plugins/claude/scripts/lib/review-workload.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/claude/scripts/lib/process-identity.mjs": {
       "lines": 0,
       "branches": 0,
       "functions": 0
@@ -341,9 +351,9 @@
       "functions": 100
     },
     "plugins/gemini/scripts/lib/identity.mjs": {
-      "lines": 25.77,
-      "branches": 0,
-      "functions": 83.33
+      "lines": 96.61,
+      "branches": 86.67,
+      "functions": 100
     },
     "plugins/gemini/scripts/lib/job-record.mjs": {
       "lines": 82.76,
@@ -376,6 +386,11 @@
       "functions": 0
     },
     "plugins/gemini/scripts/lib/review-workload.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/gemini/scripts/lib/process-identity.mjs": {
       "lines": 0,
       "branches": 0,
       "functions": 0
@@ -480,6 +495,11 @@
       "branches": 0,
       "functions": 0
     },
+    "plugins/grok/scripts/lib/process-identity.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
     "plugins/grok/scripts/lib/provider-env.mjs": {
       "lines": 100,
       "branches": 90.91,
@@ -577,7 +597,7 @@
     },
     "plugins/kimi/scripts/lib/identity.mjs": {
       "lines": 92.03,
-      "branches": 86.96,
+      "branches": 86.67,
       "functions": 100
     },
     "plugins/kimi/scripts/lib/job-record.mjs": {
@@ -621,6 +641,11 @@
       "functions": 0
     },
     "plugins/kimi/scripts/lib/review-workload.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
+    },
+    "plugins/kimi/scripts/lib/process-identity.mjs": {
       "lines": 0,
       "branches": 0,
       "functions": 0
@@ -769,6 +794,11 @@
       "lines": 92.03,
       "branches": 86.96,
       "functions": 100
+    },
+    "plugins/agy/scripts/lib/process-identity.mjs": {
+      "lines": 0,
+      "branches": 0,
+      "functions": 0
     },
     "plugins/agy/scripts/lib/job-record.mjs": {
       "lines": 0,

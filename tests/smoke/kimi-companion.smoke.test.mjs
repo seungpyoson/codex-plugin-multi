@@ -13,6 +13,7 @@ import {
   acquireProviderWorkloadLease,
   releaseProviderWorkloadLease,
 } from "../../scripts/lib/review-workload.mjs";
+import { resolveConcurrencyAdmission } from "../../scripts/lib/provider-route-policy.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs");
@@ -24,21 +25,53 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "kimi-smoke-data-")) } = {}) {
+function smokeEnv(dataDir, env = {}) {
   const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
     ?? path.join(dataDir, "provider-workload");
+  return {
+    ...process.env,
+    KIMI_BINARY: MOCK,
+    KIMI_PLUGIN_DATA: dataDir,
+    RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+    RELAY_WORKLOAD_TEST_MODE: "1",
+    ...env,
+  };
+}
+
+function runCompanion(args, { cwd, env = {}, dataDir = mkdtempSync(path.join(tmpdir(), "kimi-smoke-data-")) } = {}) {
   const res = spawnSync("node", [COMPANION, ...args], {
     cwd,
     encoding: "utf8",
-    env: {
-      ...process.env,
-      KIMI_BINARY: MOCK,
-      KIMI_PLUGIN_DATA: dataDir,
-      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
-      ...env,
-    },
+    env: smokeEnv(dataDir, env),
   });
   return { ...res, dataDir };
+}
+
+function heldKimiWorkloadLease({ cwd, dataDir, workloadLockDir }) {
+  const kimiHome = path.join(dataDir, "kimi-code-home");
+  mkdirSync(kimiHome, { recursive: true });
+  const admissionContext = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: realpathSync(kimiHome),
+    provider: "kimi",
+    route: "subscription",
+    env: {
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+      RELAY_WORKLOAD_TEST_MODE: "1",
+    },
+  });
+  return {
+    kimiHome,
+    admission: acquireProviderWorkloadLease({
+      ...admissionContext,
+      provider: "kimi",
+      jobId: "held-kimi-job",
+      cwd,
+      sourceBearing: true,
+      env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+    }),
+  };
 }
 
 function withRepo(fn) {
@@ -770,13 +803,7 @@ test("kimi custom-review maps held workload lease to provider_workload_blocked w
   const dataDir = mkdtempSync(path.join(tmpdir(), "kimi-workload-block-data-"));
   const workloadLockDir = path.join(dataDir, "provider-workload");
   fixtureSeedRepo(cwd);
-  const admission = acquireProviderWorkloadLease({
-    provider: "kimi",
-    jobId: "held-kimi-job",
-    cwd,
-    sourceBearing: true,
-    env: { RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
-  });
+  const { kimiHome, admission } = heldKimiWorkloadLease({ cwd, dataDir, workloadLockDir });
   assert.equal(admission.ok, true);
 
   try {
@@ -796,6 +823,7 @@ test("kimi custom-review maps held workload lease to provider_workload_blocked w
       dataDir,
       env: {
         RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+        KIMI_CODE_HOME: kimiHome,
         KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_KIMI",
       },
     });
@@ -806,7 +834,14 @@ test("kimi custom-review maps held workload lease to provider_workload_blocked w
     assert.equal(record.error_code, "provider_workload_blocked");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(record.runtime_diagnostics.provider_workload.reason, "active_same_provider_job");
-    assert.equal(record.runtime_diagnostics.provider_workload.holder.job_id, "held-kimi-job");
+    // §8/§9: external/persisted block carries counts only — the blocking job's
+    // holder identity (job_id/provider/pid) must never leak into the record or stdout.
+    assert.equal(record.runtime_diagnostics.provider_workload.holder, undefined);
+    assert.deepEqual(
+      Object.keys(record.runtime_diagnostics.provider_workload).sort(),
+      ["capacity", "reason"],
+    );
+    assert.doesNotMatch(result.stdout, /held-kimi-job/);
     assert.doesNotMatch(result.stdout, /MUST_NOT_REACH_KIMI|external_review_launched/);
   } finally {
     releaseProviderWorkloadLease(admission.lease);
@@ -2295,9 +2330,7 @@ test("kimi _run-worker audit manifest matches prompt sidecar source snapshot aft
       cwd,
       encoding: "utf8",
       env: {
-        ...process.env,
-        KIMI_BINARY: MOCK,
-        KIMI_PLUGIN_DATA: dataDir,
+        ...smokeEnv(dataDir),
         KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "old worker source sentinel",
       },
     });

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,10 +23,12 @@ import {
   sourcePacketPreviousAttemptForContinuation,
   sourcePacketPreviousAttemptFromJobRecord,
   latestSourcePacketPreviousAttempt,
+  resolveConcurrencyAdmission,
 } from "../../scripts/lib/provider-route-policy.mjs";
 import * as providerRoutePolicy from "../../scripts/lib/provider-route-policy.mjs";
 import { REVIEW_PROMPT_PLUGIN_TARGETS } from "../../scripts/lib/plugin-targets.mjs";
 import { buildReviewAuditManifest } from "../../scripts/lib/review-prompt.mjs";
+import { PRE_TARGET_NOT_SENT_ERROR_CODES } from "../../scripts/lib/external-review.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -2023,6 +2026,203 @@ test("provider route policy normalizes provider-neutral approval scopes", () => 
   );
 });
 
+test("shared_state concurrency admission forces limit 1 and rejects higher declared limits", (t) => {
+  const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-"));
+  t.after(() => rmSync(sharedStateDir, { recursive: true, force: true }));
+
+  const admission = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "kimi",
+    route: "subscription",
+  });
+
+  assert.equal(admission.limit, 1);
+  assert.throws(
+    () => resolveConcurrencyAdmission({
+      category: "shared_state",
+      declaredLimit: 2,
+      sharedStateIdentity: sharedStateDir,
+      provider: "kimi",
+      route: "subscription",
+    }),
+    /shared_state/,
+  );
+});
+
+test("stateless concurrency admission uses cap-only env limit", () => {
+  const lowered = resolveConcurrencyAdmission({
+    category: "stateless",
+    declaredLimit: 4,
+    limitEnv: "RELAY_TEST_LIMIT",
+    provider: "deepseek",
+    route: "api",
+    env: { RELAY_TEST_LIMIT: "2" },
+  });
+  assert.equal(lowered.limit, 2);
+
+  const capped = resolveConcurrencyAdmission({
+    category: "stateless",
+    declaredLimit: 4,
+    limitEnv: "RELAY_TEST_LIMIT",
+    provider: "deepseek",
+    route: "api",
+    env: { RELAY_TEST_LIMIT: "99" },
+  });
+  assert.equal(capped.limit, 4);
+});
+
+test("concurrency admission fails closed on malformed category and unresolved shared_state identity", () => {
+  assert.throws(
+    () => resolveConcurrencyAdmission({ category: "bogus", provider: "x", route: "api" }),
+    /category/,
+  );
+  assert.throws(
+    () => resolveConcurrencyAdmission({
+      category: "shared_state",
+      declaredLimit: 1,
+      sharedStateIdentity: null,
+      provider: "kimi",
+      route: "subscription",
+    }),
+    /identity/,
+  );
+  assert.throws(
+    () => resolveConcurrencyAdmission({
+      category: "shared_state",
+      declaredLimit: 1,
+      sharedStateIdentity: path.join(tmpdir(), "relay-policy-missing-shared-state"),
+      provider: "kimi",
+      route: "subscription",
+    }),
+    /identity/,
+  );
+});
+
+test("shared_state concurrency admission can key on a stable non-directory identity string", () => {
+  const first = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    identityString: "grok-web:endpoint=http://127.0.0.1:3000/v1;admin=sha256:abc",
+    provider: "grok-web",
+    route: "subscription_web",
+  });
+  const second = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    identityString: "grok-web:endpoint=http://127.0.0.1:3000/v1;admin=sha256:abc",
+    provider: "grok-web",
+    route: "subscription_web",
+  });
+  const different = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    identityString: "grok-web:endpoint=http://127.0.0.1:3001/v1;admin=sha256:abc",
+    provider: "grok-web",
+    route: "subscription_web",
+  });
+
+  assert.equal(first.concurrencyKey, second.concurrencyKey);
+  assert.notEqual(first.concurrencyKey, different.concurrencyKey);
+  assert.match(first.concurrencyKey, /^[a-f0-9]{64}$/);
+  assert.equal(first.limit, 1);
+});
+
+test("shared_state concurrency admission ignores lock root override outside test mode", (t) => {
+  const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-"));
+  t.after(() => rmSync(sharedStateDir, { recursive: true, force: true }));
+
+  const admission = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "kimi",
+    route: "subscription",
+    env: {
+      XDG_STATE_HOME: path.join(tmpdir(), "relay-policy-state"),
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: "/decoy",
+    },
+  });
+
+  assert.ok(!admission.lockRoot.startsWith("/decoy"));
+  assert.equal(admission.lockRoot, path.join(tmpdir(), "relay-policy-state", "relay", "locks", "v2"));
+});
+
+test("stateless concurrency admission honors lock root override", () => {
+  const admission = resolveConcurrencyAdmission({
+    category: "stateless",
+    declaredLimit: 4,
+    provider: "deepseek",
+    route: "api",
+    env: { RELAY_PROVIDER_WORKLOAD_LOCK_DIR: "/relay-test-locks" },
+  });
+
+  assert.equal(admission.lockRoot, "/relay-test-locks");
+});
+
+test("two shared_state concurrency admissions for the same dir produce the same key", (t) => {
+  const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-"));
+  t.after(() => rmSync(sharedStateDir, { recursive: true, force: true }));
+
+  const a = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "alias-a",
+    route: "subscription",
+  });
+  const b = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "alias-b",
+    route: "subscription",
+  });
+
+  assert.equal(a.concurrencyKey, b.concurrencyKey);
+  assert.ok(!a.concurrencyKey.startsWith("alias-a."));
+  assert.ok(!b.concurrencyKey.startsWith("alias-b."));
+});
+
+test("shared_state concurrency admission keys symlink-equivalent paths by directory identity, not path string", (t) => {
+  const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-real-"));
+  const linkRoot = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-link-root-"));
+  const symlinkPath = path.join(linkRoot, "shared-state-link");
+  const otherDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-other-"));
+  t.after(() => {
+    rmSync(sharedStateDir, { recursive: true, force: true });
+    rmSync(linkRoot, { recursive: true, force: true });
+    rmSync(otherDir, { recursive: true, force: true });
+  });
+  symlinkSync(sharedStateDir, symlinkPath, "dir");
+
+  const real = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "alias-real",
+    route: "subscription",
+  });
+  const linked = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: symlinkPath,
+    provider: "alias-link",
+    route: "subscription",
+  });
+  const other = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: otherDir,
+    provider: "alias-other",
+    route: "subscription",
+  });
+
+  assert.equal(real.concurrencyKey, linked.concurrencyKey);
+  assert.notEqual(real.concurrencyKey, other.concurrencyKey);
+});
+
 test("kimi source-bearing route facts are derived from mode classification", () => {
   const source = readFileSync(path.join(REPO_ROOT, "plugins/kimi/scripts/kimi-companion.mjs"), "utf8");
 
@@ -2041,5 +2241,148 @@ test("kimi source-bearing route facts are derived from mode classification", () 
   assert.match(
     source,
     /\.\.\.subscriptionRouteFacts\(\{\s*sourceBearing:\s*modeSendsSelectedSource\(priorModeName\)\s*\}\)/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Task 5 (#234 §7): resend-guard regression — pin HEAD behaviour so a future
+// change cannot silently auto-resend a not-sent (admission-blocked) attempt, nor
+// over-relax a genuinely-sent post-transmission failure. Drives the public
+// evaluateSourcePacketPolicy entrypoint (the composed path), not private helpers.
+// The sent-fact must win first: not_sent ⇒ no gate, even when status:"failed".
+// ---------------------------------------------------------------------------
+
+const RESEND_GUARD_BASE_INPUT = Object.freeze({
+  provider: "kimi",
+  mode: "custom-review",
+  routeStep: "subscription",
+  providerCapabilities: Object.freeze({ subscription: { source_packet: { max_bytes: 64 } } }),
+  selectedSource: selectedSourceFixture(8),
+  sourceBearing: true,
+});
+
+test("admission-blocked retry never requires resend — every PRE_TARGET_NOT_SENT code stays not_sent (§7)", () => {
+  // provider_workload_blocked (the #234 admission block) must be in the swept set, or the
+  // regression has no teeth — this is the exact code a concurrency block produces.
+  assert.ok(
+    PRE_TARGET_NOT_SENT_ERROR_CODES.has("provider_workload_blocked"),
+    "provider_workload_blocked must be a pre-target not-sent code",
+  );
+  for (const code of PRE_TARGET_NOT_SENT_ERROR_CODES) {
+    const previousAttempt = {
+      status: "failed",
+      error_code: code,
+      source_content_transmission: "not_sent",
+      selected_source: selectedSourceFixture(8),
+    };
+    const result = evaluateSourcePacketPolicy({ ...RESEND_GUARD_BASE_INPUT, previousAttempt });
+    // The source was never sent, so the sent-fact gate cannot fire — regardless of error code
+    // or status:"failed". A retry of the SAME packet is allowed without confirmation.
+    assert.equal(result.resend_confirmation_required, false, `code ${code} must not require resend`);
+    assert.notEqual(result.source_packet_action, "resend_confirmation_required", `code ${code} must not gate`);
+    assert.equal(result.source_send_allowed, true, `code ${code} must allow the retry to send`);
+  }
+});
+
+test("a genuinely-sent post-transmission failure STILL requires resend — no over-relaxation (§7)", () => {
+  // Representative SOURCE_SEND_BLOCKING_FAILURES (module-private in provider-route-policy.mjs):
+  // post-send failures that MUST keep gating after the not_sent relaxation, under both the
+  // definitely-sent and ambiguous (may_be_sent) transmission states.
+  for (const code of ["timeout", "usage_limited", "review_not_completed", "review_quality_failed", "invalid_verdict", "model_capacity"]) {
+    for (const transmission of ["sent", "may_be_sent"]) {
+      const previousAttempt = {
+        error_code: code,
+        source_content_transmission: transmission,
+        selected_source: selectedSourceFixture(8),
+      };
+      const result = evaluateSourcePacketPolicy({ ...RESEND_GUARD_BASE_INPUT, previousAttempt });
+      assert.equal(result.resend_confirmation_required, true, `sent ${code}/${transmission} must require resend`);
+      assert.equal(result.source_packet_action, "resend_confirmation_required", `sent ${code}/${transmission} must gate`);
+      assert.equal(result.source_send_allowed, false, `sent ${code}/${transmission} must block auto-send`);
+    }
+  }
+  // The generic status:"failed" path (any failure) with a sent packet also gates.
+  const statusFailed = evaluateSourcePacketPolicy({
+    ...RESEND_GUARD_BASE_INPUT,
+    previousAttempt: { status: "failed", source_content_transmission: "sent", selected_source: selectedSourceFixture(8) },
+  });
+  assert.equal(statusFailed.resend_confirmation_required, true);
+});
+
+test("record disagreement (source_sent:true + not_sent) gates conservatively, never silently sends (§7)", () => {
+  // A record whose explicit source_sent flag contradicts its not_sent transmission must resolve
+  // toward "was sent" (gate), never fall through to a plain auto-send.
+  const result = evaluateSourcePacketPolicy({
+    ...RESEND_GUARD_BASE_INPUT,
+    previousAttempt: {
+      status: "failed",
+      source_sent: true,
+      source_content_transmission: "not_sent",
+      selected_source: selectedSourceFixture(8),
+    },
+  });
+  assert.equal(result.resend_confirmation_required, true, "disagreement must gate, not silently send");
+  assert.equal(result.source_packet_action, "resend_confirmation_required");
+  assert.equal(result.source_send_allowed, false);
+});
+
+// ---------------------------------------------------------------------------
+// Task 7 (#234 D2): DeepSeek/GLM stateless routes admit bounded concurrency at
+// the default limit 4; the env cap can only LOWER it, never raise above 4.
+// ---------------------------------------------------------------------------
+
+test("DeepSeek and GLM stateless routes admit limit 4; env caps lower but never raise (#234 Task 7)", () => {
+  for (const [provider, route, limitEnv] of [
+    ["deepseek", "direct_api", "RELAY_DEEPSEEK_CONCURRENCY_LIMIT"],
+    ["glm", "direct_api", "RELAY_GLM_CONCURRENCY_LIMIT"],
+  ]) {
+    const fact = providerRoutePolicy.CONCURRENCY_FACTS[provider][route];
+    assert.equal(fact.category, "stateless", `${provider} must stay stateless`);
+    assert.equal(fact.limit, 4, `${provider} must default to limit 4`);
+    assert.equal(fact.limit_env, limitEnv, `${provider} must keep its env cap name`);
+
+    const args = (env) => ({
+      category: fact.category, declaredLimit: fact.limit, limitEnv: fact.limit_env,
+      provider, route, env,
+    });
+    // Default: resolves to 4.
+    assert.equal(resolveConcurrencyAdmission(args({})).limit, 4, `${provider} default limit`);
+    // Env cap lowers it.
+    assert.equal(resolveConcurrencyAdmission(args({ [limitEnv]: "2" })).limit, 2, `${provider} env lowers`);
+    // Env cannot raise above the fact limit.
+    assert.equal(resolveConcurrencyAdmission(args({ [limitEnv]: "10" })).limit, 4, `${provider} env cannot raise`);
+  }
+});
+
+test("DeepSeek and GLM stateless routes ignore malformed or zero env caps and keep declared limit 4", () => {
+  for (const [provider, route, limitEnv] of [
+    ["deepseek", "direct_api", "RELAY_DEEPSEEK_CONCURRENCY_LIMIT"],
+    ["glm", "direct_api", "RELAY_GLM_CONCURRENCY_LIMIT"],
+  ]) {
+    const fact = providerRoutePolicy.CONCURRENCY_FACTS[provider][route];
+    for (const badValue of ["0", "-1", "1.5", "abc", ""]) {
+      const admission = resolveConcurrencyAdmission({
+        category: fact.category,
+        declaredLimit: fact.limit,
+        limitEnv: fact.limit_env,
+        provider,
+        route,
+        env: { [limitEnv]: badValue },
+      });
+      assert.equal(admission.limit, 4, `${provider} must ignore malformed env cap ${JSON.stringify(badValue)}`);
+    }
+  }
+});
+
+test("custom direct_api stays single-flight (limit 1) — unknown endpoint capacity (#234 Task 7)", () => {
+  const fact = providerRoutePolicy.CONCURRENCY_FACTS.custom.direct_api;
+  assert.equal(fact.category, "stateless");
+  assert.equal(fact.limit, 1, "custom endpoints stay single-flight until proven");
+  assert.equal(
+    resolveConcurrencyAdmission({
+      category: fact.category, declaredLimit: fact.limit, limitEnv: fact.limit_env,
+      provider: "custom", route: "direct_api", env: {},
+    }).limit,
+    1,
   );
 });

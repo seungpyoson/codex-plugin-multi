@@ -25,6 +25,7 @@ import {
   acquireProviderWorkloadLease,
   releaseProviderWorkloadLease,
 } from "../../scripts/lib/review-workload.mjs";
+import { resolveConcurrencyAdmission } from "../../scripts/lib/provider-route-policy.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs");
@@ -39,7 +40,35 @@ function smokeEnv(dataDir, env = {}) {
     CLAUDE_BINARY: MOCK,
     CLAUDE_PLUGIN_DATA: dataDir,
     RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+    RELAY_WORKLOAD_TEST_MODE: "1",
     ...env,
+  };
+}
+
+function heldClaudeWorkloadLease({ cwd, dataDir, workloadLockDir }) {
+  const claudeConfigDir = path.join(dataDir, "claude-config");
+  mkdirSync(claudeConfigDir, { recursive: true });
+  const admissionContext = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: realpathSync(claudeConfigDir),
+    provider: "claude",
+    route: "subscription",
+    env: {
+      RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+      RELAY_WORKLOAD_TEST_MODE: "1",
+    },
+  });
+  return {
+    claudeConfigDir,
+    admission: acquireProviderWorkloadLease({
+      ...admissionContext,
+      provider: "claude",
+      jobId: "held-claude-job",
+      cwd,
+      sourceBearing: true,
+      env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+    }),
   };
 }
 
@@ -73,7 +102,7 @@ function claudeAuthModeArgs(mode) {
 }
 
 function cleanupDir(dir) {
-  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }
 
 function cleanup(dataDir) {
@@ -388,13 +417,7 @@ test("custom-review maps held Claude workload lease to provider_workload_blocked
   const dataDir = mkdtempSync(path.join(tmpdir(), "claude-workload-block-data-"));
   const workloadLockDir = path.join(dataDir, "provider-workload");
   seedMinimalRepo(cwd);
-  const admission = acquireProviderWorkloadLease({
-    provider: "claude",
-    jobId: "held-claude-job",
-    cwd,
-    sourceBearing: true,
-    env: { RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir },
-  });
+  const { claudeConfigDir, admission } = heldClaudeWorkloadLease({ cwd, dataDir, workloadLockDir });
   assert.equal(admission.ok, true);
 
   try {
@@ -406,6 +429,7 @@ test("custom-review maps held Claude workload lease to provider_workload_blocked
         dataDir,
         env: {
           RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
+          CLAUDE_CONFIG_DIR: claudeConfigDir,
           CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_CLAUDE",
         },
       },
@@ -417,7 +441,14 @@ test("custom-review maps held Claude workload lease to provider_workload_blocked
     assert.equal(record.error_code, "provider_workload_blocked");
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(record.runtime_diagnostics.provider_workload.reason, "active_same_provider_job");
-    assert.equal(record.runtime_diagnostics.provider_workload.holder.job_id, "held-claude-job");
+    // §8/§9: external/persisted block carries counts only — the blocking job's
+    // holder identity (job_id/provider/pid) must never leak into the record or stdout.
+    assert.equal(record.runtime_diagnostics.provider_workload.holder, undefined);
+    assert.deepEqual(
+      Object.keys(record.runtime_diagnostics.provider_workload).sort(),
+      ["capacity", "reason"],
+    );
+    assert.doesNotMatch(stdout, /held-claude-job/);
     assert.doesNotMatch(stdout, /MUST_NOT_REACH_CLAUDE|external_review_launched/);
   } finally {
     releaseProviderWorkloadLease(admission.lease);
@@ -1864,7 +1895,7 @@ test("run --background: active job is visible as running and can be cancelled", 
         "status", "--cwd", cwd,
       ], {
         cwd, encoding: "utf8",
-        env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+        env: smokeEnv(dataDir),
       });
       assert.equal(statusRes.status, 0, statusRes.stderr);
       const statusObj = JSON.parse(statusRes.stdout);
@@ -1879,7 +1910,7 @@ test("run --background: active job is visible as running and can be cancelled", 
       "cancel", "--job", launched.job_id, "--cwd", cwd,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     const cancel = JSON.parse(cancelRes.stdout);
     if (running.pid_info.capture_error) {
@@ -1902,7 +1933,7 @@ test("run --background: active job is visible as running and can be cancelled", 
           "status", "--cwd", cwd,
         ], {
           cwd, encoding: "utf8",
-          env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+          env: smokeEnv(dataDir),
         });
         assert.equal(statusRes.status, 0, statusRes.stderr);
         const statusObj = JSON.parse(statusRes.stdout);
@@ -1938,7 +1969,7 @@ test("run --background: active job is visible as running and can be cancelled", 
             "status", "--cwd", cwd, "--all",
           ], {
             cwd, encoding: "utf8",
-            env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+            env: smokeEnv(dataDir),
           });
           assert.equal(statusRes.status, 0, statusRes.stderr);
           const statusObj = JSON.parse(statusRes.stdout);
@@ -1958,7 +1989,7 @@ test("run --background: active job is visible as running and can be cancelled", 
           "status", "--cwd", cwd,
         ], {
           cwd, encoding: "utf8",
-          env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+          env: smokeEnv(dataDir),
         });
         const defaultStatus = JSON.parse(defaultStatusRes.stdout);
         assert.ok(defaultStatus.jobs.some((j) => j.id === launched.job_id && j.status === "cancelled"),
@@ -2000,7 +2031,7 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
       const sr = spawnSync("node", [
         path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
         "status", "--cwd", cwd,
-      ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+      ], { cwd, encoding: "utf8", env: smokeEnv(dataDir) });
       const so = JSON.parse(sr.stdout);
       running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
       if (!running) await new Promise((r) => setTimeout(r, 100));
@@ -2011,7 +2042,7 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
     const cancelRes = spawnSync("node", [
       path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
       "cancel", "--job", launched.job_id, "--cwd", cwd,
-    ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+    ], { cwd, encoding: "utf8", env: smokeEnv(dataDir) });
     const cancel = JSON.parse(cancelRes.stdout);
     const exitOk =
       (cancel.status === "signaled" && cancelRes.status === 0) ||
@@ -2036,7 +2067,7 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
       const sr = spawnSync("node", [
         path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
         "status", "--all", "--cwd", cwd,
-      ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+      ], { cwd, encoding: "utf8", env: smokeEnv(dataDir) });
       const so = JSON.parse(sr.stdout);
       const seen = so.jobs.find((j) => j.id === launched.job_id);
       lastStatusSeen = seen?.status ?? "(missing)";
@@ -2075,7 +2106,7 @@ test("cancel: ESRCH after ownership verification is already_dead, not signal_fai
       const sr = spawnSync("node", [
         path.join(REPO_ROOT, "plugins/claude/scripts/claude-companion.mjs"),
         "status", "--cwd", cwd,
-      ], { cwd, encoding: "utf8", env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir } });
+      ], { cwd, encoding: "utf8", env: smokeEnv(dataDir) });
       const so = JSON.parse(sr.stdout);
       running = so.jobs.find((j) => j.id === launched.job_id && j.status === "running");
       if (!running) await new Promise((r) => setTimeout(r, 100));
@@ -2102,8 +2133,7 @@ process.kill = (pid, signal) => {
     ], {
       cwd, encoding: "utf8",
       env: {
-        ...process.env,
-        CLAUDE_PLUGIN_DATA: dataDir,
+        ...smokeEnv(dataDir),
         NODE_OPTIONS: `--import=${preload}`,
       },
     });
@@ -4618,7 +4648,7 @@ process.exit(0);
     ], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(cancelRes.status, 0, cancelRes.stderr || cancelRes.stdout);
     const cancel = JSON.parse(cancelRes.stdout);
@@ -5392,7 +5422,7 @@ test("status: lists a job after a review run", () => {
       "--cwd", cwd, "--", "seed",
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(runRes.status, 0, runRes.stderr);
     const { job_id } = JSON.parse(runRes.stdout);
@@ -5402,7 +5432,7 @@ test("status: lists a job after a review run", () => {
       "status", "--cwd", cwd,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(statusRes.status, 0, statusRes.stderr);
     const statusObj = JSON.parse(statusRes.stdout);
@@ -5433,7 +5463,7 @@ test("result --job: returns meta for a finished job", () => {
       "--cwd", cwd, "--", "seed",
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     const { job_id } = JSON.parse(runRes.stdout);
     const resultRes = spawnSync("node", [
@@ -5441,7 +5471,7 @@ test("result --job: returns meta for a finished job", () => {
       "result", "--job", job_id, "--cwd", cwd,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(resultRes.status, 0, resultRes.stderr);
     const meta = JSON.parse(resultRes.stdout);
@@ -5471,7 +5501,7 @@ test("result --job-id: aliases --job for a finished job", () => {
       "--cwd", cwd, "--", "seed",
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     const { job_id } = JSON.parse(runRes.stdout);
     const resultRes = spawnSync("node", [
@@ -5479,7 +5509,7 @@ test("result --job-id: aliases --job for a finished job", () => {
       "result", "--job-id", job_id, "--cwd", cwd,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(resultRes.status, 0, resultRes.stderr);
     const meta = JSON.parse(resultRes.stdout);
@@ -5507,7 +5537,7 @@ test("result from wrong cwd returns retrieval guidance", () => {
       "--cwd", cwd, "--", "seed",
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(runRes.status, 0, runRes.stderr);
     const { job_id } = JSON.parse(runRes.stdout);
@@ -5518,7 +5548,7 @@ test("result from wrong cwd returns retrieval guidance", () => {
     ], {
       cwd: wrongCwd,
       encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(resultRes.status, 1);
     const parsed = JSON.parse(resultRes.stdout);
@@ -5557,7 +5587,7 @@ test("result with duplicate job id across workspaces reports state collision", (
     ], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(resultRes.status, 1);
     const parsed = JSON.parse(resultRes.stdout);
@@ -5629,7 +5659,7 @@ test("cancel: queued job → cancel_pending, marker written, exit 0", () => {
       "cancel", "--job", record.job_id, "--cwd", cwd,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(cancelRes.status, 0, cancelRes.stderr);
     const cancel = JSON.parse(cancelRes.stdout);
@@ -5692,7 +5722,7 @@ test("_run-worker: cancel marker prevents target spawn, sets status=cancelled", 
       "_run-worker", "--cwd", cwd, "--job", record.job_id,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(workerRes.status, 0,
       `worker must exit 0 when marker present; stderr=${workerRes.stderr}`);
@@ -5749,7 +5779,7 @@ test("_run-worker removes runtime-options sidecar when prompt sidecar is missing
       "_run-worker", "--cwd", cwd, "--job", record.job_id,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.notEqual(workerRes.status, 0, "worker must fail when prompt sidecar is missing");
 
@@ -5851,10 +5881,9 @@ process.exit(0);
       cwd,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...smokeEnv(dataDir),
         ANTHROPIC_API_KEY: "",
         CLAUDE_API_KEY: "",
-        CLAUDE_PLUGIN_DATA: dataDir,
       },
     });
 
@@ -5936,9 +5965,7 @@ test("_run-worker audit manifest matches prompt sidecar source snapshot after so
       cwd,
       encoding: "utf8",
       env: {
-        ...process.env,
-        CLAUDE_BINARY: MOCK,
-        CLAUDE_PLUGIN_DATA: dataDir,
+        ...smokeEnv(dataDir),
         ANTHROPIC_API_KEY: "",
         CLAUDE_API_KEY: "",
         CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "old worker source sentinel",
@@ -6022,9 +6049,8 @@ test("claude _run-worker fails before spawn when api_key auth has no provider ke
       cwd,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...smokeEnv(dataDir),
         CLAUDE_BINARY: binary,
-        CLAUDE_PLUGIN_DATA: dataDir,
         ANTHROPIC_API_KEY: "",
         CLAUDE_API_KEY: "",
       },
@@ -6093,7 +6119,7 @@ test("cancel: queued + marker write failure → cancel_failed, exit 1", () => {
       "cancel", "--job", record.job_id, "--cwd", cwd,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(cancelRes.status, 1,
       `marker write failure must exit 1; stderr=${cancelRes.stderr}`);
@@ -6144,7 +6170,7 @@ test("cancel: unknown job status → bad_state, exit 1", () => {
       "cancel", "--job", record.job_id, "--cwd", cwd,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(cancelRes.status, 1,
       `unknown status must exit 1; stderr=${cancelRes.stderr}`);
@@ -6169,7 +6195,7 @@ test("cancel: already_terminal for a completed job", () => {
       "--cwd", cwd, "--", "seed",
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     const { job_id } = JSON.parse(runRes.stdout);
     const cancelRes = spawnSync("node", [
@@ -6177,7 +6203,7 @@ test("cancel: already_terminal for a completed job", () => {
       "cancel", "--job", job_id, "--cwd", cwd,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(cancelRes.status, 0);
     const response = JSON.parse(cancelRes.stdout);
@@ -6199,7 +6225,7 @@ test("claude _run-worker refuses terminal JobRecord without overwriting it", () 
       "--cwd", cwd, "--", "seed",
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.equal(runRes.status, 0, runRes.stderr);
     const completed = JSON.parse(runRes.stdout);
@@ -6210,7 +6236,7 @@ test("claude _run-worker refuses terminal JobRecord without overwriting it", () 
       "_run-worker", "--cwd", cwd, "--job", completed.job_id,
     ], {
       cwd, encoding: "utf8",
-      env: { ...process.env, CLAUDE_BINARY: MOCK, CLAUDE_PLUGIN_DATA: dataDir },
+      env: smokeEnv(dataDir),
     });
     assert.notEqual(workerRes.status, 0, "terminal worker re-entry must be refused");
 
@@ -6276,9 +6302,7 @@ test("smoke replay: claude/happy-path-review reproduces recorded JobRecord shape
     ], {
       cwd, encoding: "utf8",
       env: {
-        ...process.env,
-        CLAUDE_BINARY: MOCK,
-        CLAUDE_PLUGIN_DATA: dataDir,
+        ...smokeEnv(dataDir),
         CLAUDE_MOCK_FIXTURE_PATH: tmpFixturePath,
         CLAUDE_MOCK_ASSERT_FILE: "seed.txt",
         // Request-side assertion: the wrapper must render the delegated

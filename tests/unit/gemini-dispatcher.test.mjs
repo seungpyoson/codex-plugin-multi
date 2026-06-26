@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { resolveProfile } from "../../plugins/gemini/scripts/lib/mode-profiles.mjs";
@@ -11,6 +11,10 @@ import { buildGeminiArgs, parseGeminiResult, spawnGemini } from "../../plugins/g
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const POLICY = path.join(REPO_ROOT, "plugins/gemini/policies/read-only.toml");
+
+function assertSourceMatches(source, pattern, message) {
+  assert.ok(pattern.test(source), message);
+}
 
 function writeExecutable(dir, name, source) {
   const bin = path.join(dir, name);
@@ -659,4 +663,21 @@ if (!result.timedOut) process.exit(2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("gemini source-bearing admission uses canonical facts, GEMINI_CONFIG_DIR identity, and fail-loud lease invariant", () => {
+  const source = readFileSync(path.join(REPO_ROOT, "plugins/gemini/scripts/gemini-companion.mjs"), "utf8");
+
+  assertSourceMatches(source, /CONCURRENCY_FACTS/, "missing CONCURRENCY_FACTS import/use");
+  assertSourceMatches(source, /resolveConcurrencyAdmission/, "missing resolveConcurrencyAdmission import/use");
+  assertSourceMatches(source, /resolveGeminiCliHomeDir/, "missing gemini home resolver");
+  assertSourceMatches(source, /GEMINI_CONFIG_DIR/, "missing GEMINI_CONFIG_DIR override (the dir the CLI honors)");
+  assertSourceMatches(source, /\.gemini/, "missing ~/.gemini fallback");
+  assertSourceMatches(source, /realpathSync/, "missing realpathSync identity");
+  assertSourceMatches(source, /sharedStateIdentity/, "missing sharedStateIdentity");
+  assertSourceMatches(source, /CONCURRENCY_FACTS\[[^\]]+\]\?\.\[[^\]]+\]/, "missing fail-closed fact lookup");
+  assertSourceMatches(source, /providerWorkloadBlockedExecution/, "missing providerWorkloadBlockedExecution failure path");
+  assertSourceMatches(source, /acquireProviderWorkloadLease\(\{\s*\.\.\.admissionContext/s, "missing admission context spread into lease");
+  assertSourceMatches(source, /workloadAdmission\.ok[\s\S]{0,100}workloadAdmission\.lease\s*==\s*null/, "missing null-lease invariant");
+  assertSourceMatches(source, /source-bearing admission returned no workload lease/, "missing fail-loud invariant message");
 });
