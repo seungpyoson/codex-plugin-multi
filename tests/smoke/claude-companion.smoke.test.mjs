@@ -1734,11 +1734,9 @@ test("T7.4 / §21.3.2: prompt sidecar is deleted after worker consumes it", asyn
      "--cwd", cwd, "--", "bg sidecar task"],
     { cwd }
   );
-  let launchedPid = null;
   try {
     assert.equal(status, 0);
     const ev = JSON.parse(stdout);
-    launchedPid = ev.pid;
     const stateRoot = path.join(dataDir, "state");
     // Poll until the record is terminal.
     const deadline = Date.now() + 10000;
@@ -1761,13 +1759,12 @@ test("T7.4 / §21.3.2: prompt sidecar is deleted after worker consumes it", asyn
     // After the worker consumed the prompt, the sidecar must be gone.
     assert.equal(existsSync(path.join(jobDir, "prompt.txt")), false,
       "§21.3.1: prompt sidecar must be deleted after worker consumes it");
-    // Settle: meta.json flips to terminal BEFORE upsertJob writes state.json
-    // and BEFORE writeSidecar emits stdout.log/stderr.log. Without this
-    // wait, the recursive cleanup races the worker's tail writes and Linux
-    // CI flakes with `ENOTEMPTY` on rmdir of state/<subdir>/.
-    await new Promise((r) => setTimeout(r, 250));
+    // meta.json flips to terminal BEFORE upsertJob writes state.json and
+    // BEFORE writeSidecar emits stdout.log/stderr.log. Wait for the worker
+    // process to exit so cleanup() does not race those tail writes and flake
+    // with ENOTEMPTY on rmdir of state/<subdir>/.
+    await waitForProcessExit(ev.pid);
   } finally {
-    await waitForProcessExit(launchedPid);
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -1856,11 +1853,9 @@ test("run --background: active job is visible as running and can be cancelled", 
      "--cwd", cwd, "--", "long background task"],
     { cwd, env: { CLAUDE_MOCK_DELAY_MS: "5000" } },
   );
-  let launchedPid = null;
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    launchedPid = launched.pid;
     const deadline = Date.now() + CLAUDE_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < deadline && !running) {
@@ -1970,8 +1965,11 @@ test("run --background: active job is visible as running and can be cancelled", 
           "default status (no --all) must include cancelled jobs");
       }
     }
+    // Barrier: wait for the worker process to fully exit before cleanup so the
+    // recursive rmSync does not race its post-terminal tail writes (lease
+    // release, sidecar removal) and flake with ENOTEMPTY.
+    await waitForProcessExit(launched.pid, CLAUDE_SMOKE_POLL_TIMEOUT_MS);
   } finally {
-    await waitForProcessExit(launchedPid).catch(() => {});
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -1992,11 +1990,9 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
      "--cwd", cwd, "--", "long task"],
     { cwd, env: { CLAUDE_MOCK_DELAY_MS: "30000", CLAUDE_MOCK_TRAP_SIGTERM: "1" } },
   );
-  let launchedPid = null;
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    launchedPid = launched.pid;
     // Wait until the job is visible as running (mock has spawned, pid_info written).
     const runDeadline = Date.now() + CLAUDE_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
@@ -2050,8 +2046,10 @@ test("cancel: SIGTERM-trapping target classifies as cancelled, not completed (is
     assert.ok(terminal, `job did not finalize after cancel; last status seen=${lastStatusSeen}`);
     assert.equal(terminal.status, "cancelled",
       `cancel-marker must force status=cancelled even when target trapped SIGTERM and exited 0; got ${JSON.stringify(terminal)}`);
+    // Barrier: ensure the worker process is gone before cleanup so the
+    // recursive rmSync does not race its post-terminal tail writes (ENOTEMPTY).
+    await waitForProcessExit(launched.pid, CLAUDE_SMOKE_POLL_TIMEOUT_MS);
   } finally {
-    await waitForProcessExit(launchedPid).catch(() => {});
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -2068,11 +2066,9 @@ test("cancel: ESRCH after ownership verification is already_dead, not signal_fai
      "--cwd", cwd, "--", "long task"],
     { cwd, env: { CLAUDE_MOCK_DELAY_MS: "30000" } },
   );
-  let launchedPid = null;
   try {
     assert.equal(status, 0, stderr);
     const launched = JSON.parse(stdout);
-    launchedPid = launched.pid;
     const runDeadline = Date.now() + CLAUDE_SMOKE_POLL_TIMEOUT_MS;
     let running = null;
     while (Date.now() < runDeadline && !running) {
@@ -2119,8 +2115,10 @@ process.kill = (pid, signal) => {
     assert.equal(cancelRes.status, 0, cancelRes.stderr);
     assert.equal(cancel.status, "already_dead");
     assert.equal(cancel.pid, running.pid_info.pid);
+    // Barrier: ensure the worker process is gone before cleanup so the
+    // recursive rmSync does not race its post-terminal tail writes (ENOTEMPTY).
+    await waitForProcessExit(launched.pid, CLAUDE_SMOKE_POLL_TIMEOUT_MS);
   } finally {
-    await waitForProcessExit(launchedPid).catch(() => {});
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -2281,7 +2279,6 @@ test("continue --job --background reuses the parent Claude project cwd", async (
     CLAUDE_MOCK_ENFORCE_PROJECT_SESSIONS: "1",
     CLAUDE_MOCK_PROJECT_SESSION_STORE: sessionStore,
   };
-  let launchedPid = null;
   try {
     const runRes = runCompanion(
       ["run", "--mode=custom-review", "--foreground",
@@ -2300,7 +2297,6 @@ test("continue --job --background reuses the parent Claude project cwd", async (
     );
     assert.equal(contRes.status, 0, contRes.stderr);
     const launched = JSON.parse(contRes.stdout);
-    launchedPid = launched.pid;
     const continued = await waitForJobRecord(
       dataDir,
       launched.job_id,
@@ -2310,9 +2306,10 @@ test("continue --job --background reuses the parent Claude project cwd", async (
     assert.equal(continued.status, "completed");
     assert.equal(continued.parent_job_id, parent.job_id);
     assert.equal(continued.runtime_diagnostics.child_cwd, parentRecord.runtime_diagnostics.child_cwd);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // Wait for the background continue worker to exit before cleanup so the
+    // recursive rmSync does not race its tail writes and flake with ENOTEMPTY.
+    await waitForProcessExit(launched.pid);
   } finally {
-    await waitForProcessExit(launchedPid);
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -2544,7 +2541,6 @@ process.stdout.write(JSON.stringify({
 process.exit(0);
 `);
   const env = { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" };
-  let launchedPid = null;
   try {
     const parent = runCompanion([
       "run", "--mode=custom-review", "--foreground",
@@ -2562,13 +2558,13 @@ process.exit(0);
     ], { cwd, dataDir, env });
     if (unapproved.status === 0 && unapproved.stdout.trim()) {
       const launched = JSON.parse(unapproved.stdout);
-      launchedPid = launched.pid;
       await waitForJobRecord(
         dataDir,
         launched.job_id,
         (candidate) => candidate.status === "completed" || candidate.status === "failed",
         "background unapproved API continuation did not finalize",
       );
+      await waitForProcessExit(launched.pid);
     }
     assert.equal(unapproved.status, 2, unapproved.stderr || unapproved.stdout);
     const record = JSON.parse(unapproved.stdout);
@@ -2584,7 +2580,6 @@ process.exit(0);
     assert.equal(promptSidecarExists, false, "unapproved background API continuation must not persist selected source prompt sidecar");
     assert.doesNotMatch(unapproved.stdout, /secret-test-value|CLAUDE_CONTINUE_UNAPPROVED_BACKGROUND_API_SOURCE_SENTINEL/);
   } finally {
-    await waitForProcessExit(launchedPid);
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
     rmSync(tmp, { recursive: true, force: true });
@@ -4614,11 +4609,9 @@ process.exit(0);
      "--model", "claude-haiku-4-5-20251001", "--cwd", cwd, "--", "review this change"],
     { cwd, env: { ANTHROPIC_API_KEY: "", CLAUDE_API_KEY: "" } },
   );
-  let launchedPid = null;
   try {
     assert.equal(status, 0, stderr || stdout);
     const launched = JSON.parse(stdout);
-    launchedPid = launched.pid;
     const cancelRes = spawnSync("node", [
       COMPANION,
       "cancel", "--job", launched.job_id, "--cwd", cwd,
@@ -4639,8 +4632,13 @@ process.exit(0);
     assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.equal(existsSync(targetLaunchedPath), false);
+    // The cancelled record is durable before the worker finishes its tail
+    // writes (lease release, sidecar removal, lifecycle flush). Wait for the
+    // worker process to exit so cleanup() does not race a live writer and
+    // flake with ENOTEMPTY — same barrier the sibling preflight-rejection
+    // test above uses.
+    await waitForProcessExit(launched.pid);
   } finally {
-    await waitForProcessExit(launchedPid).catch(() => {});
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
     rmSync(tmp, { recursive: true, force: true });
@@ -5217,7 +5215,6 @@ process.exit(0);
     ["approval-request", ...commonOptions, "--", "review selected source"],
     { cwd, dataDir, env },
   );
-  let launchedPid = null;
   try {
     assert.equal(approval.status, 0, approval.stderr || approval.stdout);
     const request = JSON.parse(approval.stdout);
@@ -5231,7 +5228,6 @@ process.exit(0);
     );
     assert.equal(run.status, 0, run.stderr || run.stdout);
     const launched = JSON.parse(run.stdout);
-    launchedPid = launched.pid;
     const record = await waitForJobRecord(
       dataDir,
       launched.job_id,
@@ -5250,8 +5246,10 @@ process.exit(0);
     assert.equal(Object.hasOwn(record.review_metadata.audit_manifest, "approval_token"), false);
     assert.doesNotMatch(JSON.stringify(record), new RegExp(request.approval_token.value),
       "approved JobRecord must not persist the approval token");
+    // Wait for the worker process to exit before cleanup so the recursive
+    // rmSync does not race its post-terminal tail writes (ENOTEMPTY).
+    await waitForProcessExit(launched.pid);
   } finally {
-    await waitForProcessExit(launchedPid);
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
     rmSync(tmp, { recursive: true, force: true });
@@ -5274,17 +5272,16 @@ test("background api_key source-bearing review without approval fails before pro
     ["run", "--background", "--lifecycle-events", "jsonl", ...commonOptions, "--", "review selected source"],
     { cwd, dataDir, env: { ANTHROPIC_API_KEY: "secret-test-value", CLAUDE_API_KEY: "" } },
   );
-  let launchedPid = null;
   try {
     if (run.status === 0 && run.stdout.trim()) {
       const launched = JSON.parse(run.stdout);
-      launchedPid = launched.pid;
       await waitForJobRecord(
         dataDir,
         launched.job_id,
         (candidate) => candidate.status === "completed" || candidate.status === "failed",
         "background unapproved API run did not finalize",
       );
+      await waitForProcessExit(launched.pid);
     }
     assert.equal(run.status, 2, run.stderr || run.stdout);
     const record = JSON.parse(run.stdout);
@@ -5296,7 +5293,6 @@ test("background api_key source-bearing review without approval fails before pro
     assert.equal(existsSync(promptPath), false, "unapproved background API run must not persist selected source prompt sidecar");
     assert.doesNotMatch(run.stdout, /secret-test-value|CLAUDE_UNAPPROVED_BACKGROUND_API_SOURCE_SENTINEL/);
   } finally {
-    await waitForProcessExit(launchedPid);
     cleanup(dataDir);
     rmSync(cwd, { recursive: true, force: true });
   }
