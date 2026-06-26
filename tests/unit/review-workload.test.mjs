@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   PROVIDER_WORKLOAD_BLOCKED_CODE,
@@ -91,6 +92,69 @@ test("provider workload lease serializes stale reclaim before removing inactive 
     "inactive-holder removal must be bound to the holder inspected while the gate is held");
   assert.doesNotMatch(source, /removeInactiveHolder\(file\)\) continue/,
     "stale reclaim must not unlink the lock path outside a serialized compare-and-retry section");
+});
+
+test("provider workload gate retries when owner write loses the gate directory race", async () => {
+  const { root, env } = tempEnv();
+  const moduleRoot = mkdtempSync(join(tmpdir(), "provider-workload-race-module-"));
+  try {
+    const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
+    const shimPath = join(moduleRoot, "fs-race-shim.mjs");
+    const modulePath = join(moduleRoot, "review-workload-race.mjs");
+    writeFileSync(shimPath, `
+import * as fs from "node:fs";
+
+export const linkSync = fs.linkSync;
+export const lstatSync = fs.lstatSync;
+export const readFileSync = fs.readFileSync;
+export const renameSync = fs.renameSync;
+export const rmSync = fs.rmSync;
+export const unlinkSync = fs.unlinkSync;
+
+let pendingGateDir = null;
+let injected = false;
+
+export function mkdirSync(path, options) {
+  const result = fs.mkdirSync(path, options);
+  if (!injected && String(path).endsWith(".json.gate")) pendingGateDir = String(path);
+  return result;
+}
+
+export function writeFileSync(path, data, options) {
+  if (!injected && pendingGateDir && String(path) === \`\${pendingGateDir}/owner.json\`) {
+    injected = true;
+    fs.rmSync(pendingGateDir, { recursive: true, force: true });
+    const error = new Error("injected owner write ENOENT");
+    error.code = "ENOENT";
+    throw error;
+  }
+  return fs.writeFileSync(path, data, options);
+}
+`, "utf8");
+    writeFileSync(
+      modulePath,
+      source.replace(
+        'from "node:fs";',
+        `from ${JSON.stringify(pathToFileURL(shimPath).href)};`,
+      ),
+      "utf8",
+    );
+
+    const workload = await import(pathToFileURL(modulePath).href);
+    const acquired = workload.acquireProviderWorkloadLease({
+      provider: "grok",
+      jobId: "race-job",
+      cwd: "/tmp/race",
+      sourceBearing: true,
+      env,
+    });
+    assert.equal(acquired.ok, true);
+    assert.equal(JSON.parse(readFileSync(join(root, "grok.json"), "utf8")).job_id, "race-job");
+    workload.releaseProviderWorkloadLease(acquired.lease);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(moduleRoot, { recursive: true, force: true });
+  }
 });
 
 test("provider workload lease release unregisters exit cleanup listener", () => {

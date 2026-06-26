@@ -211,14 +211,14 @@ function acquireProviderWorkloadGate(file, env) {
         release: () => releaseProviderWorkloadGate(gateDir, token),
       });
     } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      if (tryReclaimProviderWorkloadGate(gateDir, env)) continue;
+      if (error?.code !== "EEXIST" && error?.code !== "ENOENT") throw error;
       if (Date.now() >= deadline) {
         return Object.freeze({
           ok: false,
           holder: parseGateOwner(readGateOwnerRaw(gateDir)),
         });
       }
+      if (tryReclaimProviderWorkloadGate(gateDir, env)) continue;
       sleepSync(GATE_POLL_MS);
     }
   }
