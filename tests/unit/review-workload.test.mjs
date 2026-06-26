@@ -41,6 +41,16 @@ function workloadTest(name, fn) {
   test(name, SKIP_WORKLOAD_ACQUIRE_UNDER_DARWIN_SANDBOX, fn);
 }
 
+// Gate timeout for tests that assert a reclaim SUCCEEDS (ok:true). The production
+// loop checks the deadline before it attempts reclaim (review-workload.mjs: the
+// `Date.now() >= deadline` guard sits above the recreate/reclaim branches), so the
+// budget must comfortably exceed the latency of reaching that first catch — a tight
+// "1" lets the deadline fire before reclaim is ever tried, returning {ok:false}
+// (~5% flake under parallel load). Do not lower this back to "1": that asserts the
+// immediate-timeout path, not the reclaim path. The fast-timeout {ok:false} cases
+// keep their own small budgets inline.
+const RECLAIM_GATE_TIMEOUT_MS = "250";
+
 test("provider workload lease test mode can acquire when current process proof is sandboxed", () => {
   const { root, env } = tempEnv();
   const lease = acquireProviderWorkloadLease({
@@ -192,7 +202,7 @@ test("provider workload gate reclaims a pid-reused owner using the injected iden
         ...env,
         RELAY_WORKLOAD_TEST_MODE: "1",
         RELAY_BOOT_ID: "CURRENT",
-        RELAY_PROVIDER_WORKLOAD_GATE_TIMEOUT_MS: "1",
+        RELAY_PROVIDER_WORKLOAD_GATE_TIMEOUT_MS: RECLAIM_GATE_TIMEOUT_MS,
       },
       capture: reusedPidCapture,
     }));
@@ -211,7 +221,7 @@ test("provider workload gate reclaims unverifiable stale-boot owners but fails c
     ...env,
     RELAY_WORKLOAD_TEST_MODE: "1",
     RELAY_BOOT_ID: "CURRENT",
-    RELAY_PROVIDER_WORKLOAD_GATE_TIMEOUT_MS: "1",
+    RELAY_PROVIDER_WORKLOAD_GATE_TIMEOUT_MS: RECLAIM_GATE_TIMEOUT_MS,
   };
   try {
     writeGateOwner(root, currentProcessGateOwner({ boot_id: "STALE" }));
