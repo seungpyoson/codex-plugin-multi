@@ -239,6 +239,67 @@ test("provider workload lease refuses a symlinked lock root", (t) => {
   }
 });
 
+test("provider workload lease rethrows non-filesystem coded errors from lock-root setup", async () => {
+  const moduleRoot = mkdtempSync(join(tmpdir(), "provider-workload-non-fs-error-module-"));
+  try {
+    const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
+    const shimPath = join(moduleRoot, "fs-non-filesystem-error-shim.mjs");
+    const modulePath = join(moduleRoot, "review-workload-non-filesystem-error.mjs");
+    writeFileSync(shimPath, `
+import * as fs from "node:fs";
+
+export const chmodSync = fs.chmodSync;
+export const existsSync = fs.existsSync;
+export const linkSync = fs.linkSync;
+export const lstatSync = fs.lstatSync;
+export const readFileSync = fs.readFileSync;
+export const readdirSync = fs.readdirSync;
+export const renameSync = fs.renameSync;
+export const rmSync = fs.rmSync;
+export const unlinkSync = fs.unlinkSync;
+export const writeFileSync = fs.writeFileSync;
+
+export function mkdirSync(path, options) {
+  if (String(path).endsWith("non-fs-coded-root")) {
+    const error = new Error("injected non-filesystem coded failure");
+    error.code = "ERR_INVALID_ARG_TYPE";
+    throw error;
+  }
+  return fs.mkdirSync(path, options);
+}
+`, "utf8");
+    writeFileSync(
+      modulePath,
+      source
+        .replace(
+          'from "node:fs";',
+          `from ${JSON.stringify(pathToFileURL(shimPath).href)};`,
+        )
+        .replace(
+          'from "./process-identity.mjs";',
+          `from ${JSON.stringify(new URL("../../scripts/lib/process-identity.mjs", import.meta.url).href)};`,
+        ),
+      "utf8",
+    );
+
+    const workload = await import(pathToFileURL(modulePath).href);
+    assert.throws(
+      () => workload.acquireProviderWorkloadLease({
+        concurrencyKey: "non-fs-coded",
+        limit: 1,
+        lockRoot: join(moduleRoot, "non-fs-coded-root"),
+        jobId: "job-non-fs-coded",
+        cwd: "/tmp/w",
+        sourceBearing: true,
+        env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+      }),
+      /injected non-filesystem coded failure/,
+    );
+  } finally {
+    rmSync(moduleRoot, { recursive: true, force: true });
+  }
+});
+
 test("provider workload lease makes an existing lock root private before use", () => {
   const root = mkdtempSync(join(tmpdir(), "provider-workload-public-root-"));
   chmodSync(root, 0o755);

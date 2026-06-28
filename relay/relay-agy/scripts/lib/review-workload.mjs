@@ -11,6 +11,33 @@ const DEFAULT_GATE_TIMEOUT_MS = 5_000;
 const GATE_POLL_MS = 25;
 const GATE_OWNER_FILE = "owner.json";
 const LOCK_ROOT_UNUSABLE_CODE = "PROVIDER_WORKLOAD_LOCK_ROOT_UNUSABLE";
+const PROVIDER_WORKLOAD_FILESYSTEM_ERROR_CODES = new Set([
+  "EACCES",
+  "EAGAIN",
+  "EBADF",
+  "EBUSY",
+  "EDQUOT",
+  "EEXIST",
+  "EFBIG",
+  "EINTR",
+  "EINVAL",
+  "EIO",
+  "EISDIR",
+  "ELOOP",
+  "EMFILE",
+  "EMLINK",
+  "ENAMETOOLONG",
+  "ENFILE",
+  "ENOENT",
+  "ENOSPC",
+  "ENOTDIR",
+  "ENOTEMPTY",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EPERM",
+  "EROFS",
+  "EXDEV",
+]);
 
 function trimEdgeHyphens(value) {
   let start = 0;
@@ -53,7 +80,9 @@ function gateTimeoutMs(env) {
 }
 
 function isProviderWorkloadFilesystemError(error) {
-  return typeof error?.code === "string";
+  if (error?.code === LOCK_ROOT_UNUSABLE_CODE) return true;
+  if (typeof error?.syscall === "string") return true;
+  return PROVIDER_WORKLOAD_FILESYSTEM_ERROR_CODES.has(error?.code);
 }
 
 function unusableLockRootError() {
