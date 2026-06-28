@@ -1,4 +1,4 @@
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join, dirname } from "node:path";
@@ -10,6 +10,34 @@ const SCHEMA_VERSION = 1;
 const DEFAULT_GATE_TIMEOUT_MS = 5_000;
 const GATE_POLL_MS = 25;
 const GATE_OWNER_FILE = "owner.json";
+const LOCK_ROOT_UNUSABLE_CODE = "PROVIDER_WORKLOAD_LOCK_ROOT_UNUSABLE";
+const PROVIDER_WORKLOAD_FILESYSTEM_ERROR_CODES = new Set([
+  "EACCES",
+  "EAGAIN",
+  "EBADF",
+  "EBUSY",
+  "EDQUOT",
+  "EEXIST",
+  "EFBIG",
+  "EINTR",
+  "EINVAL",
+  "EIO",
+  "EISDIR",
+  "ELOOP",
+  "EMFILE",
+  "EMLINK",
+  "ENAMETOOLONG",
+  "ENFILE",
+  "ENOENT",
+  "ENOSPC",
+  "ENOTDIR",
+  "ENOTEMPTY",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EPERM",
+  "EROFS",
+  "EXDEV",
+]);
 
 function trimEdgeHyphens(value) {
   let start = 0;
@@ -49,6 +77,60 @@ function positiveIntegerEnv(env, name, fallback) {
 
 function gateTimeoutMs(env) {
   return positiveIntegerEnv(env, GATE_TIMEOUT_ENV, DEFAULT_GATE_TIMEOUT_MS);
+}
+
+function isProviderWorkloadFilesystemError(error) {
+  if (error?.code === LOCK_ROOT_UNUSABLE_CODE) return true;
+  if (typeof error?.syscall === "string") return true;
+  return PROVIDER_WORKLOAD_FILESYSTEM_ERROR_CODES.has(error?.code);
+}
+
+function unusableLockRootError() {
+  const error = new Error("provider workload lock root is not usable");
+  error.code = LOCK_ROOT_UNUSABLE_CODE;
+  return error;
+}
+
+function currentUid() {
+  const uid = process.getuid?.();
+  return Number.isSafeInteger(uid) && uid >= 0 ? uid : null;
+}
+
+function ensureProviderWorkloadLockRoot(root) {
+  try {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    if (!isProviderWorkloadFilesystemError(error)) throw error;
+    return false;
+  }
+
+  let stat;
+  try {
+    stat = lstatSync(root);
+  } catch (error) {
+    if (!isProviderWorkloadFilesystemError(error)) throw error;
+    return false;
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+
+  const uid = currentUid();
+  if (uid != null && typeof stat.uid === "number" && stat.uid !== uid) return false;
+
+  const mode = stat.mode & 0o777;
+  if ((mode & 0o700) !== 0o700) return false;
+  if ((mode & 0o077) !== 0) {
+    try {
+      chmodSync(root, 0o700);
+      stat = lstatSync(root);
+    } catch (error) {
+      if (!isProviderWorkloadFilesystemError(error)) throw error;
+      return false;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    if ((stat.mode & 0o777) !== 0o700) return false;
+  }
+
+  return true;
 }
 
 function sleepSync(ms) {
@@ -109,16 +191,29 @@ function blockResult(capacity, reason = "active_same_provider_job") {
   });
 }
 
-function captureCurrentPidInfo(env = process.env) {
-  try {
-    return capturePidInfo(process.pid);
-  } catch (error) {
-    if (!env?.RELAY_WORKLOAD_TEST_MODE) throw error;
+function currentPidInfoWithoutCaptureProof(env, error) {
+  const message = String(error?.message ?? error ?? "");
+  const expectedCaptureFailure = message.startsWith("capture_error")
+    || message.startsWith("process_gone")
+    || message.startsWith("invalid_pid");
+  if (env?.RELAY_WORKLOAD_TEST_MODE && expectedCaptureFailure) {
     return {
       pid: process.pid,
       starttime: `test-mode:${process.pid}`,
       argv0: process.argv?.[0] || "node",
     };
+  }
+  // The current process is necessarily live even when a host sandbox denies
+  // /bin/ps or /proc. Store no reuse proof rather than blocking every launch;
+  // stale cleanup then remains conservative until process inspection works.
+  return { pid: process.pid, starttime: null, argv0: null };
+}
+
+function captureCurrentPidInfo(env = process.env, capture = capturePidInfo) {
+  try {
+    return capture(process.pid);
+  } catch (error) {
+    return currentPidInfoWithoutCaptureProof(env, error);
   }
 }
 
@@ -258,7 +353,7 @@ export function acquireProviderWorkloadGate(file, env, capture, pidInfo) {
       // caller-provided lockRoot), recreated rather than an env default so the
       // in-use root — not some other path — is what heals.
       if (error?.code === "ENOENT" && error?.syscall === "mkdir") {
-        try { mkdirSync(dirname(gateDir), { recursive: true, mode: 0o700 }); } catch { /* best effort */ }
+        if (!ensureProviderWorkloadLockRoot(dirname(gateDir))) throw unusableLockRootError();
         sleepSync(GATE_POLL_MS);
         continue;
       }
@@ -384,14 +479,11 @@ export function acquireProviderWorkloadLease({
 
   const root = lockRoot;
   const gateFile = legacyLockPath(root, slug);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-
-  let pidInfo;
-  try {
-    pidInfo = captureCurrentPidInfo(env);
-  } catch {
-    return blockResult({ active_count: 0, limit }, "unverifiable_current_process");
+  if (!ensureProviderWorkloadLockRoot(root)) {
+    return blockResult({ active_count: 0, limit }, "unwritable_provider_workload_lock_root");
   }
+
+  const pidInfo = captureCurrentPidInfo(env, capture);
 
   const payload = Object.freeze({
     schema_version: SCHEMA_VERSION,
@@ -410,9 +502,10 @@ export function acquireProviderWorkloadLease({
   });
 
   for (;;) {
-    const gate = acquireProviderWorkloadGate(gateFile, env, capture, pidInfo);
-    if (!gate.ok) return blockResult({ active_count: limit, limit });
+    let gate;
     try {
+      gate = acquireProviderWorkloadGate(gateFile, env, capture, pidInfo);
+      if (!gate.ok) return blockResult({ active_count: limit, limit });
       const slots = enumerateSlotFiles(root, slug);
       if (!slots) return blockResult({ active_count: limit, limit }, "unreadable_provider_workload_lock_root");
 
@@ -444,8 +537,11 @@ export function acquireProviderWorkloadLease({
       }
       const file = slotPath(root, slug, index);
       if (tryCreateLeaseFile(file, payload)) return acquiredResult(file, payload);
+    } catch (error) {
+      if (!isProviderWorkloadFilesystemError(error)) throw error;
+      return blockResult({ active_count: 0, limit }, "unwritable_provider_workload_lock_root");
     } finally {
-      gate.release?.();
+      gate?.release?.();
     }
   }
 }

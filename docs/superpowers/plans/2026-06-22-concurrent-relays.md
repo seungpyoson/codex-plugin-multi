@@ -406,7 +406,7 @@ git commit -m "test(workload): multi-process bound + SIGKILL one-slot + reboot-i
 - `resolveConcurrencyAdmission({ category, declaredLimit, limitEnv, sharedStateIdentity, provider, route, env }) -> { concurrencyKey, limit, lockRoot }`. Throws (caller converts to a pre-send deny) when: `category` unknown; `category==='shared_state'` with `declaredLimit > 1`; `limit` not a positive int; `shared_state` with no resolvable `sharedStateIdentity`. `limitEnv` may only lower `limit`.
 - A `CONCURRENCY_FACTS` table (or per-route lookup) declaring `{category, limit, limit_env}` per provider/route. Stateless default `limit: 4`.
 
-Behavior is defined by §5/§5.1/§5.2. Identity hashing uses `createHash("sha256")` over the resolved dir's `st_dev:st_ino` (via `statSync`) for `shared_state`; lock root is host-stable (`$XDG_STATE_HOME` or `~/.local/state/relay/locks/v2`) and **ignores** `RELAY_PROVIDER_WORKLOAD_LOCK_DIR` for `shared_state` unless `RELAY_WORKLOAD_TEST_MODE` is set.
+Behavior is defined by §5/§5.1/§5.2. Identity hashing uses `createHash("sha256")` over the resolved dir's `st_dev:st_ino` (via `statSync`) for `shared_state`; lock root is `$XDG_STATE_HOME/relay/locks/v2` when `XDG_STATE_HOME` is set, otherwise `os.tmpdir()/relay-locks-v2-<uid>` (or `relay-locks-v2-user` when no numeric uid is available), and **ignores** `RELAY_PROVIDER_WORKLOAD_LOCK_DIR` for `shared_state` unless `RELAY_WORKLOAD_TEST_MODE` is set.
 
 - [ ] **Step 1: Write failing tests**
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -41,6 +41,12 @@ function workloadTest(name, fn) {
   test(name, SKIP_WORKLOAD_ACQUIRE_UNDER_DARWIN_SANDBOX, fn);
 }
 
+const SKIP_UNWRITABLE_PERMISSION_TEST_UNDER_ROOT = {
+  skip: process.getuid?.() === 0
+    ? "root can bypass chmod-based write denial"
+    : false,
+};
+
 // Gate timeout for tests that assert a reclaim SUCCEEDS (ok:true). The production
 // loop checks the deadline before it attempts reclaim (review-workload.mjs: the
 // `Date.now() >= deadline` guard sits above the recreate/reclaim branches), so the
@@ -67,6 +73,251 @@ test("provider workload lease test mode can acquire when current process proof i
     assert.ok(lease.lease);
   } finally {
     if (lease.lease) releaseProviderWorkloadLease(lease.lease);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease admits current process when liveness capture is sandboxed", () => {
+  const { root, env } = tempEnv();
+  const captureDenied = () => { throw new Error("capture_error: injected process table denial"); };
+  const lease = acquireProviderWorkloadLease({
+    concurrencyKey: "sandboxed-current-process",
+    limit: 1,
+    lockRoot: root,
+    jobId: "job-sandboxed-current",
+    cwd: "/tmp/w",
+    sourceBearing: true,
+    env,
+    capture: captureDenied,
+  });
+  try {
+    assert.equal(lease.ok, true);
+    assert.ok(lease.lease);
+    const holder = JSON.parse(readFileSync(lease.lease.file, "utf8"));
+    assert.equal(holder.pid, process.pid);
+    assert.equal(holder.starttime, null);
+    assert.equal(holder.argv0, null);
+  } finally {
+    if (lease.lease) releaseProviderWorkloadLease(lease.lease);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease treats a null-proof holder as occupied", () => {
+  const { root, env } = tempEnv();
+  const captureDenied = () => { throw new Error("capture_error: injected process table denial"); };
+  const captureDifferentIdentity = () => ({
+    pid: process.pid,
+    starttime: "different-starttime",
+    argv0: "different-argv0",
+  });
+  const first = acquireProviderWorkloadLease({
+    concurrencyKey: "null-proof-current-process",
+    limit: 1,
+    lockRoot: root,
+    jobId: "job-null-proof-current",
+    cwd: "/tmp/w",
+    sourceBearing: true,
+    env,
+    capture: captureDenied,
+  });
+  try {
+    assert.equal(first.ok, true);
+    const second = acquireProviderWorkloadLease({
+      concurrencyKey: "null-proof-current-process",
+      limit: 1,
+      lockRoot: root,
+      jobId: "job-null-proof-second",
+      cwd: "/tmp/w",
+      sourceBearing: true,
+      env,
+      capture: captureDifferentIdentity,
+    });
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, "active_same_provider_job");
+    assert.deepEqual(second.capacity, { active_count: 1, limit: 1 });
+  } finally {
+    if (first.lease) releaseProviderWorkloadLease(first.lease);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease fails closed when lock root cannot be created", SKIP_UNWRITABLE_PERMISSION_TEST_UNDER_ROOT, () => {
+  const parent = mkdtempSync(join(tmpdir(), "provider-workload-unwritable-"));
+  chmodSync(parent, 0o500);
+  try {
+    const result = acquireProviderWorkloadLease({
+      concurrencyKey: "unwritable-lock-root",
+      limit: 1,
+      lockRoot: join(parent, "locks"),
+      jobId: "job-unwritable-lock-root",
+      cwd: "/tmp/w",
+      sourceBearing: true,
+      env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
+    assert.equal(result.reason, "unwritable_provider_workload_lock_root");
+    assert.deepEqual(result.capacity, { active_count: 0, limit: 1 });
+  } finally {
+    chmodSync(parent, 0o700);
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease fails closed when existing lock root is not writable", SKIP_UNWRITABLE_PERMISSION_TEST_UNDER_ROOT, () => {
+  const root = mkdtempSync(join(tmpdir(), "provider-workload-unwritable-root-"));
+  chmodSync(root, 0o500);
+  try {
+    const result = acquireProviderWorkloadLease({
+      concurrencyKey: "existing-unwritable-lock-root",
+      limit: 1,
+      lockRoot: root,
+      jobId: "job-existing-unwritable-lock-root",
+      cwd: "/tmp/w",
+      sourceBearing: true,
+      env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
+    assert.equal(result.reason, "unwritable_provider_workload_lock_root");
+    assert.deepEqual(result.capacity, { active_count: 0, limit: 1 });
+  } finally {
+    chmodSync(root, 0o700);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease fails closed when lock root path is a file", () => {
+  const parent = mkdtempSync(join(tmpdir(), "provider-workload-file-root-"));
+  const root = join(parent, "locks");
+  writeFileSync(root, "not a directory");
+  const result = acquireProviderWorkloadLease({
+    concurrencyKey: "file-lock-root",
+    limit: 1,
+    lockRoot: root,
+    jobId: "job-file-lock-root",
+    cwd: "/tmp/w",
+    sourceBearing: true,
+    env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+  });
+  try {
+    assert.equal(result.ok, false);
+    assert.equal(result.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
+    assert.equal(result.reason, "unwritable_provider_workload_lock_root");
+    assert.deepEqual(result.capacity, { active_count: 0, limit: 1 });
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease refuses a symlinked lock root", (t) => {
+  if (process.platform === "win32") return t.skip("directory symlinks require elevated privileges on some Windows hosts");
+  const parent = mkdtempSync(join(tmpdir(), "provider-workload-symlink-root-"));
+  const target = join(parent, "target");
+  const root = join(parent, "locks");
+  mkdirSync(target);
+  symlinkSync(target, root, "dir");
+  let result;
+  try {
+    result = acquireProviderWorkloadLease({
+      concurrencyKey: "symlink-lock-root",
+      limit: 1,
+      lockRoot: root,
+      jobId: "job-symlink-lock-root",
+      cwd: "/tmp/w",
+      sourceBearing: true,
+      env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
+    assert.equal(result.reason, "unwritable_provider_workload_lock_root");
+    assert.deepEqual(result.capacity, { active_count: 0, limit: 1 });
+  } finally {
+    if (result?.lease) releaseProviderWorkloadLease(result.lease);
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease rethrows non-filesystem coded errors from lock-root setup", async () => {
+  const moduleRoot = mkdtempSync(join(tmpdir(), "provider-workload-non-fs-error-module-"));
+  try {
+    const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
+    const shimPath = join(moduleRoot, "fs-non-filesystem-error-shim.mjs");
+    const modulePath = join(moduleRoot, "review-workload-non-filesystem-error.mjs");
+    writeFileSync(shimPath, `
+import * as fs from "node:fs";
+
+export const chmodSync = fs.chmodSync;
+export const existsSync = fs.existsSync;
+export const linkSync = fs.linkSync;
+export const lstatSync = fs.lstatSync;
+export const readFileSync = fs.readFileSync;
+export const readdirSync = fs.readdirSync;
+export const renameSync = fs.renameSync;
+export const rmSync = fs.rmSync;
+export const unlinkSync = fs.unlinkSync;
+export const writeFileSync = fs.writeFileSync;
+
+export function mkdirSync(path, options) {
+  if (String(path).endsWith("non-fs-coded-root")) {
+    const error = new Error("injected non-filesystem coded failure");
+    error.code = "ERR_INVALID_ARG_TYPE";
+    throw error;
+  }
+  return fs.mkdirSync(path, options);
+}
+`, "utf8");
+    writeFileSync(
+      modulePath,
+      source
+        .replace(
+          'from "node:fs";',
+          `from ${JSON.stringify(pathToFileURL(shimPath).href)};`,
+        )
+        .replace(
+          'from "./process-identity.mjs";',
+          `from ${JSON.stringify(new URL("../../scripts/lib/process-identity.mjs", import.meta.url).href)};`,
+        ),
+      "utf8",
+    );
+
+    const workload = await import(pathToFileURL(modulePath).href);
+    assert.throws(
+      () => workload.acquireProviderWorkloadLease({
+        concurrencyKey: "non-fs-coded",
+        limit: 1,
+        lockRoot: join(moduleRoot, "non-fs-coded-root"),
+        jobId: "job-non-fs-coded",
+        cwd: "/tmp/w",
+        sourceBearing: true,
+        env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+      }),
+      /injected non-filesystem coded failure/,
+    );
+  } finally {
+    rmSync(moduleRoot, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease makes an existing lock root private before use", () => {
+  const root = mkdtempSync(join(tmpdir(), "provider-workload-public-root-"));
+  chmodSync(root, 0o755);
+  const result = acquireProviderWorkloadLease({
+    concurrencyKey: "public-lock-root",
+    limit: 1,
+    lockRoot: root,
+    jobId: "job-public-lock-root",
+    cwd: "/tmp/w",
+    sourceBearing: true,
+    env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+  });
+  try {
+    assert.equal(result.ok, true);
+    assert.equal(lstatSync(root).mode & 0o777, 0o700);
+  } finally {
+    if (result.lease) releaseProviderWorkloadLease(result.lease);
+    chmodSync(root, 0o700);
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -310,7 +561,7 @@ test("provider workload lease serializes stale reclaim before removing inactive 
   const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
   assert.match(source, /function acquireProviderWorkloadGate\(/,
     "stale reclaim must be protected by a provider-local gate");
-  assert.match(source, /const gate = acquireProviderWorkloadGate\([^,]+, env, capture, pidInfo\);/,
+  assert.match(source, /gate = acquireProviderWorkloadGate\([^,]+, env, capture, pidInfo\);/,
     "lease acquisition must hold the gate before inspecting or removing an inactive holder");
   assert.match(source, /removeInactiveHolder\([^,]+, holder\)/,
     "inactive-holder removal must be bound to the holder inspected while the gate is held");
@@ -328,6 +579,7 @@ test("provider workload gate retries when owner write loses the gate directory r
     writeFileSync(shimPath, `
 import * as fs from "node:fs";
 
+export const chmodSync = fs.chmodSync;
 export const existsSync = fs.existsSync;
 export const linkSync = fs.linkSync;
 export const lstatSync = fs.lstatSync;
@@ -401,6 +653,7 @@ test("provider workload gate recovers when the lock root vanishes mid-acquire in
     writeFileSync(shimPath, `
 import * as fs from "node:fs";
 
+export const chmodSync = fs.chmodSync;
 export const existsSync = fs.existsSync;
 export const linkSync = fs.linkSync;
 export const lstatSync = fs.lstatSync;

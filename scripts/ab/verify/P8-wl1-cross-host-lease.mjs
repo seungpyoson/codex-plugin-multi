@@ -5,10 +5,10 @@
 // reclaimed (stale-local path uses pidAlive()).
 //
 // Strategy: drive the REAL acquireProviderWorkloadLease() against a real on-disk
-// lease file at the real lease path. Point the lock dir at an isolated tmp dir via
-// the documented RELAY_PROVIDER_WORKLOAD_LOCK_DIR env so we never touch the shared
-// default. Plant a lease with hostname=other-host / dead pid / ancient mtime, then
-// observe whether acquire is blocked and whether the lease is reclaimed on retry.
+// lease file at the legacy lease path, with an isolated temp lockRoot so we never
+// touch the shared default. Plant a lease with hostname=other-host / dead pid /
+// ancient mtime, then observe whether acquire is blocked and whether the lease is
+// reclaimed on retry.
 
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, utimesSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -20,9 +20,17 @@ import {
 } from "../../lib/review-workload.mjs";
 
 const PROVIDER = "agy";
+const CONCURRENCY_KEY = "agy";
 const SLUG = "agy";
+const LIMIT = 1;
 const DEAD_PID = 999999; // not a live process on this host
 const ANCIENT_EPOCH_S = 1; // ~1970, far past any timeout
+const FOREIGN_HOST = process.env.P8_WL1_FOREIGN_HOST || "other-host-totally-different";
+
+function captureScriptedDeadPid(pid) {
+  if (pid === DEAD_PID) throw new Error(`process_gone: scripted dead pid ${pid}`);
+  return { pid, starttime: `scripted-start-${pid}`, argv0: `scripted-argv-${pid}` };
+}
 
 function plantLease(lockDir, host) {
   mkdirSync(lockDir, { recursive: true, mode: 0o700 });
@@ -30,7 +38,8 @@ function plantLease(lockDir, host) {
   const payload = {
     schema_version: 1,
     provider: PROVIDER,
-    provider_slug: SLUG,
+    concurrency_key: CONCURRENCY_KEY,
+    key_slug: SLUG,
     job_id: "stale-job-from-elsewhere",
     pid: DEAD_PID,
     hostname: host,
@@ -46,16 +55,32 @@ function plantLease(lockDir, host) {
 
 function runArm(label, host) {
   const lockDir = mkdtempSync(join(tmpdir(), `p8wl1-${label}-`));
-  const env = { ...process.env, RELAY_PROVIDER_WORKLOAD_LOCK_DIR: lockDir };
+  const env = { ...process.env, RELAY_BOOT_ID: "P8-WL1-BOOT" };
   const leaseFile = plantLease(lockDir, host);
 
   const acquired = [];
   let res1, res2;
   try {
-    res1 = acquireProviderWorkloadLease({ provider: PROVIDER, jobId: "live-job-1", env });
+    res1 = acquireProviderWorkloadLease({
+      provider: PROVIDER,
+      concurrencyKey: CONCURRENCY_KEY,
+      limit: LIMIT,
+      lockRoot: lockDir,
+      jobId: "live-job-1",
+      env,
+      capture: captureScriptedDeadPid,
+    });
     if (res1?.ok) acquired.push(res1.lease);
     // retry to test "still blocked / no liveness fallback"
-    res2 = acquireProviderWorkloadLease({ provider: PROVIDER, jobId: "live-job-2", env });
+    res2 = acquireProviderWorkloadLease({
+      provider: PROVIDER,
+      concurrencyKey: CONCURRENCY_KEY,
+      limit: LIMIT,
+      lockRoot: lockDir,
+      jobId: "live-job-2",
+      env,
+      capture: captureScriptedDeadPid,
+    });
     if (res2?.ok) acquired.push(res2.lease);
   } finally {
     // do not call releaseProviderWorkloadLease — we want to inspect raw disk state first
@@ -91,7 +116,7 @@ function runArm(label, host) {
 
 console.log(`BLOCK CODE constant: ${PROVIDER_WORKLOAD_BLOCKED_CODE}`);
 
-const foreign = runArm("foreign-host", "other-host-totally-different");
+const foreign = runArm("foreign-host", FOREIGN_HOST);
 const local = runArm("control-local", hostname());
 
 console.log(`\n=== VERDICT ===`);
@@ -104,3 +129,4 @@ const pinned =
 
 console.log(`\nPINNED (foreign blocks + no reclaim, local control reclaims): ${pinned}`);
 if (foreign.reclaimed) console.log("REFUTED: foreign-host lease was reclaimed.");
+if (!pinned) process.exitCode = 1;

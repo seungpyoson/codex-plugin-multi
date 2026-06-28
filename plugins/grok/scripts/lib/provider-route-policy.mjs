@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { hasSubstantiveInvalidVerdictReason } from "./external-model-review-quality.mjs";
@@ -267,7 +267,10 @@ function defaultProviderWorkloadLockRoot(env = process.env) {
   const xdgStateHome = typeof env?.XDG_STATE_HOME === "string" && env.XDG_STATE_HOME.trim() !== ""
     ? env.XDG_STATE_HOME
     : null;
-  return join(xdgStateHome || join(homedir(), ".local/state"), "relay", "locks", "v2");
+  if (xdgStateHome) return join(xdgStateHome, "relay", "locks", "v2");
+  const uid = process.getuid?.();
+  const userSegment = Number.isSafeInteger(uid) && uid >= 0 ? `relay-locks-v2-${uid}` : "relay-locks-v2-user";
+  return join(tmpdir(), userSegment);
 }
 
 function providerWorkloadLockRoot(category, env = process.env) {
