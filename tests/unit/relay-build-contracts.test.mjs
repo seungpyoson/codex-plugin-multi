@@ -21,7 +21,7 @@ function writeStubDirectApiRuntime(pluginRoot) {
   mkdirSync(scriptsRoot, { recursive: true });
   writeFileSync(
     path.join(scriptsRoot, "relay-entrypoint.mjs"),
-    "export function runRelayDirectApiEntrypoint({ provider }) { console.log(JSON.stringify({ ok: true, providers: [provider] })); }\n",
+    "export function runRelayDirectApiEntrypoint(options) { console.log(JSON.stringify({ ok: true, providers: [options.provider], host: options.host ?? null })); }\n",
     "utf8",
   );
 }
@@ -487,9 +487,13 @@ test("buildRelayPlugin: Claude direct API wrapper stays relay-local", () => {
 
 test("generated direct API relay wrappers run against the shared source runtime", () => {
   for (const provider of ["glm", "deepseek"]) {
+    const wrapperPath = path.join("relay", `relay-${provider}`, "scripts", "api-reviewer.mjs");
+    const wrapper = readFileSync(wrapperPath, "utf8");
+    assert.match(wrapper, /host:\s*"claude"/, provider);
+
     const result = spawnSync(
       process.execPath,
-      [path.join("relay", `relay-${provider}`, "scripts", "api-reviewer.mjs"), "--help"],
+      [wrapperPath, "--help"],
       { encoding: "utf8" },
     );
 
@@ -600,6 +604,7 @@ test("buildRelaySuite: generated direct API relay runtimes do not leak Codex pac
     for (const provider of ["glm", "deepseek"]) {
       const pluginRoot = buildRelayPlugin({ provider, repoRoot: process.cwd(), outRoot });
       const runtime = readFileSync(path.join(pluginRoot, "scripts", "api-reviewer.mjs"), "utf8");
+      assert.match(runtime, /host:\s*"claude"/, provider);
       assert.doesNotMatch(runtime, /plugins\/api-reviewers\/config\/providers\.json/, provider);
     }
   } finally {

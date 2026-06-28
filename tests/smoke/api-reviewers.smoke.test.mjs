@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -9,11 +9,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 import { CONCURRENCY_FACTS, resolveConcurrencyAdmission } from "../../scripts/lib/provider-route-policy.mjs";
+import { assertNoCodexSandboxRepairGuidance } from "../helpers/host-neutral-diagnostics.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
 import { badVerdictReviewFixture, requestChangesReviewFixture, substantiveReviewFixture } from "../helpers/review-fixtures.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
+const DEFAULT_API_REVIEWERS_SMOKE_DATA_ROOTS = new Set();
 const SESSION_APPROVAL_POLICY = JSON.parse(readFileSync(path.join(REPO_ROOT, "plugins/api-reviewers/config/session-approval.json"), "utf8"));
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -125,15 +127,43 @@ async function runExecutable(args, { cwd = REPO_ROOT, env = {}, executable } = {
 }
 
 function apiReviewersSmokeEnv(cwd, env = {}) {
+  const explicitPluginDataRoot = env.API_REVIEWERS_PLUGIN_DATA
+    ?? process.env.API_REVIEWERS_PLUGIN_DATA
+    ?? null;
+  const fallbackPluginDataRoot = explicitPluginDataRoot ?? defaultApiReviewersSmokeDataRoot(cwd);
   const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(env.API_REVIEWERS_PLUGIN_DATA ?? cwd, ".provider-workload");
+    ?? path.join(fallbackPluginDataRoot, ".provider-workload");
   return {
     ...process.env,
     API_REVIEWERS_DISABLE_ENV_CACHE: "1",
     ...env,
+    ...(explicitPluginDataRoot === null ? {} : { API_REVIEWERS_PLUGIN_DATA: explicitPluginDataRoot }),
     RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
     RELAY_WORKLOAD_TEST_MODE: "1",
   };
+}
+
+after(() => {
+  for (const dataRoot of DEFAULT_API_REVIEWERS_SMOKE_DATA_ROOTS) {
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test("api reviewers smoke env defaults workload locks outside the repo root", () => {
+  const env = apiReviewersSmokeEnv(REPO_ROOT, {});
+  const expectedDataRoot = defaultApiReviewerDataRoot(REPO_ROOT);
+  if (process.env.API_REVIEWERS_PLUGIN_DATA == null) {
+    assert.equal(Object.hasOwn(env, "API_REVIEWERS_PLUGIN_DATA"), false);
+  }
+  assert.equal(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(expectedDataRoot, ".provider-workload"));
+  assert.notEqual(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(REPO_ROOT, ".provider-workload"));
+  assert.ok(!env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR.startsWith(REPO_ROOT + path.sep));
+});
+
+function defaultApiReviewersSmokeDataRoot(cwd) {
+  const dataRoot = defaultApiReviewerDataRoot(cwd);
+  DEFAULT_API_REVIEWERS_SMOKE_DATA_ROOTS.add(dataRoot);
+  return dataRoot;
 }
 
 function parseJson(stdout) {
@@ -514,11 +544,11 @@ test("doctor reports DeepSeek API-key readiness by key name only", async () => {
   }
 });
 
-test("doctor missing key diagnoses current process env, not provider readiness", async () => {
+test("Codex direct API doctor missing key diagnoses current process env, not provider readiness", async () => {
   const pluginRoot = makeInstalledApiReviewersRoot();
   const result = await run(["doctor", "--provider", "glm"], {
     companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
-    env: { ZAI_API_KEY: "", ZAI_GLM_API_KEY: "" },
+    env: { CODEX_SANDBOX: "seatbelt", ZAI_API_KEY: "", ZAI_GLM_API_KEY: "" },
   });
   assert.equal(result.status, 1);
   const parsed = parseJson(result.stdout);
@@ -531,6 +561,26 @@ test("doctor missing key diagnoses current process env, not provider readiness",
   assert.match(parsed.next_action, /restart or launch the session/i);
   assert.match(parsed.next_action, /ZAI_API_KEY/);
   assert.doesNotMatch(parsed.next_action, /ZAI_GLM_API_KEY/);
+});
+
+test("Claude relay direct API doctor missing key keeps host-neutral guidance when CODEX_SANDBOX is inherited", async () => {
+  const result = await run(["doctor", "--provider", "glm"], {
+    companion: path.join(REPO_ROOT, "relay", "relay-glm", "scripts", "api-reviewer.mjs"),
+    env: { CODEX_SANDBOX: "seatbelt", ZAI_API_KEY: "", ZAI_GLM_API_KEY: "" },
+  });
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.provider, "glm");
+  assert.equal(parsed.status, "missing_key");
+  assert.equal(parsed.ready, false);
+  assert.deepEqual(parsed.credential_candidates, ["ZAI_API_KEY"]);
+  assert.deepEqual(parsed.present_credential_env_keys, []);
+  assert.match(parsed.next_action, /this host process cannot see a non-empty credential env var/i);
+  assert.match(parsed.next_action, /restart or launch the session/i);
+  assert.match(parsed.next_action, /ZAI_API_KEY/);
+  assert.doesNotMatch(parsed.next_action, /ZAI_GLM_API_KEY/);
+  assertNoCodexSandboxRepairGuidance(parsed.next_action, "Claude relay missing-key next_action");
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
 test("doctor loads direct API credential from owner-only op env cache when process env is missing", async () => {
@@ -1789,6 +1839,7 @@ test("direct API reviewer fails closed before provider contact when plugin data 
       companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
       env: {
         API_REVIEWERS_PLUGIN_DATA: dataRoot,
+        CODEX_SANDBOX: "",
         DEEPSEEK_API_KEY: "secret-test-value",
       },
     });
@@ -1801,10 +1852,49 @@ test("direct API reviewer fails closed before provider contact when plugin data 
     assert.equal(record.error_code, "sandbox_blocked");
     assert.equal(record.error_cause, "sandbox_access");
     assert.match(record.suggested_action, /API_REVIEWERS_PLUGIN_DATA|writable/);
+    assert.doesNotMatch(record.suggested_action, /\bCodex\b|~\/\.codex\/config\.toml/);
     assertDirectApiNotSent(record, "DeepSeek");
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   } finally {
     server.close();
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(dataRoot, { force: true });
+  }
+});
+
+test("Claude relay direct API wrapper keeps host-neutral sandbox guidance when CODEX_SANDBOX is inherited", async () => {
+  const cwd = makeWorkspace();
+  const dataRoot = path.join(tmpdir(), `claude-relay-api-reviewers-data-file-${Date.now()}-${process.pid}-secret-test-value`);
+  writeFileSync(dataRoot, "not a directory\n");
+  try {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(REPO_ROOT, "relay", "relay-deepseek", "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataRoot,
+        CODEX_SANDBOX: "seatbelt",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "sandbox_blocked");
+    assert.match(record.suggested_action, /fresh host session/);
+    assert.doesNotMatch(record.suggested_action, /\bCodex\b|~\/\.codex\/config\.toml/);
+    assertDirectApiNotSent(record, "DeepSeek");
+    assert.doesNotMatch(result.stdout, /secret-test-value/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(dataRoot, { force: true });
   }
 });
 
@@ -5619,28 +5709,61 @@ test("direct API reviewers reject blank or valueless prompt flags before launch"
 
 test("direct API reviewers fail closed when no explicit API-key auth is available", async () => {
   const cwd = makeWorkspace();
-  const result = await run([
-    "run",
-    "--provider", "deepseek",
-    "--mode", "custom-review",
-    "--scope", "custom",
-    "--scope-paths", "seed.txt",
-    "--prompt", "Check this file.",
-  ], {
-    cwd,
-    env: { DEEPSEEK_API_KEY: "" },
-  });
-  assert.equal(result.status, 1);
-  const record = parseJson(result.stdout);
-  assert.equal(record.status, "failed");
-  assert.equal(record.error_code, "missing_key");
-  assert.match(record.suggested_action, /DEEPSEEK_API_KEY/);
-  assert.equal(
-    record.external_review.disclosure,
-    "Selected source content was not sent to DeepSeek through direct API auth.",
-  );
-  assert.equal(record.external_review.source_content_transmission, "not_sent");
-  assert.equal(record.disclosure_note, record.external_review.disclosure);
+  try {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      env: { DEEPSEEK_API_KEY: "" },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "missing_key");
+    assert.match(record.suggested_action, /DEEPSEEK_API_KEY/);
+    assert.equal(
+      record.external_review.disclosure,
+      "Selected source content was not sent to DeepSeek through direct API auth.",
+    );
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.disclosure_note, record.external_review.disclosure);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("Claude relay direct API run missing key keeps host-neutral guidance when CODEX_SANDBOX is inherited", async () => {
+  const cwd = makeWorkspace();
+  try {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(REPO_ROOT, "relay", "relay-deepseek", "scripts", "api-reviewer.mjs"),
+      env: { CODEX_SANDBOX: "seatbelt", DEEPSEEK_API_KEY: "" },
+    });
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "missing_key");
+    assert.match(record.suggested_action, /this host process cannot see a non-empty credential env var/i);
+    assert.match(record.suggested_action, /DEEPSEEK_API_KEY/);
+    assertNoCodexSandboxRepairGuidance(record.suggested_action, "Claude relay missing-key suggested_action");
+    assertDirectApiNotSent(record, "DeepSeek");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("direct API reviewers lifecycle jsonl suppresses launch when API key is missing", async () => {
@@ -5725,6 +5848,40 @@ test("direct API reviewers approval-request describes external source transmissi
     assert.equal(JSON.stringify(request).includes("hello from selected scope"), false);
     assert.equal(JSON.stringify(request).includes("secret-test-value"), false);
     assert.equal(JSON.stringify(request).includes(cwd), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("Claude relay direct API approval-request keeps host-neutral guidance when CODEX_SANDBOX is inherited", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-relay-api-reviewers-guidance-"));
+  const cwd = makeWorkspace();
+  try {
+    writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
+
+    const result = await run([
+      "approval-request",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ], {
+      cwd,
+      companion: path.join(REPO_ROOT, "relay", "relay-deepseek", "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        CODEX_SANDBOX: "seatbelt",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const request = parseJson(result.stdout);
+    assert.match(request.recommended_tool_justification, /current execution environment/);
+    assert.match(request.recommended_tool_justification, /Do not broaden local execution access for a normal source send/);
+    assert.doesNotMatch(request.recommended_tool_justification, /\bCodex\b|sandbox_permissions|require_escalated|~\/\.codex\/config\.toml/);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

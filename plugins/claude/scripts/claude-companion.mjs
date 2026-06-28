@@ -2011,7 +2011,7 @@ async function claudeOAuthInferencePreflight(invocation, authSelection, { allowA
       pidInfo: null,
       claudeSessionId: null,
       preflight: true,
-      errorMessage: `not_authed: ${detail || "Claude Code auth is not available to this Codex session."}`,
+      errorMessage: `not_authed: ${detail || "Claude Code auth is not available to this host session."}`,
     };
   }
   return null;
@@ -2667,8 +2667,8 @@ function pingErrorFields() {
 function pingSandboxBlockedFields() {
   return {
     ready: false,
-    summary: "Claude Code is blocked by Codex sandbox access to Claude state.",
-    next_action: "Add ~/.claude to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, start a fresh Codex session, then rerun /claude-setup. Alternatively, run this check outside sandbox.",
+    summary: "Claude Code is blocked by host sandbox access to Claude state.",
+    next_action: "Allow ~/.claude in the current host sandbox's writable roots, start a fresh host session, then rerun /claude-setup. Alternatively, run this check outside the sandbox.",
   };
 }
 

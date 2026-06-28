@@ -252,7 +252,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *   timeout         — execution.timedOut === true (companion's wall-clock kill).
  *   not_authed      — same-process auth/readiness preflight found no usable
  *                     Gemini login before selected source was sent.
- *   sandbox_blocked — same-process readiness preflight found Codex sandbox
+ *   sandbox_blocked — same-process readiness preflight found host sandbox
  *                     could not access Gemini state before selected source
  *                     was sent.
  *   gemini_error    — exitCode !== 0 with parseable JSON from Gemini.
@@ -323,7 +323,7 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   }
   if (status === "failed" && error_code === "not_authed") {
     return {
-      error_summary: "Gemini CLI is not logged in for this Codex session.",
+      error_summary: "Gemini CLI is not logged in for this host session.",
       error_cause:
         "The companion checked Gemini subscription/OAuth readiness in the same process before launching the review target, and Gemini did not report a usable login.",
       suggested_action:
@@ -333,11 +333,11 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   }
   if (status === "failed" && error_code === "sandbox_blocked") {
     return {
-      error_summary: "Gemini CLI is blocked by Codex sandbox access to Gemini state.",
+      error_summary: "Gemini CLI is blocked by host sandbox access to Gemini state.",
       error_cause:
-        "The companion ran a same-process readiness preflight before sending selected source, and Gemini could not read or write its ~/.gemini state files from this Codex sandbox.",
+        "The companion ran a same-process readiness preflight before sending selected source, and Gemini could not read or write its ~/.gemini state files from this host sandbox.",
       suggested_action:
-        "Add ~/.gemini to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, start a fresh Codex session, rerun /gemini-setup, then retry the review.",
+        "Allow ~/.gemini in the current host sandbox's writable roots, start a fresh host session, rerun /gemini-setup, then retry the review.",
       disclosure_note: null,
     };
   }

@@ -246,7 +246,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *   spawn_failed    — execution.errorMessage set (spawn threw before AGY ran).
  *   not_authed      — same-process auth/readiness preflight found no usable
  *                     AGY login before selected source was sent.
- *   sandbox_blocked — same-process readiness preflight found Codex sandbox
+ *   sandbox_blocked — same-process readiness preflight found host sandbox
  *                     denying access to AGY state before selected source was sent.
  *   finalization_failed — errorMessage starts "finalization_failed:" — the
  *                         companion's executeRun fallback path (#16 follow-up 1).
@@ -385,7 +385,7 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   }
   if (status === "failed" && error_code === "not_authed") {
     return {
-      error_summary: `${cliName} is not logged in for this Codex session.`,
+      error_summary: `${cliName} is not logged in for this host session.`,
       error_cause:
         `The companion checked ${target.displayName} readiness in the same process before launching the review target, and the CLI did not report a usable login.`,
       suggested_action:
@@ -395,11 +395,11 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   }
   if (status === "failed" && error_code === "sandbox_blocked") {
     return {
-      error_summary: `${cliName} is blocked by Codex sandbox access to AGY state.`,
+      error_summary: `${cliName} is blocked by host sandbox access to AGY state.`,
       error_cause:
-        "The companion ran a same-process readiness preflight before sending selected source, and AGY could not read or write its local state files from this Codex sandbox.",
+        "The companion ran a same-process readiness preflight before sending selected source, and AGY could not read or write its local state files from this host sandbox.",
       suggested_action:
-        "Add the AGY state path reported in the raw error to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, start a fresh Codex session, and rerun /agy-setup.",
+        "Allow the AGY state path reported in the raw error in the current host sandbox's writable roots, start a fresh host session, and rerun /agy-setup.",
       disclosure_note: null,
     };
   }

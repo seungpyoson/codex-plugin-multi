@@ -58,7 +58,7 @@ const GROK2API_UV_BINARY_CANDIDATES = Object.freeze([
   "/usr/bin/uv",
   "uv",
 ]);
-const REVIEW_READINESS_PREFLIGHT_HEADER = "x-codex-grok-readiness-preflight";
+const REVIEW_READINESS_PREFLIGHT_HEADER = "x-relay-grok-readiness-preflight";
 const REVIEW_READINESS_PREFLIGHT_PROMPT = "Return exactly: ok";
 const MAX_SCOPE_FILE_BYTES = 256 * 1024;
 const MAX_SCOPE_TOTAL_BYTES = 1024 * 1024;
@@ -2004,7 +2004,7 @@ async function syncGrokCliRuntimeAuthFile(runtimeHome) {
   }
   if (!runtimeHash) return "runtime_missing";
   if (sourceHash === runtimeHash) return "unchanged";
-  const tmpAuth = resolve(runtimeHome.source_home, `.auth.json.codex-sync-${randomUUID()}.tmp`);
+  const tmpAuth = resolve(runtimeHome.source_home, `.auth.json.relay-sync-${randomUUID()}.tmp`);
   try {
     await writeFile(tmpAuth, await readFile(runtimeAuth), { mode: 0o600, flag: "wx" });
     await rename(tmpAuth, sourceAuth);
