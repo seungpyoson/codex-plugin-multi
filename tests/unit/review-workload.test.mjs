@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -68,6 +68,55 @@ test("provider workload lease test mode can acquire when current process proof i
   } finally {
     if (lease.lease) releaseProviderWorkloadLease(lease.lease);
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease admits current process when liveness capture is sandboxed", () => {
+  const { root, env } = tempEnv();
+  const captureDenied = () => { throw new Error("capture_error: injected process table denial"); };
+  const lease = acquireProviderWorkloadLease({
+    concurrencyKey: "sandboxed-current-process",
+    limit: 1,
+    lockRoot: root,
+    jobId: "job-sandboxed-current",
+    cwd: "/tmp/w",
+    sourceBearing: true,
+    env,
+    capture: captureDenied,
+  });
+  try {
+    assert.equal(lease.ok, true);
+    assert.ok(lease.lease);
+    const holder = JSON.parse(readFileSync(lease.lease.file, "utf8"));
+    assert.equal(holder.pid, process.pid);
+    assert.equal(holder.starttime, null);
+    assert.equal(holder.argv0, null);
+  } finally {
+    if (lease.lease) releaseProviderWorkloadLease(lease.lease);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease fails closed when lock root cannot be created", () => {
+  const parent = mkdtempSync(join(tmpdir(), "provider-workload-unwritable-"));
+  chmodSync(parent, 0o500);
+  try {
+    const result = acquireProviderWorkloadLease({
+      concurrencyKey: "unwritable-lock-root",
+      limit: 1,
+      lockRoot: join(parent, "locks"),
+      jobId: "job-unwritable-lock-root",
+      cwd: "/tmp/w",
+      sourceBearing: true,
+      env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
+    assert.equal(result.reason, "unwritable_provider_workload_lock_root");
+    assert.deepEqual(result.capacity, { active_count: 0, limit: 1 });
+  } finally {
+    chmodSync(parent, 0o700);
+    rmSync(parent, { recursive: true, force: true });
   }
 });
 

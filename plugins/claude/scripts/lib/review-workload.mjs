@@ -109,16 +109,21 @@ function blockResult(capacity, reason = "active_same_provider_job") {
   });
 }
 
-function captureCurrentPidInfo(env = process.env) {
+function captureCurrentPidInfo(env = process.env, capture = capturePidInfo) {
   try {
-    return capturePidInfo(process.pid);
+    return capture(process.pid);
   } catch (error) {
-    if (!env?.RELAY_WORKLOAD_TEST_MODE) throw error;
-    return {
-      pid: process.pid,
-      starttime: `test-mode:${process.pid}`,
-      argv0: process.argv?.[0] || "node",
-    };
+    if (env?.RELAY_WORKLOAD_TEST_MODE) {
+      return {
+        pid: process.pid,
+        starttime: `test-mode:${process.pid}`,
+        argv0: process.argv?.[0] || "node",
+      };
+    }
+    // The current process is necessarily live even when a host sandbox denies
+    // /bin/ps or /proc. Store no reuse proof rather than blocking every launch;
+    // stale cleanup then remains conservative until process inspection works.
+    return { pid: process.pid, starttime: null, argv0: null };
   }
 }
 
@@ -384,11 +389,15 @@ export function acquireProviderWorkloadLease({
 
   const root = lockRoot;
   const gateFile = legacyLockPath(root, slug);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
+  try {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+  } catch {
+    return blockResult({ active_count: 0, limit }, "unwritable_provider_workload_lock_root");
+  }
 
   let pidInfo;
   try {
-    pidInfo = captureCurrentPidInfo(env);
+    pidInfo = captureCurrentPidInfo(env, capture);
   } catch {
     return blockResult({ active_count: 0, limit }, "unverifiable_current_process");
   }

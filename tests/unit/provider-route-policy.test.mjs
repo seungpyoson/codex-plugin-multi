@@ -2149,6 +2149,22 @@ test("shared_state concurrency admission ignores lock root override outside test
   assert.equal(admission.lockRoot, path.join(tmpdir(), "relay-policy-state", "relay", "locks", "v2"));
 });
 
+test("shared_state concurrency admission defaults lock root to tmpdir when XDG_STATE_HOME is absent", (t) => {
+  const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-"));
+  t.after(() => rmSync(sharedStateDir, { recursive: true, force: true }));
+
+  const admission = resolveConcurrencyAdmission({
+    category: "shared_state",
+    declaredLimit: 1,
+    sharedStateIdentity: sharedStateDir,
+    provider: "kimi",
+    route: "subscription",
+    env: {},
+  });
+
+  assert.equal(admission.lockRoot, path.join(tmpdir(), "relay", "locks", "v2"));
+});
+
 test("stateless concurrency admission honors lock root override", () => {
   const admission = resolveConcurrencyAdmission({
     category: "stateless",
