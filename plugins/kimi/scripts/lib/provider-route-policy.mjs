@@ -267,7 +267,10 @@ function defaultProviderWorkloadLockRoot(env = process.env) {
   const xdgStateHome = typeof env?.XDG_STATE_HOME === "string" && env.XDG_STATE_HOME.trim() !== ""
     ? env.XDG_STATE_HOME
     : null;
-  return join(xdgStateHome || tmpdir(), "relay", "locks", "v2");
+  if (xdgStateHome) return join(xdgStateHome, "relay", "locks", "v2");
+  const uid = process.getuid?.();
+  const userSegment = Number.isSafeInteger(uid) && uid >= 0 ? `relay-${uid}` : "relay-user";
+  return join(tmpdir(), userSegment, "locks", "v2");
 }
 
 function providerWorkloadLockRoot(category, env = process.env) {

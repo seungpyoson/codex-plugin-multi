@@ -41,6 +41,12 @@ function workloadTest(name, fn) {
   test(name, SKIP_WORKLOAD_ACQUIRE_UNDER_DARWIN_SANDBOX, fn);
 }
 
+const SKIP_UNWRITABLE_PERMISSION_TEST_UNDER_ROOT = {
+  skip: process.getuid?.() === 0
+    ? "root can bypass chmod-based write denial"
+    : false,
+};
+
 // Gate timeout for tests that assert a reclaim SUCCEEDS (ok:true). The production
 // loop checks the deadline before it attempts reclaim (review-workload.mjs: the
 // `Date.now() >= deadline` guard sits above the recreate/reclaim branches), so the
@@ -97,7 +103,46 @@ test("provider workload lease admits current process when liveness capture is sa
   }
 });
 
-test("provider workload lease fails closed when lock root cannot be created", () => {
+test("provider workload lease treats a null-proof holder as occupied", () => {
+  const { root, env } = tempEnv();
+  const captureDenied = () => { throw new Error("capture_error: injected process table denial"); };
+  const captureDifferentIdentity = () => ({
+    pid: process.pid,
+    starttime: "different-starttime",
+    argv0: "different-argv0",
+  });
+  const first = acquireProviderWorkloadLease({
+    concurrencyKey: "null-proof-current-process",
+    limit: 1,
+    lockRoot: root,
+    jobId: "job-null-proof-current",
+    cwd: "/tmp/w",
+    sourceBearing: true,
+    env,
+    capture: captureDenied,
+  });
+  try {
+    assert.equal(first.ok, true);
+    const second = acquireProviderWorkloadLease({
+      concurrencyKey: "null-proof-current-process",
+      limit: 1,
+      lockRoot: root,
+      jobId: "job-null-proof-second",
+      cwd: "/tmp/w",
+      sourceBearing: true,
+      env,
+      capture: captureDifferentIdentity,
+    });
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, "active_same_provider_job");
+    assert.deepEqual(second.capacity, { active_count: 1, limit: 1 });
+  } finally {
+    if (first.lease) releaseProviderWorkloadLease(first.lease);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease fails closed when lock root cannot be created", SKIP_UNWRITABLE_PERMISSION_TEST_UNDER_ROOT, () => {
   const parent = mkdtempSync(join(tmpdir(), "provider-workload-unwritable-"));
   chmodSync(parent, 0o500);
   try {
@@ -117,6 +162,29 @@ test("provider workload lease fails closed when lock root cannot be created", ()
   } finally {
     chmodSync(parent, 0o700);
     rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease fails closed when existing lock root is not writable", SKIP_UNWRITABLE_PERMISSION_TEST_UNDER_ROOT, () => {
+  const root = mkdtempSync(join(tmpdir(), "provider-workload-unwritable-root-"));
+  chmodSync(root, 0o500);
+  try {
+    const result = acquireProviderWorkloadLease({
+      concurrencyKey: "existing-unwritable-lock-root",
+      limit: 1,
+      lockRoot: root,
+      jobId: "job-existing-unwritable-lock-root",
+      cwd: "/tmp/w",
+      sourceBearing: true,
+      env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
+    assert.equal(result.reason, "unwritable_provider_workload_lock_root");
+    assert.deepEqual(result.capacity, { active_count: 0, limit: 1 });
+  } finally {
+    chmodSync(root, 0o700);
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -359,7 +427,7 @@ test("provider workload lease serializes stale reclaim before removing inactive 
   const source = readFileSync(new URL("../../scripts/lib/review-workload.mjs", import.meta.url), "utf8");
   assert.match(source, /function acquireProviderWorkloadGate\(/,
     "stale reclaim must be protected by a provider-local gate");
-  assert.match(source, /const gate = acquireProviderWorkloadGate\([^,]+, env, capture, pidInfo\);/,
+  assert.match(source, /gate = acquireProviderWorkloadGate\([^,]+, env, capture, pidInfo\);/,
     "lease acquisition must hold the gate before inspecting or removing an inactive holder");
   assert.match(source, /removeInactiveHolder\([^,]+, holder\)/,
     "inactive-holder removal must be bound to the holder inspected while the gate is held");

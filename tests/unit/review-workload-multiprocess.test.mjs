@@ -20,8 +20,8 @@ const WORKLOAD_LIB = fileURLToPath(new URL("../../scripts/lib/review-workload.mj
 
 // These two tests spawn real child processes that take the REAL liveness-capture
 // acquire path (no RELAY_WORKLOAD_TEST_MODE). On a macOS sandbox that denies
-// /bin/ps, every child blocks on `unverifiable_current_process`, so the children
-// never acquire and the assertions hard-fail rather than proving anything. Skip
+// /bin/ps, child liveness capture cannot prove real process identities, so the
+// assertions hard-fail rather than proving anything. Skip
 // when the current process cannot capture its own identity (same guard used by
 // review-workload.test.mjs). Linux CI has /proc, so it still runs there; the
 // boot-id reclaim test below uses an injected capture and is unaffected.

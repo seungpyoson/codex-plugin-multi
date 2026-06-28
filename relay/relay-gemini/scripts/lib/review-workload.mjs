@@ -10,6 +10,15 @@ const SCHEMA_VERSION = 1;
 const DEFAULT_GATE_TIMEOUT_MS = 5_000;
 const GATE_POLL_MS = 25;
 const GATE_OWNER_FILE = "owner.json";
+const LOCK_ROOT_UNWRITABLE_CODES = new Set([
+  "EACCES",
+  "EPERM",
+  "ENOTDIR",
+  "EROFS",
+  "ENOSPC",
+  "EMFILE",
+  "ENFILE",
+]);
 
 function trimEdgeHyphens(value) {
   let start = 0;
@@ -49,6 +58,10 @@ function positiveIntegerEnv(env, name, fallback) {
 
 function gateTimeoutMs(env) {
   return positiveIntegerEnv(env, GATE_TIMEOUT_ENV, DEFAULT_GATE_TIMEOUT_MS);
+}
+
+function isUnwritableLockRootError(error) {
+  return LOCK_ROOT_UNWRITABLE_CODES.has(error?.code);
 }
 
 function sleepSync(ms) {
@@ -109,21 +122,29 @@ function blockResult(capacity, reason = "active_same_provider_job") {
   });
 }
 
+function currentPidInfoWithoutCaptureProof(env, error) {
+  const message = String(error?.message ?? error ?? "");
+  const expectedCaptureFailure = message.startsWith("capture_error")
+    || message.startsWith("process_gone")
+    || message.startsWith("invalid_pid");
+  if (env?.RELAY_WORKLOAD_TEST_MODE && expectedCaptureFailure) {
+    return {
+      pid: process.pid,
+      starttime: `test-mode:${process.pid}`,
+      argv0: process.argv?.[0] || "node",
+    };
+  }
+  // The current process is necessarily live even when a host sandbox denies
+  // /bin/ps or /proc. Store no reuse proof rather than blocking every launch;
+  // stale cleanup then remains conservative until process inspection works.
+  return { pid: process.pid, starttime: null, argv0: null };
+}
+
 function captureCurrentPidInfo(env = process.env, capture = capturePidInfo) {
   try {
     return capture(process.pid);
   } catch (error) {
-    if (env?.RELAY_WORKLOAD_TEST_MODE) {
-      return {
-        pid: process.pid,
-        starttime: `test-mode:${process.pid}`,
-        argv0: process.argv?.[0] || "node",
-      };
-    }
-    // The current process is necessarily live even when a host sandbox denies
-    // /bin/ps or /proc. Store no reuse proof rather than blocking every launch;
-    // stale cleanup then remains conservative until process inspection works.
-    return { pid: process.pid, starttime: null, argv0: null };
+    return currentPidInfoWithoutCaptureProof(env, error);
   }
 }
 
@@ -391,16 +412,12 @@ export function acquireProviderWorkloadLease({
   const gateFile = legacyLockPath(root, slug);
   try {
     mkdirSync(root, { recursive: true, mode: 0o700 });
-  } catch {
+  } catch (error) {
+    if (!isUnwritableLockRootError(error)) throw error;
     return blockResult({ active_count: 0, limit }, "unwritable_provider_workload_lock_root");
   }
 
-  let pidInfo;
-  try {
-    pidInfo = captureCurrentPidInfo(env, capture);
-  } catch {
-    return blockResult({ active_count: 0, limit }, "unverifiable_current_process");
-  }
+  const pidInfo = captureCurrentPidInfo(env, capture);
 
   const payload = Object.freeze({
     schema_version: SCHEMA_VERSION,
@@ -419,9 +436,10 @@ export function acquireProviderWorkloadLease({
   });
 
   for (;;) {
-    const gate = acquireProviderWorkloadGate(gateFile, env, capture, pidInfo);
-    if (!gate.ok) return blockResult({ active_count: limit, limit });
+    let gate;
     try {
+      gate = acquireProviderWorkloadGate(gateFile, env, capture, pidInfo);
+      if (!gate.ok) return blockResult({ active_count: limit, limit });
       const slots = enumerateSlotFiles(root, slug);
       if (!slots) return blockResult({ active_count: limit, limit }, "unreadable_provider_workload_lock_root");
 
@@ -453,8 +471,11 @@ export function acquireProviderWorkloadLease({
       }
       const file = slotPath(root, slug, index);
       if (tryCreateLeaseFile(file, payload)) return acquiredResult(file, payload);
+    } catch (error) {
+      if (!isUnwritableLockRootError(error)) throw error;
+      return blockResult({ active_count: 0, limit }, "unwritable_provider_workload_lock_root");
     } finally {
-      gate.release?.();
+      gate?.release?.();
     }
   }
 }
