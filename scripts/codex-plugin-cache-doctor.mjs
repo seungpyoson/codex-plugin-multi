@@ -270,10 +270,14 @@ function readPluginVersion(pluginRoot) {
 }
 
 function pluginCacheVersion(home, plugin, sourcePluginRoot, repoPluginRoot) {
-  return readPluginVersion(sourcePluginRoot)
-    ?? readPluginVersion(repoPluginRoot)
-    ?? cacheVersionNames(home, plugin)[0]
-    ?? "0.1.0";
+  const sourceVersion = readPluginVersion(sourcePluginRoot);
+  if (sourceVersion) return sourceVersion;
+  const versions = cacheVersionNames(home, plugin);
+  const repoVersion = readPluginVersion(repoPluginRoot);
+  if (repoVersion && versions.includes(repoVersion)) return repoVersion;
+  if (versions.length === 1) return versions[0];
+  if (versions.includes("0.1.0")) return "0.1.0";
+  return repoVersion ?? versions[0] ?? "0.1.0";
 }
 
 function defaultPluginNames(...nameLists) {
@@ -404,15 +408,34 @@ function disabledRequiredPluginNames(profiles) {
   return Array.from(names).sort(comparePathStrings);
 }
 
+function unlistedRequiredPluginNames(profiles) {
+  const names = new Set();
+  for (const profile of Object.values(profiles)) {
+    for (const [plugin, report] of Object.entries(profile.plugins)) {
+      if (report.required_for_ok && report.listed_in_marketplace_manifest === false) names.add(plugin);
+    }
+  }
+  return Array.from(names).sort(comparePathStrings);
+}
+
 function unhealthyRequiredInternalRuntimeNames(profiles) {
   const names = new Set();
   for (const profile of Object.values(profiles)) {
     for (const [plugin, report] of Object.entries(profile.plugins)) {
       if (!report.required_for_ok || !report.internal_runtime) continue;
-      if (!report.cache_in_sync || report.repo_cache_in_sync === false || report.listed_in_marketplace_manifest === false) names.add(plugin);
+      if (!report.cache_in_sync || report.repo_cache_in_sync === false) names.add(plugin);
     }
   }
   return Array.from(names).sort(comparePathStrings);
+}
+
+function marketplaceReport(info) {
+  return {
+    root: info.marketplaceRoot,
+    manifest_path: info.marketplaceManifestPath,
+    present: info.marketplacePresent,
+    source_root: info.sourceBaseRoot,
+  };
 }
 
 function main() {
@@ -473,6 +496,10 @@ function main() {
   if (disabledRequired.length > 0) {
     nextActions.push(`Enable required disabled plugins (${disabledRequired.join(", ")}) in \`/plugins\` or config.toml for the Codex profile that will run reviews.`);
   }
+  const unlistedRequired = unlistedRequiredPluginNames(profiles);
+  if (unlistedRequired.length > 0) {
+    nextActions.push(`Refresh ${MARKETPLACE} so required plugins appear in the installed marketplace manifest: ${unlistedRequired.join(", ")}.`);
+  }
   const unhealthyInternalRuntimes = unhealthyRequiredInternalRuntimeNames(profiles);
   if (unhealthyInternalRuntimes.length > 0) {
     nextActions.push(`Refresh required internal runtime caches (${unhealthyInternalRuntimes.join(", ")}) by upgrading ${MARKETPLACE} before running direct API reviews.`);
@@ -486,11 +513,12 @@ function main() {
     marketplace: {
       name: MARKETPLACE,
       cache_namespace: CACHE_NAMESPACE,
-      root: primarySourceInfo.marketplaceRoot,
-      manifest_path: primarySourceInfo.marketplaceManifestPath,
-      present: primarySourceInfo.marketplacePresent,
-      source_root: primarySourceInfo.sourceBaseRoot,
+      ...marketplaceReport(primarySourceInfo),
     },
+    marketplaces: Object.fromEntries([
+      ["primary", marketplaceReport(primarySourceInfo)],
+      ...(secondSourceInfo ? [["second", marketplaceReport(secondSourceInfo)]] : []),
+    ]),
     profiles,
     next_actions: nextActions,
   }, null, 2)}\n`);

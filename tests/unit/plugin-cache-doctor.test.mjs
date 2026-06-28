@@ -26,8 +26,8 @@ function writeSkill(root, plugin, skill) {
   writeFileSync(path.join(dir, "SKILL.md"), `---\nname: ${skill}\n---\n`, "utf8");
 }
 
-function writeCachedSkill(home, plugin, skill) {
-  const dir = path.join(home, "plugins", "cache", CACHE_NAMESPACE, plugin, "0.1.0", "skills", skill);
+function writeCachedSkill(home, plugin, skill, version = "0.1.0") {
+  const dir = path.join(home, "plugins", "cache", CACHE_NAMESPACE, plugin, version, "skills", skill);
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "SKILL.md"), `---\nname: ${skill}\n---\n`, "utf8");
 }
@@ -38,8 +38,8 @@ function writePluginFile(root, plugin, rel, content) {
   writeFileSync(file, content, "utf8");
 }
 
-function writeCachedPluginFile(home, plugin, rel, content) {
-  const file = path.join(home, "plugins", "cache", CACHE_NAMESPACE, plugin, "0.1.0", rel);
+function writeCachedPluginFile(home, plugin, rel, content, version = "0.1.0") {
+  const file = path.join(home, "plugins", "cache", CACHE_NAMESPACE, plugin, version, rel);
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, content, "utf8");
 }
@@ -274,6 +274,7 @@ test("codex plugin cache doctor fails required plugins missing from the active m
   assert.equal(profile.plugins["relay-agy"].cache_in_sync, true);
   assert.equal(profile.plugins["relay-agy"].repo_cache_in_sync, true);
   assert.equal(profile.plugins["relay-agy"].listed_in_marketplace_manifest, false);
+  assert.match(report.next_actions.join("\n"), /required plugins appear in the installed marketplace manifest: relay-agy/);
 });
 
 test("codex plugin cache doctor default profile includes config-enabled plugins absent from manifests", () => {
@@ -400,6 +401,64 @@ test("codex plugin cache doctor falls back to repo source when marketplace direc
   assert.equal(report.ok, true);
   assert.equal(profile.plugins["relay-grok"].source_path, "plugins/grok");
   assert.equal(profile.plugins["relay-grok"].cache_in_sync, true);
+});
+
+test("codex plugin cache doctor reads non-default cache version from source metadata", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-source-version-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-source-version-home-"));
+  const marketplaceRoot = path.join(primary, ".tmp", "marketplaces", MARKETPLACE);
+  const pluginJson = `{"name":"relay-grok","version":"0.2.0"}\n`;
+
+  writeMarketplaceManifest(repo, [["relay-grok", "./plugins/grok"]]);
+  writeMarketplaceManifest(marketplaceRoot, [["relay-grok", "./plugins/grok"]]);
+  writePluginFile(path.join(repo, "plugins"), "grok", ".codex-plugin/plugin.json", pluginJson);
+  writePluginFile(path.join(repo, "plugins"), "grok", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writePluginFile(path.join(marketplaceRoot, "plugins"), "grok", ".codex-plugin/plugin.json", pluginJson);
+  writePluginFile(path.join(marketplaceRoot, "plugins"), "grok", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writeCachedPluginFile(primary, "relay-grok", ".codex-plugin/plugin.json", pluginJson, "0.2.0");
+  writeCachedPluginFile(primary, "relay-grok", "scripts/runtime.mjs", "export const version = 'source';\n", "0.2.0");
+  writeConfig(primary, "relay-grok", true);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const profile = report.profiles.primary;
+
+  assert.equal(report.ok, true);
+  assert.equal(profile.plugins["relay-grok"].cache_version, "0.2.0");
+  assert.match(profile.plugins["relay-grok"].cache_path, /relay-grok\/0\.2\.0$/);
+  assert.equal(profile.plugins["relay-grok"].cache_in_sync, true);
+});
+
+test("codex plugin cache doctor uses installed cache version when active source lacks version metadata", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-cache-version-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-cache-version-home-"));
+  const marketplaceRoot = path.join(primary, ".tmp", "marketplaces", MARKETPLACE);
+
+  writeMarketplaceManifest(repo, [["relay-grok", "./plugins/grok"]]);
+  writeMarketplaceManifest(marketplaceRoot, [["relay-grok", "./plugins/grok"]]);
+  writePluginFile(path.join(repo, "plugins"), "grok", ".codex-plugin/plugin.json", `{"name":"relay-grok","version":"0.2.0"}\n`);
+  writePluginFile(path.join(repo, "plugins"), "grok", "scripts/runtime.mjs", "export const version = 'repo-new';\n");
+  writePluginFile(path.join(marketplaceRoot, "plugins"), "grok", "scripts/runtime.mjs", "export const version = 'marketplace';\n");
+  writeCachedPluginFile(primary, "relay-grok", "scripts/runtime.mjs", "export const version = 'marketplace';\n", "0.1.0");
+  writeConfig(primary, "relay-grok", true);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const profile = report.profiles.primary;
+
+  assert.equal(report.ok, false);
+  assert.equal(profile.plugins["relay-grok"].cache_version, "0.1.0");
+  assert.equal(profile.plugins["relay-grok"].cache_in_sync, true);
+  assert.equal(profile.plugins["relay-grok"].repo_cache_in_sync, false);
+  assert.deepEqual(profile.plugins["relay-grok"].repo_changed_files, ["scripts/runtime.mjs"]);
 });
 
 test("codex plugin cache doctor checks api-reviewers when an explicit direct API reviewer is requested", () => {
@@ -623,6 +682,10 @@ test("codex plugin cache doctor compares each Codex home against its own marketp
   const report = JSON.parse(stdout);
 
   assert.equal(report.ok, true);
+  assert.equal(report.marketplace.present, false);
+  assert.equal(report.marketplaces.primary.present, false);
+  assert.equal(report.marketplaces.second.present, true);
+  assert.equal(report.marketplaces.second.source_root, secondMarketplaceRoot);
   assert.equal(report.profiles.primary.ok, true);
   assert.equal(report.profiles.second.ok, true);
   assert.equal(report.profiles.second.plugins["relay-grok"].enabled, true);

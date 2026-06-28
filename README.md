@@ -381,10 +381,13 @@ manifest/source tree. The doctor also checks the
 `config.toml`, or explicitly requested with `--plugin api-reviewers`.
 It reports `missing_files`, `extra_files`, `changed_files`,
 `repo_changed_files`, `configured_enabled`, `required_by_enabled_plugin`, and
-`required_for_ok`, plus source diagnostics such as `source_present`,
-`source_manifest_present`, and `listed_in_marketplace_manifest`. For
-single-plugin checks, `summary_plugin` names the plugin described by top-level
-summary fields; use `ok` as the aggregate health result.
+`required_for_ok` and `cache_version`, plus source diagnostics such as
+`source_present`, `source_manifest_present`, and
+`listed_in_marketplace_manifest`. The top-level `marketplace` block describes
+the primary `--codex-home`; `marketplaces.primary` and `marketplaces.second`
+describe each inspected profile. For single-plugin checks, `summary_plugin`
+names the plugin described by top-level summary fields; use `ok` as the
+aggregate health result.
 `cache_in_sync: true` with
 `repo_cache_in_sync: false` means new Codex sessions will still run stale
 installed plugin code. For Git marketplace installs, start with:
