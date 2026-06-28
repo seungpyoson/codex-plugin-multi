@@ -68,6 +68,20 @@ const DOCTOR_PROBE_PROMPT = "Return exactly: ok";
 const CODEX_SOURCE_SEND_SANDBOX_GUIDANCE = "Use the default Codex sandbox for the matching source-bearing run. Do not request `sandbox_permissions: \"require_escalated\"` for a normal source send; if the default sandbox blocks provider auth, job state, temp files, or network, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"`.";
 const HOST_NEUTRAL_SOURCE_SEND_SANDBOX_GUIDANCE = "Use the current execution environment for the matching source-bearing run. Do not broaden local execution access for a normal source send; if local execution blocks provider auth, job state, temp files, or network, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"`.";
 const API_REVIEWERS_HOST_ENV = "RELAY_API_REVIEWERS_HOST";
+const DIRECT_API_GUIDANCE_PROFILES = Object.freeze({
+  codex: Object.freeze({
+    missingCredentialProcessLabel: "Codex process",
+    networkUnavailableAction: "If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.",
+    pluginDataSandboxAction: "Set API_REVIEWERS_PLUGIN_DATA to a writable path inside the Codex workspace or another approved writable root, start a fresh Codex session if sandbox roots changed, then retry.",
+    sourceSendSandboxGuidance: CODEX_SOURCE_SEND_SANDBOX_GUIDANCE,
+  }),
+  hostNeutral: Object.freeze({
+    missingCredentialProcessLabel: "host process",
+    networkUnavailableAction: "Check network access, retry later, or switch reviewer provider.",
+    pluginDataSandboxAction: "Set API_REVIEWERS_PLUGIN_DATA to a writable path inside the current workspace state directory or another approved writable root, start a fresh host session if sandbox roots changed, then retry.",
+    sourceSendSandboxGuidance: HOST_NEUTRAL_SOURCE_SEND_SANDBOX_GUIDANCE,
+  }),
+});
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -1128,9 +1142,10 @@ function presentCredentialEnvKeys(cfg, env = process.env) {
   ));
 }
 
-function missingCredentialAction(cfg) {
+function missingCredentialAction(cfg, env = process.env) {
   const names = credentialEnvKeys(cfg).join(", ");
-  return `This Codex process cannot see a non-empty credential env var or owner-only ~/.cache/op/env.sh credential cache entry. Restart or launch the session with one of these env vars exported: ${names}, or refresh the 1Password env cache. Then rerun the API reviewer doctor command. Do not run source-bearing review until doctor returns ready:true.`;
+  const processLabel = directApiGuidanceProfile(env).missingCredentialProcessLabel;
+  return `This ${processLabel} cannot see a non-empty credential env var or owner-only ~/.cache/op/env.sh credential cache entry. Restart or launch the session with one of these env vars exported: ${names}, or refresh the 1Password env cache. Then rerun the API reviewer doctor command. Do not run source-bearing review until doctor returns ready:true.`;
 }
 
 function envCacheDisabled(env = process.env) {
@@ -1740,7 +1755,7 @@ async function doctorFields(provider, cfg, env = process.env) {
       status: "missing_key",
       ready: false,
       summary: `${cfg.display_name} direct API key is not available.`,
-      next_action: missingCredentialAction(cfg),
+      next_action: missingCredentialAction(cfg, env),
       auth_mode: cfg.auth_mode,
       credential_candidates: credentialEnvKeys(cfg),
       present_credential_env_keys: presentCredentialEnvKeys(cfg, env),
@@ -2117,7 +2132,7 @@ function promptFor(mode, userPrompt, scopeInfo, providerName = "Direct API revie
     : "You are performing a code review. Prioritize bugs, behavioral regressions, and missing tests.";
   const liveContext = [
     "Live verification context:",
-    "- This repository has verified the configured DeepSeek and GLM direct API endpoints/models from Codex-managed runs.",
+    "- This repository has verified the configured DeepSeek and GLM direct API endpoints/models from relay-managed runs.",
     "- Do not reject model IDs or endpoint hosts solely because they differ from general public documentation; require current run failure evidence or repo-local contradictory evidence.",
     "- The JobRecord will include the actual endpoint, HTTP status, raw model, credential key name, and usage metadata when the provider returns them.",
   ].join("\n");
@@ -2586,11 +2601,8 @@ function fetchExceptionDiagnostics(error, redact) {
 
 function providerUnavailableSuggestedAction(errorMessage = "", httpStatus = null, env = process.env) {
   const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT/i.test(errorMessage);
-  if (httpStatus == null && usesCodexSandboxGuidance(env) && looksLikeNetworkFailure) {
-    return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
-  }
   if (httpStatus == null && looksLikeNetworkFailure) {
-    return `Check network access, retry later, or switch reviewer provider.`;
+    return directApiGuidanceProfile(env).networkUnavailableAction;
   }
   return `Retry later or switch reviewer provider.`;
 }
@@ -2605,10 +2617,14 @@ function usesCodexSandboxGuidance(env = process.env) {
   return isCodexSandbox(env);
 }
 
-function sourceSendSandboxGuidance(env = process.env) {
+function directApiGuidanceProfile(env = process.env) {
   return usesCodexSandboxGuidance(env)
-    ? CODEX_SOURCE_SEND_SANDBOX_GUIDANCE
-    : HOST_NEUTRAL_SOURCE_SEND_SANDBOX_GUIDANCE;
+    ? DIRECT_API_GUIDANCE_PROFILES.codex
+    : DIRECT_API_GUIDANCE_PROFILES.hostNeutral;
+}
+
+function sourceSendSandboxGuidance(env = process.env) {
+  return directApiGuidanceProfile(env).sourceSendSandboxGuidance;
 }
 
 function scopeFailedSuggestedAction(errorMessage = "") {
@@ -2638,7 +2654,7 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
   if (errorCode === "approval_required") return "Run approval-request, render the approval summary to the user, and pass the returned approval_token.value with --approval-token only after explicit approval.";
   if (errorCode === "prompt_too_large") return promptTooLargeSuggestedAction();
   if (errorCode === "config_error") return "Reinstall or repair the configured providers file and retry.";
-  if (errorCode === "missing_key") return missingCredentialAction(cfg);
+  if (errorCode === "missing_key") return missingCredentialAction(cfg, env);
   if (errorCode === "auth_rejected") return `Check the ${cfg.display_name} API key and billing/plan for ${cfg.model}.`;
   if (errorCode === "usage_limited") {
     return `Treat this ${cfg.display_name} slot as failed. Do not automatically resend selected source. ` +
@@ -2665,12 +2681,7 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
     return "Treat this reviewer slot as failed, inspect the raw result and review_quality reasons, then retry with a source packet the reviewer can inspect.";
   }
   if (errorCode === "scope_failed") return scopeFailedSuggestedAction(errorMessage);
-  if (errorCode === "sandbox_blocked") {
-    if (usesCodexSandboxGuidance(env)) {
-      return "Set API_REVIEWERS_PLUGIN_DATA to a writable path inside the Codex workspace or another approved writable root, start a fresh Codex session if sandbox roots changed, then retry.";
-    }
-    return "Set API_REVIEWERS_PLUGIN_DATA to a writable path inside the current workspace state directory or another approved writable root, start a fresh host session if sandbox roots changed, then retry.";
-  }
+  if (errorCode === "sandbox_blocked") return directApiGuidanceProfile(env).pluginDataSandboxAction;
   if (errorCode === "git_binary_rejected") return sharedDiagnostic?.suggested_action ?? `Set ${GIT_BINARY_ENV} to a trusted Git executable outside the workspace, or unset it to use the default Git binary.`;
   return sharedDiagnostic?.suggested_action ?? "Inspect error_message and retry after correcting the provider or request configuration.";
 }

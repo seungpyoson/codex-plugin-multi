@@ -61,7 +61,8 @@ const UUID = "550e8400-e29b-41d4-a716-446655440000";
 const CLAUDE_UUID = "11111111-2222-4333-8444-555555555555";
 const GEMINI_UUID = "22222222-3333-4444-9555-666666666666";
 const AGY_SESSION_ID = "agy-conversation-123";
-const HOST_INAPPROPRIATE_DIAGNOSTIC_RE = /\bCodex\b|~\/\.codex\/config\.toml/;
+const HOST_INAPPROPRIATE_DIAGNOSTIC_RE =
+  /\bcodex\b|~\/\.codex\/config\.toml|\[sandbox_workspace_write\]|sandbox_permissions|require_escalated|writable_roots|CODEX_SANDBOX|seatbelt/i;
 
 function sentButNoCleanResult(provider) {
   return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;

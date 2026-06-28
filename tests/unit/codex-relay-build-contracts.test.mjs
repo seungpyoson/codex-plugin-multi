@@ -126,6 +126,7 @@ test("direct API relay wrapper resolves shared runtime from Codex marketplace so
     });
 
     assert.match(stdout, /"provider":"glm"/);
+    assert.match(stdout, /"host":"codex"/);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });

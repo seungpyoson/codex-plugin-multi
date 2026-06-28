@@ -6,7 +6,7 @@ import http from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { externalReviewLaunchedEvent } from "../../scripts/lib/companion-common.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
@@ -15,6 +15,7 @@ import { badVerdictReviewFixture, substantiveReviewFixture } from "../helpers/re
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-companion.mjs");
 const COMPANION_RUNTIME = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
+const DEFAULT_GROK_SMOKE_DATA_ROOT = path.join(tmpdir(), `relay-grok-smoke-data-${process.pid}`);
 const VALID_SESSION_TOKEN = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signature";
 const GROK_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -103,20 +104,27 @@ function runAsync(args, options = {}) {
 function grokSmokeEnv(cwd, env = {}, defaultTransportEnv = {}) {
   const pluginDataRoot = env.GROK_PLUGIN_DATA
     ?? process.env.GROK_PLUGIN_DATA
-    ?? path.join(tmpdir(), `relay-grok-smoke-workload-${process.pid}`);
+    ?? DEFAULT_GROK_SMOKE_DATA_ROOT;
   const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
     ?? path.join(pluginDataRoot, ".provider-workload");
   return {
     ...process.env,
     ...defaultTransportEnv,
     ...env,
+    GROK_PLUGIN_DATA: pluginDataRoot,
     RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
     RELAY_WORKLOAD_TEST_MODE: "1",
   };
 }
 
+after(() => {
+  rmSync(DEFAULT_GROK_SMOKE_DATA_ROOT, { recursive: true, force: true });
+});
+
 test("grok smoke env defaults workload locks outside the repo root", () => {
   const env = grokSmokeEnv(REPO_ROOT, {});
+  assert.equal(env.GROK_PLUGIN_DATA, DEFAULT_GROK_SMOKE_DATA_ROOT);
+  assert.equal(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(env.GROK_PLUGIN_DATA, ".provider-workload"));
   assert.notEqual(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(REPO_ROOT, ".provider-workload"));
   assert.ok(!env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR.startsWith(REPO_ROOT + path.sep));
 });
@@ -186,7 +194,7 @@ function makeEmptyBranchDiffWorkspace() {
 async function withServer(handler, fn, options = {}) {
   const autoPreflight = options.autoPreflight !== false;
   const server = http.createServer(async (req, res) => {
-    if (autoPreflight && req.headers["x-codex-grok-readiness-preflight"] === "1") {
+    if (autoPreflight && req.headers["x-relay-grok-readiness-preflight"] === "1") {
       assert.equal(req.method, "POST");
       assert.equal(req.url, "/api/chat/completions");
       const body = await readJsonRequest(req);
@@ -2406,7 +2414,7 @@ test("explicit --transport web surfaces stale session tokens and suggests repair
         requests.push({
           method: req.method,
           url: req.url,
-          preflight: req.headers["x-codex-grok-readiness-preflight"] === "1",
+          preflight: req.headers["x-relay-grok-readiness-preflight"] === "1",
           prompt: body.messages?.[0]?.content ?? "",
         });
         res.statusCode = 429;
@@ -7207,7 +7215,7 @@ test("custom-review fails closed when Grok chat readiness has no runtime tokens"
       requests.push({
         method: req.method,
         url: req.url,
-        preflight: req.headers["x-codex-grok-readiness-preflight"] === "1",
+        preflight: req.headers["x-relay-grok-readiness-preflight"] === "1",
         prompt: body.messages?.[0]?.content ?? "",
       });
       res.statusCode = 429;

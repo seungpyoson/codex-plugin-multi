@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 const CODEX_SANDBOX_REPAIR_GUIDANCE_RE =
-  /\bCodex\b|~\/\.codex\/config\.toml|\[sandbox_workspace_write\]|sandbox_permissions|require_escalated|writable_roots/;
+  /\bcodex\b|~\/\.codex\/config\.toml|\[sandbox_workspace_write\]|sandbox_permissions|require_escalated|writable_roots|CODEX_SANDBOX|seatbelt/i;
 
 export function assertNoCodexSandboxRepairGuidance(value, label = "diagnostic") {
   assert.doesNotMatch(
