@@ -61,6 +61,7 @@ const UUID = "550e8400-e29b-41d4-a716-446655440000";
 const CLAUDE_UUID = "11111111-2222-4333-8444-555555555555";
 const GEMINI_UUID = "22222222-3333-4444-9555-666666666666";
 const AGY_SESSION_ID = "agy-conversation-123";
+const HOST_INAPPROPRIATE_DIAGNOSTIC_RE = /\bCodex\b|~\/\.codex\/config\.toml/;
 
 function sentButNoCleanResult(provider) {
   return `Selected source content was sent to ${provider} for external review, but the run ended before a clean result was produced.`;
@@ -2864,7 +2865,7 @@ test("buildJobRecord: preflight auth and sandbox failures are actionable and not
       message: "sandbox_blocked: operation not permitted: /Users/example/.claude.json",
       errorCode: "sandbox_blocked",
       summary: /sandbox access/i,
-      suggestedAction: /writable_roots/,
+      suggestedAction: /writable roots/,
       disclosure: notSentSandboxBlocked("Claude Code"),
     },
   ];
@@ -2905,7 +2906,7 @@ test("gemini buildJobRecord: preflight auth and sandbox failures are actionable 
       message: "sandbox_blocked: operation not permitted: /Users/example/.gemini/settings.json",
       errorCode: "sandbox_blocked",
       summary: /sandbox access/i,
-      suggestedAction: /writable_roots/,
+      suggestedAction: /writable roots/,
       disclosure: notSentSandboxBlocked("Gemini CLI"),
     },
   ];
@@ -2925,6 +2926,74 @@ test("gemini buildJobRecord: preflight auth and sandbox failures are actionable 
     assert.match(rec.suggested_action, entry.suggestedAction);
     assert.equal(rec.external_review.source_content_transmission, "not_sent");
     assert.equal(rec.external_review.disclosure, entry.disclosure);
+  }
+});
+
+test("buildJobRecord: preflight auth and sandbox diagnostics are host-neutral across companion providers", () => {
+  const providers = [
+    {
+      name: "claude",
+      build: buildJobRecord,
+      invocation: makeInvocation(),
+      sessionFields: { claudeSessionId: null },
+      authMessage: "not_authed: claude login missing",
+      sandboxMessage: "sandbox_blocked: operation not permitted: /Users/example/.claude.json",
+    },
+    {
+      name: "gemini",
+      build: buildGeminiJobRecord,
+      invocation: makeInvocation({ target: "gemini", model: "gemini-3-flash-preview", binary: "gemini" }),
+      sessionFields: { geminiSessionId: null },
+      authMessage: "not_authed: gemini login missing",
+      sandboxMessage: "sandbox_blocked: operation not permitted: /Users/example/.gemini/settings.json",
+    },
+    {
+      name: "kimi",
+      build: buildKimiJobRecord,
+      invocation: makeInvocation({ target: "kimi", model: "kimi-k2-0905", binary: "kimi" }),
+      sessionFields: { kimiSessionId: null },
+      authMessage: "not_authed: kimi login missing",
+      sandboxMessage: "sandbox_blocked: operation not permitted: /Users/example/.kimi-code/config.toml",
+    },
+    {
+      name: "agy",
+      build: buildAgyJobRecord,
+      invocation: makeInvocation({
+        target: "agy",
+        binary: "agy",
+        model: null,
+        review_prompt_provider: "Google Antigravity CLI",
+      }),
+      sessionFields: { agySessionId: null },
+      authMessage: "not_authed: agy login missing",
+      sandboxMessage: "sandbox_blocked: operation not permitted: /Users/example/.config/agy/state.json",
+    },
+  ];
+
+  for (const provider of providers) {
+    for (const [errorCode, errorMessage] of [
+      ["not_authed", provider.authMessage],
+      ["sandbox_blocked", provider.sandboxMessage],
+    ]) {
+      const rec = provider.build(provider.invocation, {
+        exitCode: null,
+        parsed: null,
+        pidInfo: null,
+        errorMessage,
+        ...provider.sessionFields,
+      }, []);
+
+      const diagnosticFields = JSON.stringify({
+        error_summary: rec.error_summary,
+        error_cause: rec.error_cause,
+        suggested_action: rec.suggested_action,
+      });
+      assert.equal(rec.error_code, errorCode, `${provider.name}:${errorCode}`);
+      assert.doesNotMatch(diagnosticFields, HOST_INAPPROPRIATE_DIAGNOSTIC_RE, `${provider.name}:${errorCode}`);
+      if (errorCode === "sandbox_blocked") {
+        assert.match(rec.suggested_action, /fresh host session/i, provider.name);
+      }
+    }
   }
 });
 

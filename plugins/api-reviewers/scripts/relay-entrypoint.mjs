@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_RUNTIME_PATH = resolve(SCRIPT_DIR, "api-reviewer.mjs");
+const API_REVIEWERS_HOST_ENV = "RELAY_API_REVIEWERS_HOST";
 
 function configuredRuntime(env) {
   const value = env.RELAY_API_REVIEWERS_RUNTIME;
@@ -27,6 +28,7 @@ function pluginRoot(scriptUrl) {
 export function runRelayDirectApiEntrypoint({
   provider,
   scriptUrl,
+  host = null,
   args = process.argv.slice(2),
   env = process.env,
 } = {}) {
@@ -35,6 +37,10 @@ export function runRelayDirectApiEntrypoint({
   }
   if (typeof scriptUrl !== "string" || scriptUrl.trim() === "") {
     throw new TypeError("scriptUrl is required");
+  }
+  const runtimeHost = host == null ? null : String(host).trim().toLowerCase();
+  if (runtimeHost != null && !["claude", "codex"].includes(runtimeHost)) {
+    throw new TypeError("host must be claude or codex");
   }
 
   const root = pluginRoot(scriptUrl);
@@ -66,6 +72,7 @@ export function runRelayDirectApiEntrypoint({
   const result = spawnSync(process.execPath, [runtime, ...args], {
     env: {
       ...env,
+      ...(runtimeHost ? { [API_REVIEWERS_HOST_ENV]: runtimeHost } : {}),
       API_REVIEWERS_PROVIDERS_PATH: env.API_REVIEWERS_PROVIDERS_PATH ?? providersPath,
       API_REVIEWERS_SESSION_APPROVAL_POLICY_PATH:
         env.API_REVIEWERS_SESSION_APPROVAL_POLICY_PATH ?? sessionApprovalPolicyPath,

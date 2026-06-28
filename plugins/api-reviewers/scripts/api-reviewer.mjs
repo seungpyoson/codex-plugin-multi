@@ -67,6 +67,7 @@ const SESSION_APPROVAL_GRANT_SCHEMA_VERSION = 1;
 const DOCTOR_PROBE_PROMPT = "Return exactly: ok";
 const CODEX_SOURCE_SEND_SANDBOX_GUIDANCE = "Use the default Codex sandbox for the matching source-bearing run. Do not request `sandbox_permissions: \"require_escalated\"` for a normal source send; if the default sandbox blocks provider auth, job state, temp files, or network, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"`.";
 const HOST_NEUTRAL_SOURCE_SEND_SANDBOX_GUIDANCE = "Use the current execution environment for the matching source-bearing run. Do not broaden local execution access for a normal source send; if local execution blocks provider auth, job state, temp files, or network, stop and report `sandbox_blocked` with `source_content_transmission: \"not_sent\"`.";
+const API_REVIEWERS_HOST_ENV = "RELAY_API_REVIEWERS_HOST";
 const GIT_SHOW_MAX_BUFFER_BYTES = MAX_SCOPE_FILE_BYTES + 1;
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -2585,7 +2586,7 @@ function fetchExceptionDiagnostics(error, redact) {
 
 function providerUnavailableSuggestedAction(errorMessage = "", httpStatus = null, env = process.env) {
   const looksLikeNetworkFailure = /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT/i.test(errorMessage);
-  if (httpStatus == null && isCodexSandbox(env) && looksLikeNetworkFailure) {
+  if (httpStatus == null && usesCodexSandboxGuidance(env) && looksLikeNetworkFailure) {
     return `If running inside Codex, set [sandbox_workspace_write].network_access = true in ~/.codex/config.toml, start a fresh Codex session, then retry; or run this direct API reviewer outside sandbox. If network is already enabled, retry later or switch reviewer provider.`;
   }
   if (httpStatus == null && looksLikeNetworkFailure) {
@@ -2594,8 +2595,19 @@ function providerUnavailableSuggestedAction(errorMessage = "", httpStatus = null
   return `Retry later or switch reviewer provider.`;
 }
 
+function apiReviewersHost(env = process.env) {
+  return typeof env?.[API_REVIEWERS_HOST_ENV] === "string"
+    ? env[API_REVIEWERS_HOST_ENV].trim().toLowerCase()
+    : "";
+}
+
+function usesCodexSandboxGuidance(env = process.env) {
+  if (apiReviewersHost(env) === "claude") return false;
+  return isCodexSandbox(env);
+}
+
 function sourceSendSandboxGuidance(env = process.env) {
-  return isCodexSandbox(env)
+  return usesCodexSandboxGuidance(env)
     ? CODEX_SOURCE_SEND_SANDBOX_GUIDANCE
     : HOST_NEUTRAL_SOURCE_SEND_SANDBOX_GUIDANCE;
 }
@@ -2654,7 +2666,12 @@ function suggestedAction(errorCode, provider, cfg, errorMessage = "", httpStatus
     return "Treat this reviewer slot as failed, inspect the raw result and review_quality reasons, then retry with a source packet the reviewer can inspect.";
   }
   if (errorCode === "scope_failed") return scopeFailedSuggestedAction(errorMessage);
-  if (errorCode === "sandbox_blocked") return "Set API_REVIEWERS_PLUGIN_DATA to a writable path inside the Codex workspace or another approved writable root, start a fresh Codex session if sandbox roots changed, then retry.";
+  if (errorCode === "sandbox_blocked") {
+    if (usesCodexSandboxGuidance(env)) {
+      return "Set API_REVIEWERS_PLUGIN_DATA to a writable path inside the Codex workspace or another approved writable root, start a fresh Codex session if sandbox roots changed, then retry.";
+    }
+    return "Set API_REVIEWERS_PLUGIN_DATA to a writable path inside the current workspace state directory or another approved writable root, start a fresh host session if sandbox roots changed, then retry.";
+  }
   if (errorCode === "git_binary_rejected") return sharedDiagnostic?.suggested_action ?? `Set ${GIT_BINARY_ENV} to a trusted Git executable outside the workspace, or unset it to use the default Git binary.`;
   return sharedDiagnostic?.suggested_action ?? "Inspect error_message and retry after correcting the provider or request configuration.";
 }

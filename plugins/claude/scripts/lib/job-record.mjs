@@ -261,7 +261,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *                     claude_error.
  *   not_authed      — same-process auth/readiness preflight found no usable
  *                     Claude login before selected source was sent.
- *   sandbox_blocked — same-process readiness preflight found Codex sandbox
+ *   sandbox_blocked — same-process readiness preflight found host sandbox
  *                     could not access Claude state before selected source
  *                     was sent.
  *   claude_error    — exitCode !== 0 with parseable JSON (target's is_error=true).
@@ -344,7 +344,7 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   }
   if (error_code === "not_authed") {
     return {
-      error_summary: "Claude Code is not logged in for this Codex session.",
+      error_summary: "Claude Code is not logged in for this host session.",
       error_cause:
         "The companion checked Claude subscription/OAuth readiness in the same process before launching the review target, and Claude did not report a usable login.",
       suggested_action:
@@ -354,11 +354,11 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   }
   if (error_code === "sandbox_blocked") {
     return {
-      error_summary: "Claude Code is blocked by Codex sandbox access to Claude state.",
+      error_summary: "Claude Code is blocked by host sandbox access to Claude state.",
       error_cause:
-        "The companion ran a same-process readiness preflight before sending selected source, and Claude could not read or write its ~/.claude state files from this Codex sandbox.",
+        "The companion ran a same-process readiness preflight before sending selected source, and Claude could not read or write its ~/.claude state files from this host sandbox.",
       suggested_action:
-        "Add ~/.claude to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, start a fresh Codex session, rerun /claude-setup, then retry the review.",
+        "Allow ~/.claude in the current host sandbox's writable roots, start a fresh host session, rerun /claude-setup, then retry the review.",
       disclosure_note: null,
     };
   }

@@ -125,8 +125,11 @@ async function runExecutable(args, { cwd = REPO_ROOT, env = {}, executable } = {
 }
 
 function apiReviewersSmokeEnv(cwd, env = {}) {
+  const pluginDataRoot = env.API_REVIEWERS_PLUGIN_DATA
+    ?? process.env.API_REVIEWERS_PLUGIN_DATA
+    ?? path.join(tmpdir(), `relay-api-reviewers-smoke-workload-${process.pid}`);
   const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(env.API_REVIEWERS_PLUGIN_DATA ?? cwd, ".provider-workload");
+    ?? path.join(pluginDataRoot, ".provider-workload");
   return {
     ...process.env,
     API_REVIEWERS_DISABLE_ENV_CACHE: "1",
@@ -135,6 +138,12 @@ function apiReviewersSmokeEnv(cwd, env = {}) {
     RELAY_WORKLOAD_TEST_MODE: "1",
   };
 }
+
+test("api reviewers smoke env defaults workload locks outside the repo root", () => {
+  const env = apiReviewersSmokeEnv(REPO_ROOT, {});
+  assert.notEqual(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(REPO_ROOT, ".provider-workload"));
+  assert.ok(!env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR.startsWith(REPO_ROOT + path.sep));
+});
 
 function parseJson(stdout) {
   return JSON.parse(stdout);
@@ -1789,6 +1798,7 @@ test("direct API reviewer fails closed before provider contact when plugin data 
       companion: path.join(pluginRoot, "scripts", "api-reviewer.mjs"),
       env: {
         API_REVIEWERS_PLUGIN_DATA: dataRoot,
+        CODEX_SANDBOX: "",
         DEEPSEEK_API_KEY: "secret-test-value",
       },
     });
@@ -1801,10 +1811,45 @@ test("direct API reviewer fails closed before provider contact when plugin data 
     assert.equal(record.error_code, "sandbox_blocked");
     assert.equal(record.error_cause, "sandbox_access");
     assert.match(record.suggested_action, /API_REVIEWERS_PLUGIN_DATA|writable/);
+    assert.doesNotMatch(record.suggested_action, /\bCodex\b|~\/\.codex\/config\.toml/);
     assertDirectApiNotSent(record, "DeepSeek");
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   } finally {
     server.close();
+  }
+});
+
+test("Claude relay direct API wrapper keeps host-neutral sandbox guidance when CODEX_SANDBOX is inherited", async () => {
+  const cwd = makeWorkspace();
+  const dataRoot = path.join(tmpdir(), `claude-relay-api-reviewers-data-file-${Date.now()}-${process.pid}-secret-test-value`);
+  writeFileSync(dataRoot, "not a directory\n");
+  try {
+    const result = await run([
+      "run",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--foreground",
+      "--prompt", "Check this file.",
+    ], {
+      cwd,
+      companion: path.join(REPO_ROOT, "relay", "relay-deepseek", "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataRoot,
+        CODEX_SANDBOX: "seatbelt",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const record = parseJson(result.stdout);
+    assert.equal(record.error_code, "sandbox_blocked");
+    assert.match(record.suggested_action, /fresh host session/);
+    assert.doesNotMatch(record.suggested_action, /\bCodex\b|~\/\.codex\/config\.toml/);
+    assertDirectApiNotSent(record, "DeepSeek");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
   }
 });
 
@@ -5725,6 +5770,40 @@ test("direct API reviewers approval-request describes external source transmissi
     assert.equal(JSON.stringify(request).includes("hello from selected scope"), false);
     assert.equal(JSON.stringify(request).includes("secret-test-value"), false);
     assert.equal(JSON.stringify(request).includes(cwd), false);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("Claude relay direct API approval-request keeps host-neutral guidance when CODEX_SANDBOX is inherited", async () => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "claude-relay-api-reviewers-guidance-"));
+  const cwd = makeWorkspace();
+  try {
+    writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
+
+    const result = await run([
+      "approval-request",
+      "--provider", "deepseek",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "seed.txt",
+      "--prompt", "Review seed file only.",
+    ], {
+      cwd,
+      companion: path.join(REPO_ROOT, "relay", "relay-deepseek", "scripts", "api-reviewer.mjs"),
+      env: {
+        API_REVIEWERS_PLUGIN_DATA: dataDir,
+        CODEX_SANDBOX: "seatbelt",
+        DEEPSEEK_API_KEY: "secret-test-value",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const request = parseJson(result.stdout);
+    assert.match(request.recommended_tool_justification, /current execution environment/);
+    assert.match(request.recommended_tool_justification, /Do not broaden local execution access for a normal source send/);
+    assert.doesNotMatch(request.recommended_tool_justification, /\bCodex\b|sandbox_permissions|require_escalated|~\/\.codex\/config\.toml/);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

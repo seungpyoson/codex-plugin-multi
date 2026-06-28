@@ -245,7 +245,7 @@ export function externalReviewForInvocation(invocation, execution = null) {
  *   spawn_failed    — execution.errorMessage set (spawn threw before Kimi ran).
  *   not_authed      — same-process auth/readiness preflight found no usable
  *                     Kimi login before selected source was sent.
- *   sandbox_blocked — same-process readiness preflight found Codex sandbox
+ *   sandbox_blocked — same-process readiness preflight found host sandbox
  *                     denying access to Kimi state before selected source was sent.
  *   finalization_failed — errorMessage starts "finalization_failed:" — the
  *                         companion's executeRun fallback path (#16 follow-up 1).
@@ -295,7 +295,7 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   }
   if (status === "failed" && error_code === "not_authed") {
     return {
-      error_summary: `${target.displayName} Code CLI is not logged in for this Codex session.`,
+      error_summary: `${target.displayName} Code CLI is not logged in for this host session.`,
       error_cause:
         `The companion checked ${target.displayName} readiness in the same process before launching the review target, and the CLI did not report a usable login.`,
       suggested_action:
@@ -305,11 +305,11 @@ function buildErrorDiagnostic(invocation, status, error_code, error_message) {
   }
   if (status === "failed" && error_code === "sandbox_blocked") {
     return {
-      error_summary: `${target.displayName} Code CLI is blocked by Codex sandbox access to Kimi state.`,
+      error_summary: `${target.displayName} Code CLI is blocked by host sandbox access to Kimi state.`,
       error_cause:
-        "The companion ran a same-process readiness preflight before sending selected source, and Kimi could not read or write its ~/.kimi-code state/log files from this Codex sandbox.",
+        "The companion ran a same-process readiness preflight before sending selected source, and Kimi could not read or write its ~/.kimi-code state/log files from this host sandbox.",
       suggested_action:
-        "Add ~/.kimi-code/logs to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, leave KIMI_CODE_HOME at its default, start a fresh Codex session, and rerun /kimi-setup. If the next denial is another ~/.kimi-code auth/config path, use ~/.kimi-code as the writable root.",
+        "Allow ~/.kimi-code/logs in the current host sandbox's writable roots, leave KIMI_CODE_HOME at its default, start a fresh host session, and rerun /kimi-setup. If the next denial is another ~/.kimi-code auth/config path, allow ~/.kimi-code as the writable root.",
       disclosure_note: null,
     };
   }

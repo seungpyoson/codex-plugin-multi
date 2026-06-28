@@ -8,4 +8,4 @@ const candidates = [
 ].filter(Boolean);
 const helper = await Promise.any(candidates.map((candidate) => import(candidate))).catch(() => null);
 if (!helper) { console.error("api_reviewer_entrypoint_missing: install the shared api-reviewers runtime"); process.exit(1); }
-helper.runRelayDirectApiEntrypoint({ provider: "glm", scriptUrl: import.meta.url });
+helper.runRelayDirectApiEntrypoint({ provider: "glm", scriptUrl: import.meta.url, host: "claude" });

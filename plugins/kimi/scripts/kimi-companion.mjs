@@ -2028,8 +2028,8 @@ function pingContractMismatchFields() {
 function pingSandboxBlockedFields() {
   return {
     ready: false,
-    summary: "Kimi Code CLI is blocked by Codex sandbox access to Kimi state.",
-    next_action: "First add ~/.kimi-code/logs to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, leave KIMI_CODE_HOME at its default so Kimi uses your normal ~/.kimi-code auth/config, then start a fresh Codex session and rerun setup. If the next denial is an OAuth/session file under ~/.kimi-code, fall back to ~/.kimi-code as the writable root. Alternatively, run this check outside sandbox.",
+    summary: "Kimi Code CLI is blocked by host sandbox access to Kimi state.",
+    next_action: "First allow ~/.kimi-code/logs in the current host sandbox's writable roots, leave KIMI_CODE_HOME at its default so Kimi uses your normal ~/.kimi-code auth/config, then start a fresh host session and rerun setup. If the next denial is an OAuth/session file under ~/.kimi-code, fall back to ~/.kimi-code as the writable root. Alternatively, run this check outside the sandbox.",
   };
 }
 

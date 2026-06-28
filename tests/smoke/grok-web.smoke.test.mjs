@@ -101,8 +101,11 @@ function runAsync(args, options = {}) {
 }
 
 function grokSmokeEnv(cwd, env = {}, defaultTransportEnv = {}) {
+  const pluginDataRoot = env.GROK_PLUGIN_DATA
+    ?? process.env.GROK_PLUGIN_DATA
+    ?? path.join(tmpdir(), `relay-grok-smoke-workload-${process.pid}`);
   const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(env.GROK_PLUGIN_DATA ?? cwd, ".provider-workload");
+    ?? path.join(pluginDataRoot, ".provider-workload");
   return {
     ...process.env,
     ...defaultTransportEnv,
@@ -111,6 +114,12 @@ function grokSmokeEnv(cwd, env = {}, defaultTransportEnv = {}) {
     RELAY_WORKLOAD_TEST_MODE: "1",
   };
 }
+
+test("grok smoke env defaults workload locks outside the repo root", () => {
+  const env = grokSmokeEnv(REPO_ROOT, {});
+  assert.notEqual(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(REPO_ROOT, ".provider-workload"));
+  assert.ok(!env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR.startsWith(REPO_ROOT + path.sep));
+});
 
 function parseStdout(result) {
   assert.doesNotMatch(result.stderr, /secret|token|cookie|xai/i);

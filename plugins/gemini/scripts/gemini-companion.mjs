@@ -2398,8 +2398,8 @@ function pingErrorFields() {
 function pingSandboxBlockedFields() {
   return {
     ready: false,
-    summary: "Gemini CLI is blocked by Codex sandbox access to Gemini state.",
-    next_action: "Add ~/.gemini to [sandbox_workspace_write].writable_roots in ~/.codex/config.toml, start a fresh Codex session, then rerun /gemini-setup. Alternatively, run this check outside sandbox.",
+    summary: "Gemini CLI is blocked by host sandbox access to Gemini state.",
+    next_action: "Allow ~/.gemini in the current host sandbox's writable roots, start a fresh host session, then rerun /gemini-setup. Alternatively, run this check outside the sandbox.",
   };
 }
 
