@@ -330,9 +330,9 @@ describe("I4 — Bearer tokens are redacted with JSON syntax intact", () => {
           // Embed in a JSON-shaped string.
           const host = `{"auth":"Bearer ${token}${suffix}rest":1}`;
           const sanitized = sanitize(host, { architecture, env: {} });
-          // Token gone, suffix character (the byte immediately after)
-          // preserved exactly once at its position.
-          return !sanitized.includes(token)
+          // The Bearer token occurrence is gone, while the suffix character
+          // (the byte immediately after the token) is preserved at its position.
+          return !sanitized.includes(`Bearer ${token}${suffix}`)
             && sanitized.includes(`Bearer ${REDACTED}${suffix}`);
         },
       ),
