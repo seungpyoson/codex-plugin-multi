@@ -269,8 +269,8 @@ function defaultProviderWorkloadLockRoot(env = process.env) {
     : null;
   if (xdgStateHome) return join(xdgStateHome, "relay", "locks", "v2");
   const uid = process.getuid?.();
-  const userSegment = Number.isSafeInteger(uid) && uid >= 0 ? `relay-${uid}` : "relay-user";
-  return join(tmpdir(), userSegment, "locks", "v2");
+  const userSegment = Number.isSafeInteger(uid) && uid >= 0 ? `relay-locks-v2-${uid}` : "relay-locks-v2-user";
+  return join(tmpdir(), userSegment);
 }
 
 function providerWorkloadLockRoot(category, env = process.env) {

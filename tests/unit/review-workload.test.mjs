@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -183,6 +183,79 @@ test("provider workload lease fails closed when existing lock root is not writab
     assert.equal(result.reason, "unwritable_provider_workload_lock_root");
     assert.deepEqual(result.capacity, { active_count: 0, limit: 1 });
   } finally {
+    chmodSync(root, 0o700);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease fails closed when lock root path is a file", () => {
+  const parent = mkdtempSync(join(tmpdir(), "provider-workload-file-root-"));
+  const root = join(parent, "locks");
+  writeFileSync(root, "not a directory");
+  const result = acquireProviderWorkloadLease({
+    concurrencyKey: "file-lock-root",
+    limit: 1,
+    lockRoot: root,
+    jobId: "job-file-lock-root",
+    cwd: "/tmp/w",
+    sourceBearing: true,
+    env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+  });
+  try {
+    assert.equal(result.ok, false);
+    assert.equal(result.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
+    assert.equal(result.reason, "unwritable_provider_workload_lock_root");
+    assert.deepEqual(result.capacity, { active_count: 0, limit: 1 });
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease refuses a symlinked lock root", (t) => {
+  if (process.platform === "win32") return t.skip("directory symlinks require elevated privileges on some Windows hosts");
+  const parent = mkdtempSync(join(tmpdir(), "provider-workload-symlink-root-"));
+  const target = join(parent, "target");
+  const root = join(parent, "locks");
+  mkdirSync(target);
+  symlinkSync(target, root, "dir");
+  let result;
+  try {
+    result = acquireProviderWorkloadLease({
+      concurrencyKey: "symlink-lock-root",
+      limit: 1,
+      lockRoot: root,
+      jobId: "job-symlink-lock-root",
+      cwd: "/tmp/w",
+      sourceBearing: true,
+      env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error_code, PROVIDER_WORKLOAD_BLOCKED_CODE);
+    assert.equal(result.reason, "unwritable_provider_workload_lock_root");
+    assert.deepEqual(result.capacity, { active_count: 0, limit: 1 });
+  } finally {
+    if (result?.lease) releaseProviderWorkloadLease(result.lease);
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("provider workload lease makes an existing lock root private before use", () => {
+  const root = mkdtempSync(join(tmpdir(), "provider-workload-public-root-"));
+  chmodSync(root, 0o755);
+  const result = acquireProviderWorkloadLease({
+    concurrencyKey: "public-lock-root",
+    limit: 1,
+    lockRoot: root,
+    jobId: "job-public-lock-root",
+    cwd: "/tmp/w",
+    sourceBearing: true,
+    env: { RELAY_WORKLOAD_TEST_MODE: "1" },
+  });
+  try {
+    assert.equal(result.ok, true);
+    assert.equal(lstatSync(root).mode & 0o777, 0o700);
+  } finally {
+    if (result.lease) releaseProviderWorkloadLease(result.lease);
     chmodSync(root, 0o700);
     rmSync(root, { recursive: true, force: true });
   }
@@ -445,6 +518,7 @@ test("provider workload gate retries when owner write loses the gate directory r
     writeFileSync(shimPath, `
 import * as fs from "node:fs";
 
+export const chmodSync = fs.chmodSync;
 export const existsSync = fs.existsSync;
 export const linkSync = fs.linkSync;
 export const lstatSync = fs.lstatSync;
@@ -518,6 +592,7 @@ test("provider workload gate recovers when the lock root vanishes mid-acquire in
     writeFileSync(shimPath, `
 import * as fs from "node:fs";
 
+export const chmodSync = fs.chmodSync;
 export const existsSync = fs.existsSync;
 export const linkSync = fs.linkSync;
 export const lstatSync = fs.lstatSync;

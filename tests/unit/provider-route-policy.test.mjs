@@ -2149,7 +2149,7 @@ test("shared_state concurrency admission ignores lock root override outside test
   assert.equal(admission.lockRoot, path.join(tmpdir(), "relay-policy-state", "relay", "locks", "v2"));
 });
 
-test("shared_state concurrency admission defaults lock root to per-user tmpdir when XDG_STATE_HOME is absent", (t) => {
+test("shared_state concurrency admission defaults lock root to a private per-user tmpdir leaf when XDG_STATE_HOME is absent", (t) => {
   const sharedStateDir = mkdtempSync(path.join(tmpdir(), "relay-policy-shared-state-"));
   t.after(() => rmSync(sharedStateDir, { recursive: true, force: true }));
 
@@ -2163,8 +2163,9 @@ test("shared_state concurrency admission defaults lock root to per-user tmpdir w
   });
 
   const uid = process.getuid?.();
-  const userSegment = Number.isSafeInteger(uid) && uid >= 0 ? `relay-${uid}` : "relay-user";
-  assert.equal(admission.lockRoot, path.join(tmpdir(), userSegment, "locks", "v2"));
+  const userSegment = Number.isSafeInteger(uid) && uid >= 0 ? `relay-locks-v2-${uid}` : "relay-locks-v2-user";
+  assert.equal(path.dirname(admission.lockRoot), tmpdir());
+  assert.equal(admission.lockRoot, path.join(tmpdir(), userSegment));
 });
 
 test("stateless concurrency admission honors lock root override", () => {

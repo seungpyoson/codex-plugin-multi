@@ -1,4 +1,4 @@
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join, dirname } from "node:path";
@@ -10,15 +10,7 @@ const SCHEMA_VERSION = 1;
 const DEFAULT_GATE_TIMEOUT_MS = 5_000;
 const GATE_POLL_MS = 25;
 const GATE_OWNER_FILE = "owner.json";
-const LOCK_ROOT_UNWRITABLE_CODES = new Set([
-  "EACCES",
-  "EPERM",
-  "ENOTDIR",
-  "EROFS",
-  "ENOSPC",
-  "EMFILE",
-  "ENFILE",
-]);
+const LOCK_ROOT_UNUSABLE_CODE = "PROVIDER_WORKLOAD_LOCK_ROOT_UNUSABLE";
 
 function trimEdgeHyphens(value) {
   let start = 0;
@@ -60,8 +52,56 @@ function gateTimeoutMs(env) {
   return positiveIntegerEnv(env, GATE_TIMEOUT_ENV, DEFAULT_GATE_TIMEOUT_MS);
 }
 
-function isUnwritableLockRootError(error) {
-  return LOCK_ROOT_UNWRITABLE_CODES.has(error?.code);
+function isProviderWorkloadFilesystemError(error) {
+  return typeof error?.code === "string";
+}
+
+function unusableLockRootError() {
+  const error = new Error("provider workload lock root is not usable");
+  error.code = LOCK_ROOT_UNUSABLE_CODE;
+  return error;
+}
+
+function currentUid() {
+  const uid = process.getuid?.();
+  return Number.isSafeInteger(uid) && uid >= 0 ? uid : null;
+}
+
+function ensureProviderWorkloadLockRoot(root) {
+  try {
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    if (!isProviderWorkloadFilesystemError(error)) throw error;
+    return false;
+  }
+
+  let stat;
+  try {
+    stat = lstatSync(root);
+  } catch (error) {
+    if (!isProviderWorkloadFilesystemError(error)) throw error;
+    return false;
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+
+  const uid = currentUid();
+  if (uid != null && typeof stat.uid === "number" && stat.uid !== uid) return false;
+
+  const mode = stat.mode & 0o777;
+  if ((mode & 0o700) !== 0o700) return false;
+  if ((mode & 0o077) !== 0) {
+    try {
+      chmodSync(root, 0o700);
+      stat = lstatSync(root);
+    } catch (error) {
+      if (!isProviderWorkloadFilesystemError(error)) throw error;
+      return false;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    if ((stat.mode & 0o777) !== 0o700) return false;
+  }
+
+  return true;
 }
 
 function sleepSync(ms) {
@@ -284,7 +324,7 @@ export function acquireProviderWorkloadGate(file, env, capture, pidInfo) {
       // caller-provided lockRoot), recreated rather than an env default so the
       // in-use root — not some other path — is what heals.
       if (error?.code === "ENOENT" && error?.syscall === "mkdir") {
-        try { mkdirSync(dirname(gateDir), { recursive: true, mode: 0o700 }); } catch { /* best effort */ }
+        if (!ensureProviderWorkloadLockRoot(dirname(gateDir))) throw unusableLockRootError();
         sleepSync(GATE_POLL_MS);
         continue;
       }
@@ -410,10 +450,7 @@ export function acquireProviderWorkloadLease({
 
   const root = lockRoot;
   const gateFile = legacyLockPath(root, slug);
-  try {
-    mkdirSync(root, { recursive: true, mode: 0o700 });
-  } catch (error) {
-    if (!isUnwritableLockRootError(error)) throw error;
+  if (!ensureProviderWorkloadLockRoot(root)) {
     return blockResult({ active_count: 0, limit }, "unwritable_provider_workload_lock_root");
   }
 
@@ -472,7 +509,7 @@ export function acquireProviderWorkloadLease({
       const file = slotPath(root, slug, index);
       if (tryCreateLeaseFile(file, payload)) return acquiredResult(file, payload);
     } catch (error) {
-      if (!isUnwritableLockRootError(error)) throw error;
+      if (!isProviderWorkloadFilesystemError(error)) throw error;
       return blockResult({ active_count: 0, limit }, "unwritable_provider_workload_lock_root");
     } finally {
       gate?.release?.();
