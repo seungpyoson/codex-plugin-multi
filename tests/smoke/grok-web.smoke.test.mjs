@@ -15,7 +15,7 @@ import { badVerdictReviewFixture, substantiveReviewFixture } from "../helpers/re
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/grok/scripts/grok-companion.mjs");
 const COMPANION_RUNTIME = path.join(REPO_ROOT, "plugins/grok/scripts/grok-web-reviewer.mjs");
-const DEFAULT_GROK_SMOKE_DATA_ROOT = path.join(tmpdir(), `relay-grok-smoke-data-${process.pid}`);
+const DEFAULT_GROK_SMOKE_DATA_ROOTS = new Set();
 const VALID_SESSION_TOKEN = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signature";
 const GROK_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -102,32 +102,44 @@ function runAsync(args, options = {}) {
 }
 
 function grokSmokeEnv(cwd, env = {}, defaultTransportEnv = {}) {
-  const pluginDataRoot = env.GROK_PLUGIN_DATA
+  const explicitPluginDataRoot = env.GROK_PLUGIN_DATA
     ?? process.env.GROK_PLUGIN_DATA
-    ?? DEFAULT_GROK_SMOKE_DATA_ROOT;
+    ?? null;
+  const fallbackPluginDataRoot = explicitPluginDataRoot ?? defaultGrokSmokeDataRoot(cwd);
   const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(pluginDataRoot, ".provider-workload");
+    ?? path.join(fallbackPluginDataRoot, ".provider-workload");
   return {
     ...process.env,
     ...defaultTransportEnv,
     ...env,
-    GROK_PLUGIN_DATA: pluginDataRoot,
+    ...(explicitPluginDataRoot === null ? {} : { GROK_PLUGIN_DATA: explicitPluginDataRoot }),
     RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
     RELAY_WORKLOAD_TEST_MODE: "1",
   };
 }
 
 after(() => {
-  rmSync(DEFAULT_GROK_SMOKE_DATA_ROOT, { recursive: true, force: true });
+  for (const dataRoot of DEFAULT_GROK_SMOKE_DATA_ROOTS) {
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
 });
 
 test("grok smoke env defaults workload locks outside the repo root", () => {
   const env = grokSmokeEnv(REPO_ROOT, {});
-  assert.equal(env.GROK_PLUGIN_DATA, DEFAULT_GROK_SMOKE_DATA_ROOT);
-  assert.equal(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(env.GROK_PLUGIN_DATA, ".provider-workload"));
+  const expectedDataRoot = defaultDataRootFor("grok", REPO_ROOT);
+  if (process.env.GROK_PLUGIN_DATA == null) {
+    assert.equal(Object.hasOwn(env, "GROK_PLUGIN_DATA"), false);
+  }
+  assert.equal(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(expectedDataRoot, ".provider-workload"));
   assert.notEqual(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(REPO_ROOT, ".provider-workload"));
   assert.ok(!env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR.startsWith(REPO_ROOT + path.sep));
 });
+
+function defaultGrokSmokeDataRoot(cwd) {
+  const dataRoot = defaultDataRootFor("grok", cwd);
+  DEFAULT_GROK_SMOKE_DATA_ROOTS.add(dataRoot);
+  return dataRoot;
+}
 
 function parseStdout(result) {
   assert.doesNotMatch(result.stderr, /secret|token|cookie|xai/i);

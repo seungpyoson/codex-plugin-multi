@@ -15,7 +15,7 @@ import { badVerdictReviewFixture, requestChangesReviewFixture, substantiveReview
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/api-reviewers/scripts/api-reviewer.mjs");
-const DEFAULT_API_REVIEWERS_SMOKE_DATA_ROOT = path.join(tmpdir(), `relay-api-reviewers-smoke-data-${process.pid}`);
+const DEFAULT_API_REVIEWERS_SMOKE_DATA_ROOTS = new Set();
 const SESSION_APPROVAL_POLICY = JSON.parse(readFileSync(path.join(REPO_ROOT, "plugins/api-reviewers/config/session-approval.json"), "utf8"));
 const API_REVIEWER_EXPECTED_KEYS = Object.freeze([
   "id",
@@ -127,32 +127,44 @@ async function runExecutable(args, { cwd = REPO_ROOT, env = {}, executable } = {
 }
 
 function apiReviewersSmokeEnv(cwd, env = {}) {
-  const pluginDataRoot = env.API_REVIEWERS_PLUGIN_DATA
+  const explicitPluginDataRoot = env.API_REVIEWERS_PLUGIN_DATA
     ?? process.env.API_REVIEWERS_PLUGIN_DATA
-    ?? DEFAULT_API_REVIEWERS_SMOKE_DATA_ROOT;
+    ?? null;
+  const fallbackPluginDataRoot = explicitPluginDataRoot ?? defaultApiReviewersSmokeDataRoot(cwd);
   const workloadLockDir = env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR
-    ?? path.join(pluginDataRoot, ".provider-workload");
+    ?? path.join(fallbackPluginDataRoot, ".provider-workload");
   return {
     ...process.env,
     API_REVIEWERS_DISABLE_ENV_CACHE: "1",
     ...env,
-    API_REVIEWERS_PLUGIN_DATA: pluginDataRoot,
+    ...(explicitPluginDataRoot === null ? {} : { API_REVIEWERS_PLUGIN_DATA: explicitPluginDataRoot }),
     RELAY_PROVIDER_WORKLOAD_LOCK_DIR: workloadLockDir,
     RELAY_WORKLOAD_TEST_MODE: "1",
   };
 }
 
 after(() => {
-  rmSync(DEFAULT_API_REVIEWERS_SMOKE_DATA_ROOT, { recursive: true, force: true });
+  for (const dataRoot of DEFAULT_API_REVIEWERS_SMOKE_DATA_ROOTS) {
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
 });
 
 test("api reviewers smoke env defaults workload locks outside the repo root", () => {
   const env = apiReviewersSmokeEnv(REPO_ROOT, {});
-  assert.equal(env.API_REVIEWERS_PLUGIN_DATA, DEFAULT_API_REVIEWERS_SMOKE_DATA_ROOT);
-  assert.equal(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(env.API_REVIEWERS_PLUGIN_DATA, ".provider-workload"));
+  const expectedDataRoot = defaultApiReviewerDataRoot(REPO_ROOT);
+  if (process.env.API_REVIEWERS_PLUGIN_DATA == null) {
+    assert.equal(Object.hasOwn(env, "API_REVIEWERS_PLUGIN_DATA"), false);
+  }
+  assert.equal(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(expectedDataRoot, ".provider-workload"));
   assert.notEqual(env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR, path.join(REPO_ROOT, ".provider-workload"));
   assert.ok(!env.RELAY_PROVIDER_WORKLOAD_LOCK_DIR.startsWith(REPO_ROOT + path.sep));
 });
+
+function defaultApiReviewersSmokeDataRoot(cwd) {
+  const dataRoot = defaultApiReviewerDataRoot(cwd);
+  DEFAULT_API_REVIEWERS_SMOKE_DATA_ROOTS.add(dataRoot);
+  return dataRoot;
+}
 
 function parseJson(stdout) {
   return JSON.parse(stdout);
