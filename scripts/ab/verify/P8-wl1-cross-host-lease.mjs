@@ -25,6 +25,7 @@ const SLUG = "agy";
 const LIMIT = 1;
 const DEAD_PID = 999999; // not a live process on this host
 const ANCIENT_EPOCH_S = 1; // ~1970, far past any timeout
+const FOREIGN_HOST = process.env.P8_WL1_FOREIGN_HOST || "other-host-totally-different";
 
 function captureScriptedDeadPid(pid) {
   if (pid === DEAD_PID) throw new Error(`process_gone: scripted dead pid ${pid}`);
@@ -115,7 +116,7 @@ function runArm(label, host) {
 
 console.log(`BLOCK CODE constant: ${PROVIDER_WORKLOAD_BLOCKED_CODE}`);
 
-const foreign = runArm("foreign-host", "other-host-totally-different");
+const foreign = runArm("foreign-host", FOREIGN_HOST);
 const local = runArm("control-local", hostname());
 
 console.log(`\n=== VERDICT ===`);
@@ -128,3 +129,4 @@ const pinned =
 
 console.log(`\nPINNED (foreign blocks + no reclaim, local control reclaims): ${pinned}`);
 if (foreign.reclaimed) console.log("REFUTED: foreign-host lease was reclaimed.");
+if (!pinned) process.exitCode = 1;
