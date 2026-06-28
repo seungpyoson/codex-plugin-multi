@@ -11,6 +11,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import {
+  assertHostNeutralSandboxRepairAction,
+  assertHostNeutralSandboxSummary,
+} from "../helpers/host-neutral-diagnostics.mjs";
 import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 import {
   apiKeyAuthMode as geminiApiKeyAuthMode,
@@ -3047,8 +3051,11 @@ process.exit(1);
     const parsed = JSON.parse(stdout);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.equal(parsed.ready, false);
-    assert.match(parsed.summary, /sandbox/i);
-    assert.match(parsed.next_action, /~\/\.gemini|writable_roots/);
+    assertHostNeutralSandboxSummary(parsed.summary, "Gemini ping sandbox summary");
+    assertHostNeutralSandboxRepairAction(parsed.next_action, {
+      statePathPattern: /~\/\.gemini/,
+      label: "Gemini ping sandbox next_action",
+    });
     assert.match(parsed.detail, /\.gemini\/settings\.json/);
   } finally {
     rmTree(dataDir);
@@ -3149,8 +3156,11 @@ process.exit(1);
     const [record] = lines;
     assert.equal(record.status, "failed");
     assert.equal(record.error_code, "sandbox_blocked");
-    assert.match(record.error_summary, /sandbox/i);
-    assert.match(record.suggested_action, /~\/\.gemini|writable_roots/);
+    assertHostNeutralSandboxSummary(record.error_summary, "Gemini run sandbox summary");
+    assertHostNeutralSandboxRepairAction(record.suggested_action, {
+      statePathPattern: /~\/\.gemini/,
+      label: "Gemini run sandbox suggested_action",
+    });
     assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.match(record.external_review.disclosure, /not sent/);

@@ -8,6 +8,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureGit, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import {
+  assertHostNeutralSandboxRepairAction,
+  assertHostNeutralSandboxSummary,
+  assertNoCodexSandboxRepairGuidance,
+} from "../helpers/host-neutral-diagnostics.mjs";
 import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 import {
   acquireProviderWorkloadLease,
@@ -452,10 +457,12 @@ process.exit(1);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.equal(parsed.ready, false);
-    assert.match(parsed.summary, /host sandbox/);
-    assert.match(parsed.next_action, /~\/\.kimi-code\/logs/);
+    assertHostNeutralSandboxSummary(parsed.summary, "Kimi ping sandbox summary");
+    assertHostNeutralSandboxRepairAction(parsed.next_action, {
+      statePathPattern: /~\/\.kimi-code\/logs/,
+      label: "Kimi ping sandbox next_action",
+    });
     assert.match(parsed.next_action, /fall back to ~\/\.kimi-code/);
-    assert.match(parsed.next_action, /writable roots/);
     assert.match(parsed.detail, /Operation not permitted/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -480,7 +487,10 @@ process.exit(1);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
     assert.equal(parsed.ready, false);
-    assert.match(parsed.next_action, /~\/\.kimi-code\/logs/);
+    assertHostNeutralSandboxRepairAction(parsed.next_action, {
+      statePathPattern: /~\/\.kimi-code\/logs/,
+      label: "Kimi long-denial ping sandbox next_action",
+    });
     assert.match(parsed.next_action, /fall back to ~\/\.kimi-code/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -504,8 +514,10 @@ process.exit(1);
     assert.equal(result.status, 2);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
-    assert.match(parsed.next_action, /writable_roots/);
-    assert.match(parsed.next_action, /~\/\.kimi-code\/logs/);
+    assertHostNeutralSandboxRepairAction(parsed.next_action, {
+      statePathPattern: /~\/\.kimi-code\/logs/,
+      label: "Kimi OAuth-file ping sandbox next_action",
+    });
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -528,7 +540,10 @@ process.exit(1);
     assert.equal(result.status, 2);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
-    assert.match(parsed.next_action, /~\/\.kimi-code\/logs/);
+    assertHostNeutralSandboxRepairAction(parsed.next_action, {
+      statePathPattern: /~\/\.kimi-code\/logs/,
+      label: "Kimi bare-directory ping sandbox next_action",
+    });
     assert.match(parsed.next_action, /fall back to ~\/\.kimi-code/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -553,7 +568,7 @@ process.exit(1);
     assert.equal(result.status, 2);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "error");
-    assert.doesNotMatch(parsed.next_action, /writable_roots/);
+    assertNoCodexSandboxRepairGuidance(parsed.next_action, "Kimi unrelated permission next_action");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -577,7 +592,7 @@ process.exit(1);
       assert.equal(result.status, 2);
       const parsed = parseJson(result.stdout);
       assert.notEqual(parsed.status, "sandbox_blocked");
-      assert.doesNotMatch(parsed.next_action, /writable_roots/);
+      assertNoCodexSandboxRepairGuidance(parsed.next_action, `Kimi false-like CODEX_SANDBOX=${value} next_action`);
     }
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -601,8 +616,10 @@ process.exit(1);
     assert.equal(result.status, 2);
     const parsed = parseJson(result.stdout);
     assert.equal(parsed.status, "sandbox_blocked");
-    assert.match(parsed.next_action, /writable_roots/);
-    assert.match(parsed.next_action, /~\/\.kimi-code\/logs/);
+    assertHostNeutralSandboxRepairAction(parsed.next_action, {
+      statePathPattern: /~\/\.kimi-code\/logs/,
+      label: "Kimi continuation ping sandbox next_action",
+    });
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -1603,8 +1620,11 @@ process.exit(1);
   const [record] = lines;
   assert.equal(record.status, "failed");
   assert.equal(record.error_code, "sandbox_blocked");
-  assert.match(record.error_summary, /host sandbox/);
-  assert.match(record.suggested_action, /writable roots|~\/\.kimi/);
+  assertHostNeutralSandboxSummary(record.error_summary, "Kimi run sandbox summary");
+  assertHostNeutralSandboxRepairAction(record.suggested_action, {
+    statePathPattern: /~\/\.kimi-code\/logs/,
+    label: "Kimi run sandbox suggested_action",
+  });
   assert.equal(record.pid_info ?? null, null);
   assert.equal(record.external_review.source_content_transmission, "not_sent");
   assert.match(record.external_review.disclosure, /not sent/);

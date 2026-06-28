@@ -14,6 +14,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { fixtureBranchDiffRepo, fixtureGit, fixtureGitEnv, fixtureSeedRepo } from "../helpers/fixture-git.mjs";
+import {
+  assertHostNeutralSandboxRepairAction,
+  assertHostNeutralSandboxSummary,
+} from "../helpers/host-neutral-diagnostics.mjs";
 import { assertJobRecordShape } from "../helpers/job-record-shape.mjs";
 import { badVerdictReviewFixture, requestChangesReviewFixture } from "../helpers/review-fixtures.mjs";
 import { CLAUDE_PROVIDER_API_KEY_ENV } from "../../plugins/claude/scripts/lib/claude-provider-keys.mjs";
@@ -3551,8 +3555,11 @@ process.exit(1);
     const result = JSON.parse(stdout);
     assert.equal(result.status, "sandbox_blocked");
     assert.equal(result.ready, false);
-    assert.match(result.summary, /sandbox/i);
-    assert.match(result.next_action, /~\/\.claude|writable_roots/);
+    assertHostNeutralSandboxSummary(result.summary, "Claude ping sandbox summary");
+    assertHostNeutralSandboxRepairAction(result.next_action, {
+      statePathPattern: /~\/\.claude/,
+      label: "Claude ping sandbox next_action",
+    });
     assert.match(result.detail, /\.claude\/settings\.json/);
   } finally {
     cleanup(dataDir);
@@ -4358,8 +4365,11 @@ process.exit(1);
     const [record] = lines;
     assert.equal(record.status, "failed");
     assert.equal(record.error_code, "sandbox_blocked");
-    assert.match(record.error_summary, /sandbox/i);
-    assert.match(record.suggested_action, /~\/\.claude|writable_roots/);
+    assertHostNeutralSandboxSummary(record.error_summary, "Claude run sandbox summary");
+    assertHostNeutralSandboxRepairAction(record.suggested_action, {
+      statePathPattern: /~\/\.claude/,
+      label: "Claude run sandbox suggested_action",
+    });
     assert.equal(record.pid_info ?? null, null);
     assert.equal(record.external_review.source_content_transmission, "not_sent");
     assert.match(record.external_review.disclosure, /not sent/);

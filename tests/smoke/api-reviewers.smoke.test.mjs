@@ -1816,6 +1816,7 @@ test("direct API reviewer fails closed before provider contact when plugin data 
     assert.doesNotMatch(result.stdout, /secret-test-value/);
   } finally {
     server.close();
+    rmSync(dataRoot, { force: true });
   }
 });
 
@@ -1850,6 +1851,7 @@ test("Claude relay direct API wrapper keeps host-neutral sandbox guidance when C
     assertDirectApiNotSent(record, "DeepSeek");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(dataRoot, { force: true });
   }
 });
 

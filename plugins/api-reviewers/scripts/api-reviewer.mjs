@@ -2596,9 +2596,8 @@ function providerUnavailableSuggestedAction(errorMessage = "", httpStatus = null
 }
 
 function apiReviewersHost(env = process.env) {
-  return typeof env?.[API_REVIEWERS_HOST_ENV] === "string"
-    ? env[API_REVIEWERS_HOST_ENV].trim().toLowerCase()
-    : "";
+  const hostValue = env[API_REVIEWERS_HOST_ENV];
+  return typeof hostValue === "string" ? hostValue.trim().toLowerCase() : "";
 }
 
 function usesCodexSandboxGuidance(env = process.env) {
