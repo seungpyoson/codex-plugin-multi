@@ -8,10 +8,15 @@ const MARKETPLACE = "relay-for-codex";
 const MARKETPLACE_REPOSITORY = "relay-org/relay";
 const CACHE_NAMESPACE = MARKETPLACE;
 const INTERNAL_RUNTIME_PLUGINS = new Set(["api-reviewers"]);
-const DEFAULT_PLUGINS = [
+const PLUGIN_DEPENDENCIES = new Map([
+  ["relay-deepseek", ["api-reviewers"]],
+  ["relay-glm", ["api-reviewers"]],
+]);
+const FALLBACK_DEFAULT_PLUGINS = [
   "relay-claude",
   "relay-gemini",
   "relay-kimi",
+  "relay-agy",
   "relay-grok",
   "relay-glm",
   "relay-deepseek",
@@ -32,6 +37,10 @@ Options:
 
 function comparePathStrings(a, b) {
   return a.localeCompare(b);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function parseArgs(argv) {
@@ -83,8 +92,7 @@ function readMarketplaceSourcePaths(root) {
   if (!Array.isArray(marketplace.plugins)) return paths;
   for (const plugin of marketplace.plugins) {
     if (typeof plugin?.name !== "string") continue;
-    const sourcePath = plugin.source?.path;
-    if (typeof sourcePath !== "string") continue;
+    const sourcePath = typeof plugin.source?.path === "string" ? plugin.source.path : join("plugins", plugin.name);
     paths.set(plugin.name, normalizeSourcePath(sourcePath));
   }
   return paths;
@@ -140,17 +148,64 @@ function compareFileHashes(expected, cached) {
   };
 }
 
-function enabledInConfig(home, plugin) {
+function pluginConfigEntries(home) {
   const config = join(home, "config.toml");
-  if (!existsSync(config)) return false;
+  const entries = new Map();
+  if (!existsSync(config)) return entries;
   const text = readFileSync(config, "utf8");
-  const escaped = `${plugin}@${MARKETPLACE}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`\\[plugins\\."${escaped}"\\]([\\s\\S]*?)(?:\\n\\[|$)`).exec(text);
-  return match ? /\benabled\s*=\s*true\b/.test(match[1]) : false;
+  const escapedMarketplace = escapeRegExp(MARKETPLACE);
+  const sectionPattern = new RegExp(`\\[plugins\\."([^"\\n]+)@${escapedMarketplace}"\\]([\\s\\S]*?)(?=\\n\\[|$)`, "g");
+  for (const match of text.matchAll(sectionPattern)) {
+    entries.set(match[1], /\benabled\s*=\s*true\b/.test(match[2]));
+  }
+  return entries;
 }
 
-function profileReport(name, home, plugins, { sourceBaseRoot, sourcePaths, repoBaseRoot, repoSourcePaths }) {
+function expandPluginsWithDependencies(plugins) {
+  const seen = new Set();
+  const expanded = [];
+  function visit(plugin) {
+    if (seen.has(plugin)) return;
+    seen.add(plugin);
+    expanded.push(plugin);
+    for (const dependency of PLUGIN_DEPENDENCIES.get(plugin) ?? []) visit(dependency);
+  }
+  for (const plugin of plugins) visit(plugin);
+  return expanded;
+}
+
+function enabledPluginNamesFromConfig(home) {
+  return Array.from(pluginConfigEntries(home).entries())
+    .filter(([, enabled]) => enabled)
+    .map(([plugin]) => plugin);
+}
+
+function installedCachePluginNames(home) {
+  const root = join(home, "plugins", "cache", CACHE_NAMESPACE);
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+}
+
+function defaultPluginNames(...nameLists) {
+  const names = new Set(FALLBACK_DEFAULT_PLUGINS);
+  for (const nameList of nameLists) {
+    for (const plugin of nameList ?? []) names.add(plugin);
+  }
+  return Array.from(names).sort(comparePathStrings);
+}
+
+function requiredByEnabledPlugin(configEntries, plugin) {
+  for (const [dependent, dependencies] of PLUGIN_DEPENDENCIES.entries()) {
+    if (dependencies.includes(plugin) && configEntries.get(dependent) === true) return true;
+  }
+  return false;
+}
+
+function profileReport(name, home, plugins, { sourceBaseRoot, sourcePaths, repoBaseRoot, repoSourcePaths, requireAllPlugins, summaryPlugin }) {
   const pluginReports = {};
+  const configEntries = pluginConfigEntries(home);
   let ok = true;
   for (const plugin of plugins) {
     const sourcePath = pluginSourcePath(sourcePaths, plugin, repoSourcePaths);
@@ -177,10 +232,18 @@ function profileReport(name, home, plugins, { sourceBaseRoot, sourcePaths, repoB
     const inSync = missing.length === 0 && extra.length === 0 && hasExpectedSurface && filesInSync;
     const repoInSync = repoPluginPresent ? repoFilesInSync : null;
     const internalRuntime = INTERNAL_RUNTIME_PLUGINS.has(plugin);
-    const enabled = internalRuntime ? true : enabledInConfig(home, plugin);
-    if (!inSync || repoInSync === false || (!internalRuntime && !enabled)) ok = false;
+    const configuredEnabled = configEntries.get(plugin) === true;
+    const requiredByDependency = requiredByEnabledPlugin(configEntries, plugin);
+    const enabled = internalRuntime ? true : configuredEnabled;
+    const requiredForOk = internalRuntime
+      ? configuredEnabled || requiredByDependency || requireAllPlugins
+      : configuredEnabled || requireAllPlugins;
+    if (requiredForOk && (!inSync || repoInSync === false || (!internalRuntime && !enabled))) ok = false;
     pluginReports[plugin] = {
       internal_runtime: internalRuntime,
+      configured_enabled: configuredEnabled,
+      required_by_enabled_plugin: requiredByDependency,
+      required_for_ok: requiredForOk,
       enabled,
       source_path: sourcePath,
       repo_source_path: repoSourcePath,
@@ -199,21 +262,35 @@ function profileReport(name, home, plugins, { sourceBaseRoot, sourcePaths, repoB
       repo_changed_files: repoFileComparison.changed_files,
     };
   }
+  const summary = summaryPlugin && pluginReports[summaryPlugin]
+    ? pluginReports[summaryPlugin]
+    : (plugins.length === 1 ? pluginReports[plugins[0]] : null);
   return {
     name,
     home,
-    enabled: plugins.length === 1 ? pluginReports[plugins[0]].enabled : undefined,
-    cache_in_sync: plugins.length === 1 ? pluginReports[plugins[0]].cache_in_sync : undefined,
-    repo_present: plugins.length === 1 ? pluginReports[plugins[0]].repo_present : undefined,
-    repo_cache_in_sync: plugins.length === 1 ? pluginReports[plugins[0]].repo_cache_in_sync : undefined,
-    missing_skills: plugins.length === 1 ? pluginReports[plugins[0]].missing_skills : undefined,
-    missing_files: plugins.length === 1 ? pluginReports[plugins[0]].missing_files : undefined,
-    extra_files: plugins.length === 1 ? pluginReports[plugins[0]].extra_files : undefined,
-    changed_files: plugins.length === 1 ? pluginReports[plugins[0]].changed_files : undefined,
-    repo_changed_files: plugins.length === 1 ? pluginReports[plugins[0]].repo_changed_files : undefined,
+    summary_plugin: summary ? (summaryPlugin ?? plugins[0]) : undefined,
+    enabled: summary?.enabled,
+    cache_in_sync: summary?.cache_in_sync,
+    repo_present: summary?.repo_present,
+    repo_cache_in_sync: summary?.repo_cache_in_sync,
+    missing_skills: summary?.missing_skills,
+    missing_files: summary?.missing_files,
+    extra_files: summary?.extra_files,
+    changed_files: summary?.changed_files,
+    repo_changed_files: summary?.repo_changed_files,
     plugins: pluginReports,
     ok,
   };
+}
+
+function disabledRequiredPluginNames(profiles) {
+  const names = new Set();
+  for (const profile of Object.values(profiles)) {
+    for (const [plugin, report] of Object.entries(profile.plugins)) {
+      if (report.required_for_ok && !report.internal_runtime && !report.enabled) names.add(plugin);
+    }
+  }
+  return Array.from(names).sort(comparePathStrings);
 }
 
 function main() {
@@ -225,14 +302,30 @@ function main() {
   const repo = resolve(args.repo ?? process.cwd());
   const primaryHome = resolve(args["codex-home"] ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"));
   const secondHome = args["second-codex-home"] ? resolve(args["second-codex-home"]) : null;
-  const plugins = args.plugins.length > 0 ? args.plugins : DEFAULT_PLUGINS;
   const marketplaceRoot = join(primaryHome, ".tmp", "marketplaces", MARKETPLACE);
   const marketplacePresent = existsSync(marketplaceRoot);
   const repoSourcePaths = readMarketplaceSourcePaths(repo);
   const marketplaceSourcePaths = marketplacePresent ? readMarketplaceSourcePaths(marketplaceRoot) : new Map();
   const sourceBaseRoot = marketplacePresent ? marketplaceRoot : repo;
   const sourcePaths = marketplacePresent ? marketplaceSourcePaths : repoSourcePaths;
-  const profileOptions = { sourceBaseRoot, sourcePaths, repoBaseRoot: repo, repoSourcePaths };
+  const defaultPlugins = defaultPluginNames(
+    marketplaceSourcePaths.keys(),
+    repoSourcePaths.keys(),
+    enabledPluginNamesFromConfig(primaryHome),
+    secondHome ? enabledPluginNamesFromConfig(secondHome) : [],
+    installedCachePluginNames(primaryHome),
+    secondHome ? installedCachePluginNames(secondHome) : [],
+  );
+  const requestedPlugins = args.plugins.length > 0 ? args.plugins : defaultPlugins;
+  const plugins = expandPluginsWithDependencies(requestedPlugins);
+  const profileOptions = {
+    sourceBaseRoot,
+    sourcePaths,
+    repoBaseRoot: repo,
+    repoSourcePaths,
+    requireAllPlugins: args.plugins.length > 0,
+    summaryPlugin: args.plugins.length === 1 ? args.plugins[0] : null,
+  };
 
   const profiles = {
     primary: profileReport("primary", primaryHome, plugins, profileOptions),
@@ -248,7 +341,10 @@ function main() {
   }
   nextActions.push("If repo working tree differs from installed plugin cache, commit/publish or refresh marketplace/cache before opening new Codex sessions.");
   nextActions.push("If upgrade reports `not configured as a Git marketplace`, remove and re-add the marketplace from GitHub.");
-  nextActions.push("Enable missing plugins in `/plugins` or config.toml for the Codex profile that will run reviews.");
+  const disabledRequired = disabledRequiredPluginNames(profiles);
+  if (disabledRequired.length > 0) {
+    nextActions.push(`Enable required disabled plugins (${disabledRequired.join(", ")}) in \`/plugins\` or config.toml for the Codex profile that will run reviews.`);
+  }
   nextActions.push("Restart already-open Codex TUI sessions; skill picker inventory is loaded in memory.");
   nextActions.push("Verify with `codex debug prompt-input 'list skills'` from the target CODEX_HOME.");
 

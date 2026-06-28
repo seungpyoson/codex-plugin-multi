@@ -368,13 +368,19 @@ The report compares both marketplace/plugin files and this repo's `plugins/`
 tree against `plugins/cache/relay-for-codex/<plugin>/<version>`, including
 SHA-256 checks for bundled `commands/`, `skills/`, `scripts/`, and `config/`
 files. `relay-for-codex` is both the marketplace identifier and the Codex cache
-namespace used by installed plugin paths. The doctor also checks the
-default-installed `api-reviewers` runtime required by `relay-glm` and
-`relay-deepseek`, without requiring that internal runtime to be enabled in
-`config.toml`.
-It reports `missing_files`, `extra_files`, `changed_files`, and
-`repo_changed_files`, checks whether each plugin is enabled in `config.toml`,
-and prints next actions. `cache_in_sync: true` with
+namespace used by installed plugin paths. In default mode the checked plugin
+set is derived from marketplace manifests, repo manifests, enabled
+`config.toml` entries, and installed cache directories, so stale marketplace
+clones cannot hide enabled plugins. The doctor also checks the
+`api-reviewers` internal runtime when it is required by an enabled dependent
+(`relay-glm` or `relay-deepseek`), pulled in by an explicit
+`--plugin relay-glm` or `--plugin relay-deepseek` check, explicitly enabled in
+`config.toml`, or explicitly requested with `--plugin api-reviewers`.
+It reports `missing_files`, `extra_files`, `changed_files`,
+`repo_changed_files`, `configured_enabled`, `required_by_enabled_plugin`, and
+`required_for_ok`. For single-plugin checks, `summary_plugin` names the plugin
+described by top-level summary fields; use `ok` as the aggregate health result.
+`cache_in_sync: true` with
 `repo_cache_in_sync: false` means new Codex sessions will still run stale
 installed plugin code. For Git marketplace installs, start with:
 
