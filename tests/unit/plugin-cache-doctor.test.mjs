@@ -71,11 +71,15 @@ function writeMarketplaceManifest(root, plugins) {
     file,
     `${JSON.stringify({
       name: MARKETPLACE,
-      plugins: plugins.map(([name, sourcePath]) => ({
-        name,
-        source: { source: "local", path: sourcePath },
-        policy: { installation: "AVAILABLE", authentication: "ON_USE" },
-      })),
+      plugins: plugins.map(([name, sourcePath, version]) => {
+        const entry = {
+          name,
+          source: { source: "local", path: sourcePath },
+          policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+        };
+        if (version) entry.version = version;
+        return entry;
+      }),
     }, null, 2)}\n`,
     "utf8",
   );
@@ -433,6 +437,35 @@ test("codex plugin cache doctor reads non-default cache version from source meta
   assert.equal(profile.plugins["relay-grok"].cache_in_sync, true);
 });
 
+test("codex plugin cache doctor reads cache version from marketplace manifest when source metadata is absent", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-manifest-version-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-manifest-version-home-"));
+  const marketplaceRoot = path.join(primary, ".tmp", "marketplaces", MARKETPLACE);
+
+  writeMarketplaceManifest(repo, [["relay-grok", "./plugins/grok"]]);
+  writeMarketplaceManifest(marketplaceRoot, [["relay-grok", "./plugins/grok", "0.2.0"]]);
+  writePluginFile(path.join(repo, "plugins"), "grok", "scripts/runtime.mjs", "export const version = 'repo-new';\n");
+  writePluginFile(path.join(marketplaceRoot, "plugins"), "grok", "scripts/runtime.mjs", "export const version = 'marketplace';\n");
+  writeCachedPluginFile(primary, "relay-grok", "scripts/runtime.mjs", "export const version = 'marketplace';\n", "0.2.0");
+  writeCachedPluginFile(primary, "relay-grok", "scripts/runtime.mjs", "export const version = 'stale';\n", "0.1.0");
+  writeConfig(primary, "relay-grok", true);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const profile = report.profiles.primary;
+
+  assert.equal(report.ok, false);
+  assert.equal(profile.plugins["relay-grok"].marketplace_manifest_version, "0.2.0");
+  assert.equal(profile.plugins["relay-grok"].cache_version, "0.2.0");
+  assert.equal(profile.plugins["relay-grok"].cache_in_sync, true);
+  assert.equal(profile.plugins["relay-grok"].repo_cache_in_sync, false);
+  assert.deepEqual(profile.plugins["relay-grok"].repo_changed_files, ["scripts/runtime.mjs"]);
+});
+
 test("codex plugin cache doctor uses installed cache version when active source lacks version metadata", () => {
   const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-cache-version-repo-"));
   const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-cache-version-home-"));
@@ -456,6 +489,35 @@ test("codex plugin cache doctor uses installed cache version when active source 
 
   assert.equal(report.ok, false);
   assert.equal(profile.plugins["relay-grok"].cache_version, "0.1.0");
+  assert.equal(profile.plugins["relay-grok"].cache_in_sync, true);
+  assert.equal(profile.plugins["relay-grok"].repo_cache_in_sync, false);
+  assert.deepEqual(profile.plugins["relay-grok"].repo_changed_files, ["scripts/runtime.mjs"]);
+});
+
+test("codex plugin cache doctor matches active source when version metadata is absent and multiple cache dirs exist", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-cache-match-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-cache-match-home-"));
+  const marketplaceRoot = path.join(primary, ".tmp", "marketplaces", MARKETPLACE);
+
+  writeMarketplaceManifest(repo, [["relay-grok", "./plugins/grok"]]);
+  writeMarketplaceManifest(marketplaceRoot, [["relay-grok", "./plugins/grok"]]);
+  writePluginFile(path.join(repo, "plugins"), "grok", ".codex-plugin/plugin.json", `{"name":"relay-grok","version":"0.1.0"}\n`);
+  writePluginFile(path.join(repo, "plugins"), "grok", "scripts/runtime.mjs", "export const version = 'repo-old';\n");
+  writePluginFile(path.join(marketplaceRoot, "plugins"), "grok", "scripts/runtime.mjs", "export const version = 'marketplace-new';\n");
+  writeCachedPluginFile(primary, "relay-grok", "scripts/runtime.mjs", "export const version = 'repo-old';\n", "0.1.0");
+  writeCachedPluginFile(primary, "relay-grok", "scripts/runtime.mjs", "export const version = 'marketplace-new';\n", "0.2.0");
+  writeConfig(primary, "relay-grok", true);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const profile = report.profiles.primary;
+
+  assert.equal(report.ok, false);
+  assert.equal(profile.plugins["relay-grok"].cache_version, "0.2.0");
   assert.equal(profile.plugins["relay-grok"].cache_in_sync, true);
   assert.equal(profile.plugins["relay-grok"].repo_cache_in_sync, false);
   assert.deepEqual(profile.plugins["relay-grok"].repo_changed_files, ["scripts/runtime.mjs"]);

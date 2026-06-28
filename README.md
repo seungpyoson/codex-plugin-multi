@@ -381,8 +381,8 @@ manifest/source tree. The doctor also checks the
 `config.toml`, or explicitly requested with `--plugin api-reviewers`.
 It reports `missing_files`, `extra_files`, `changed_files`,
 `repo_changed_files`, `configured_enabled`, `required_by_enabled_plugin`, and
-`required_for_ok` and `cache_version`, plus source diagnostics such as
-`source_present`, `source_manifest_present`, and
+`required_for_ok`, `cache_version`, and `marketplace_manifest_version`, plus
+source diagnostics such as `source_present`, `source_manifest_present`, and
 `listed_in_marketplace_manifest`. The top-level `marketplace` block describes
 the primary `--codex-home`; `marketplaces.primary` and `marketplaces.second`
 describe each inspected profile. For single-plugin checks, `summary_plugin`

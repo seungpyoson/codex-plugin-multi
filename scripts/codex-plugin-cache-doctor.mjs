@@ -101,19 +101,26 @@ function marketplaceManifestPath(root) {
   return join(root, ".agents", "plugins", "marketplace.json");
 }
 
-function readMarketplaceSourcePaths(root) {
+function readMarketplaceEntries(root) {
   const file = marketplaceManifestPath(root);
-  const paths = new Map();
-  if (!existsSync(file)) return paths;
+  const entries = new Map();
+  if (!existsSync(file)) return entries;
 
   const marketplace = JSON.parse(readFileSync(file, "utf8"));
-  if (!Array.isArray(marketplace.plugins)) return paths;
+  if (!Array.isArray(marketplace.plugins)) return entries;
   for (const plugin of marketplace.plugins) {
     if (typeof plugin?.name !== "string") continue;
     const sourcePath = typeof plugin.source?.path === "string" ? plugin.source.path : fallbackSourcePath(plugin.name);
-    paths.set(plugin.name, normalizeSourcePath(sourcePath));
+    entries.set(plugin.name, {
+      sourcePath: normalizeSourcePath(sourcePath),
+      version: typeof plugin.version === "string" && plugin.version.length > 0 ? plugin.version : null,
+    });
   }
-  return paths;
+  return entries;
+}
+
+function sourcePathsFromMarketplaceEntries(entries) {
+  return new Map(Array.from(entries, ([plugin, entry]) => [plugin, entry.sourcePath]));
 }
 
 function pluginSourcePath(paths, plugin, fallbackPaths = new Map()) {
@@ -269,13 +276,28 @@ function readPluginVersion(pluginRoot) {
   return null;
 }
 
-function pluginCacheVersion(home, plugin, sourcePluginRoot, repoPluginRoot) {
+function cacheFilesForVersion(home, plugin, version) {
+  return listComparableFiles(join(home, "plugins", "cache", CACHE_NAMESPACE, plugin, version));
+}
+
+function pluginCacheVersion(home, plugin, sourcePluginRoot, repoPluginRoot, manifestVersion, sourceFiles) {
   const sourceVersion = readPluginVersion(sourcePluginRoot);
   if (sourceVersion) return sourceVersion;
+  if (manifestVersion) return manifestVersion;
   const versions = cacheVersionNames(home, plugin);
   const repoVersion = readPluginVersion(repoPluginRoot);
-  if (repoVersion && versions.includes(repoVersion)) return repoVersion;
   if (versions.length === 1) return versions[0];
+  if (versions.length > 1 && sourceFiles.size > 0) {
+    const matchingVersions = versions.filter((version) => {
+      const comparison = compareFileHashes(sourceFiles, cacheFilesForVersion(home, plugin, version));
+      return comparison.missing_files.length === 0
+        && comparison.extra_files.length === 0
+        && comparison.changed_files.length === 0;
+    });
+    if (matchingVersions.length === 1) return matchingVersions[0];
+    if (repoVersion && matchingVersions.includes(repoVersion)) return repoVersion;
+  }
+  if (repoVersion && versions.includes(repoVersion)) return repoVersion;
   if (versions.includes("0.1.0")) return "0.1.0";
   return repoVersion ?? versions[0] ?? "0.1.0";
 }
@@ -299,11 +321,13 @@ function sourceInfoForHome(home, repo, repoSourcePaths) {
   const marketplaceRoot = join(home, ".tmp", "marketplaces", MARKETPLACE);
   const manifestPath = marketplaceManifestPath(marketplaceRoot);
   const marketplacePresent = existsSync(manifestPath);
-  const marketplaceSourcePaths = marketplacePresent ? readMarketplaceSourcePaths(marketplaceRoot) : new Map();
+  const marketplaceEntries = marketplacePresent ? readMarketplaceEntries(marketplaceRoot) : new Map();
+  const marketplaceSourcePaths = sourcePathsFromMarketplaceEntries(marketplaceEntries);
   return {
     marketplaceRoot,
     marketplaceManifestPath: manifestPath,
     marketplacePresent,
+    marketplaceEntries,
     marketplaceSourcePaths,
     sourceBaseRoot: marketplacePresent ? marketplaceRoot : repo,
     sourcePaths: marketplacePresent ? marketplaceSourcePaths : repoSourcePaths,
@@ -323,12 +347,14 @@ function profileReport(name, home, plugins, { sourceInfo, repoBaseRoot, repoSour
     const repoPluginPresent = existsSync(repoPluginRoot);
     const sourcePluginPresent = existsSync(sourcePluginRoot);
     const listedInMarketplaceManifest = sourceInfo.marketplacePresent ? sourceInfo.marketplaceSourcePaths.has(plugin) : null;
-    const cacheVersion = pluginCacheVersion(home, plugin, sourcePluginRoot, repoPluginRoot);
+    const sourceFiles = listComparableFiles(sourcePluginRoot);
+    const manifestVersion = sourceInfo.marketplaceEntries.get(plugin)?.version ?? null;
+    const cacheVersion = pluginCacheVersion(home, plugin, sourcePluginRoot, repoPluginRoot, manifestVersion, sourceFiles);
     const cacheRoot = join(home, "plugins", "cache", CACHE_NAMESPACE, plugin, cacheVersion);
     const cached = listSkills(cacheRoot, ".");
     const missing = expected.filter((skill) => !cached.includes(skill));
     const extra = cached.filter((skill) => !expected.includes(skill));
-    const fileComparison = compareFileHashes(listComparableFiles(sourcePluginRoot), listComparableFiles(cacheRoot));
+    const fileComparison = compareFileHashes(sourceFiles, listComparableFiles(cacheRoot));
     const repoFileComparison = compareFileHashes(listComparableFiles(repoPluginRoot), listComparableFiles(cacheRoot));
     const filesInSync = fileComparison.missing_files.length === 0
       && fileComparison.extra_files.length === 0
@@ -361,6 +387,7 @@ function profileReport(name, home, plugins, { sourceInfo, repoBaseRoot, repoSour
       source_manifest_present: sourceInfo.marketplacePresent,
       listed_in_marketplace_manifest: listedInMarketplaceManifest,
       repo_source_path: repoSourcePath,
+      marketplace_manifest_version: manifestVersion,
       cache_version: cacheVersion,
       cache_path: cacheRoot,
       cache_in_sync: inSync,
@@ -447,7 +474,7 @@ function main() {
   const repo = resolve(args.repo ?? process.cwd());
   const primaryHome = resolve(args["codex-home"] ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"));
   const secondHome = args["second-codex-home"] ? resolve(args["second-codex-home"]) : null;
-  const repoSourcePaths = readMarketplaceSourcePaths(repo);
+  const repoSourcePaths = sourcePathsFromMarketplaceEntries(readMarketplaceEntries(repo));
   const primarySourceInfo = sourceInfoForHome(primaryHome, repo, repoSourcePaths);
   const secondSourceInfo = secondHome ? sourceInfoForHome(secondHome, repo, repoSourcePaths) : null;
   const defaultPlugins = defaultPluginNames(
