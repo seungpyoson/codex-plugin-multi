@@ -67,6 +67,8 @@ const BLOCKING_SECTION_STOP_HEADINGS = new Set([
   "non blocking concerns",
   "non-blocking findings",
   "non blocking findings",
+  "non-blocking risks",
+  "non blocking risks",
   "suggestions",
   "minor issues",
   "checklist",
@@ -133,18 +135,58 @@ function packet3Findings(output) {
   ];
 }
 
+function packet4Findings(output) {
+  const issueFound = packet4DuplicateContentsBypassFound(output);
+  return [
+    finding(
+      "duplicate_contents_key_bypass",
+      issueFound && packet4TreatsBypassAsBlocking(output),
+    ),
+  ];
+}
+
+function packet4DuplicateContentsBypassFound(output) {
+  const squashed = compact(output);
+  const mentionsDuplicateContents = (
+    /\bduplicate\b/i.test(squashed)
+    && /\bcontents\b/i.test(squashed)
+  ) || (
+    /contents\s*:\s*read/i.test(output)
+    && /contents\s*:\s*write/i.test(output)
+  );
+  const mentionsEffectiveWrite = (
+    /\b(later|last|second|subsequent)\b/i.test(squashed)
+    && /\b(wins|overrides|takes effect|effective|resolves?)\b/i.test(squashed)
+    && /\bwrite\b/i.test(squashed)
+  ) || /\beffective (?:permission|contents(?: permission)?) (?:can become|becomes|is) write\b/i.test(squashed);
+  const mentionsVerifierBypass = (
+    /\b(verifier|verify_ai_review_governance|governance)\b/i.test(squashed)
+    && /\b(pass|passes|bypass|miss|misses|not catch|does not catch|substring|snippet|presence)\b/i.test(squashed)
+    && /contents\s*:\s*read/i.test(output)
+  );
+  return mentionsDuplicateContents && mentionsEffectiveWrite && mentionsVerifierBypass;
+}
+
+function packet4TreatsBypassAsBlocking(output) {
+  const blockingBody = blockingSectionBody(output);
+  if (blockingBody && packet4DuplicateContentsBypassFound(blockingBody)) return true;
+  return /\bnot safe to merge\b/i.test(compact(output));
+}
+
 const PACKET_FINDERS = Object.freeze({
   packet1_correctness: packet1Findings,
   packet2_security: packet2Findings,
   packet3_clean: packet3Findings,
+  packet4_relay_governance: packet4Findings,
 });
 
 /**
  * Evaluates one A/B seeded review packet against its expected findings.
  *
- * Supported packet names are packet1_correctness, packet2_security, and
- * packet3_clean. The returned object reports found/missing seeded findings and
- * whether the clean packet received an invented blocking finding.
+ * Supported packet names are packet1_correctness, packet2_security,
+ * packet3_clean, and packet4_relay_governance. The returned object reports
+ * found/missing seeded findings and whether the clean packet received an
+ * invented blocking finding.
  */
 export function evaluateSeededReviewPacket({ packet, output }) {
   if (!Object.hasOwn(PACKET_FINDERS, packet)) {

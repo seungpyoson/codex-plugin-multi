@@ -677,6 +677,9 @@ function normalizeRuntimeDiagnostics(input, denials, redactText = (value) => val
   if (input.packet_recovery && typeof input.packet_recovery === "object") {
     out.packet_recovery = input.packet_recovery;
   }
+  if (input.required_evidence && typeof input.required_evidence === "object") {
+    out.required_evidence = input.required_evidence;
+  }
   const providerAccountIdentity = normalizeProviderAccountIdentity(input);
   if (providerAccountIdentity) out.provider_account_identity = providerAccountIdentity;
   const providerWorkload = normalizeProviderWorkloadDiagnostic(input.provider_workload, redactText);

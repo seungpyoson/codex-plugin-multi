@@ -675,6 +675,73 @@ test("custom-review defaults to Grok CLI without contacting legacy tunnel", () =
   }
 });
 
+test("custom-review rejects missing required evidence before Grok CLI launch", () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-required-evidence-workspace-")));
+  const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-required-evidence-data-"));
+  const authHome = mkdtempSync(path.join(tmpdir(), "grok-cli-required-evidence-auth-home-"));
+  const { binDir, grokPath, logPath } = makeFakeGrokCli();
+  writeGrokCliAuthFixture(cwd, authHome);
+  const prompt = [
+    "Adversarial re-review.",
+    "Required checks:",
+    "1. Inspect the pinned anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 token path.",
+    "2. Verify token.ts and action.yml wiring for additional_permissions.",
+  ].join("\n");
+
+  try {
+    const result = run([
+      "run",
+      "--mode", "custom-review",
+      "--scope", "custom",
+      "--scope-paths", "review.js",
+      "--foreground",
+      "--lifecycle-events", "jsonl",
+      "--prompt", prompt,
+    ], {
+      cwd,
+      defaultTransport: false,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        GROK_CLI_BINARY: grokPath,
+        GROK_CLI_AUTH_HOME: authHome,
+        GROK_PLUGIN_DATA: dataDir,
+      },
+    });
+
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const events = parseJsonLines(result);
+    assert.equal(events.some((event) => event.event === "external_review_launched"), false);
+    assert.equal(events.length, 1);
+    const record = events[0];
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "required_evidence_missing");
+    assert.match(record.error_message, /selected source packet is missing user-required evidence/);
+    assert.equal(record.error_cause, "pre_send_required_evidence_gap");
+    assert.match(record.error_summary, /required_evidence_missing/);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.required_evidence.has_missing_required_evidence, true);
+    assert.deepEqual(
+      record.runtime_diagnostics.required_evidence.missing_required_references,
+      [
+        "anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464",
+        "token.ts",
+        "action.yml",
+      ],
+    );
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.required_evidence,
+      record.runtime_diagnostics.required_evidence,
+    );
+    assert.equal(existsSync(logPath), false, "Grok CLI must not spawn when required evidence is missing");
+    assert.doesNotMatch(result.stdout, /CLI_SOURCE_SECRET/);
+  } finally {
+    rmTree(authHome);
+    rmTree(cwd);
+    rmTree(dataDir);
+    rmTree(binDir);
+  }
+});
+
 test("custom-review explicit large source override reaches Grok CLI", () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "grok-cli-large-source-")));
   const dataDir = mkdtempSync(path.join(tmpdir(), "grok-cli-large-data-"));

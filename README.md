@@ -231,7 +231,9 @@ Review-quality A/B prompts:
 - `node scripts/review-quality-ab-fixture.mjs --packet packet1_correctness`
 - `node scripts/review-quality-ab-fixture.mjs --packet packet2_security`
 - `node scripts/review-quality-ab-fixture.mjs --packet packet3_clean`
+- `node scripts/review-quality-ab-fixture.mjs --packet packet4_relay_governance`
 - `node scripts/review-quality-ab-fixture.mjs --judge-context`
+- `node scripts/review-quality-evaluator.mjs --packet packet4_relay_governance --output-file review-output.txt`
 
 Use the packet prompt for both plugin and manual-relay reviewers. Use the
 judge context only for scoring; it contains the seeded answer key and must not

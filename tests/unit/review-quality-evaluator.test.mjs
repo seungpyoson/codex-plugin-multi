@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
 
@@ -29,12 +30,16 @@ test("A/B fixture preserves the exact review packets, common prompt, expected fi
     "packet1_correctness",
     "packet2_security",
     "packet3_clean",
+    "packet4_relay_governance",
   ]);
   assert.match(AB_REVIEW_PACKETS[0].files[0].source, /sum - item\.price/);
   assert.match(AB_REVIEW_PACKETS[0].files[0].source, /user\.plan = "pro"/);
   assert.match(AB_REVIEW_PACKETS[1].files[0].source, /codeMayConstructGateConfig/);
   assert.match(AB_REVIEW_PACKETS[1].expected_findings[0], /gate-config.*before.*approvable/i);
   assert.match(AB_REVIEW_PACKETS[2].expected_result, /No blocking findings/i);
+  assert.match(AB_REVIEW_PACKETS[3].files[0].source, /contents: read/);
+  assert.match(AB_REVIEW_PACKETS[3].files[0].source, /contents: write/);
+  assert.match(AB_REVIEW_PACKETS[3].expected_findings[0], /duplicate.*contents/i);
   assert.match(COMMON_AB_REVIEW_PROMPT, /Do not invent findings/i);
   assert.match(COMMON_AB_REVIEW_PROMPT, /State explicitly if you could not inspect/i);
   assert.match(COMMON_AB_REVIEW_PROMPT, /elapsed wall time/i);
@@ -67,6 +72,75 @@ test("A/B fixture CLI prints packet prompts and judge context separately", () =>
   });
   assert.match(judgeContext, /Expected seeded findings/);
   assert.match(judgeContext, /packet3_clean/);
+});
+
+test("seeded evaluator CLI scores collected review outputs from file or stdin", () => {
+  const tmp = mkdtempSync(resolvePath(tmpdir(), "relay-review-quality-evaluator-"));
+  try {
+    const outputPath = resolvePath(tmp, "packet4-output.txt");
+    writeFileSync(outputPath, `
+1. Verdict: REQUEST CHANGES
+2. Blocking findings
+- additional_permissions contains contents: read followed later by contents: write.
+  The later contents key wins / becomes the effective write permission, while
+  verify_ai_review_governance.py only checks for the contents: read snippet.
+`, "utf8");
+
+    const passed = execFileSync(process.execPath, [
+      "scripts/review-quality-evaluator.mjs",
+      "--packet",
+      "packet4_relay_governance",
+      "--output-file",
+      outputPath,
+    ], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    const parsed = JSON.parse(passed);
+    assert.equal(parsed.expected_findings_found, true);
+    assert.deepEqual(parsed.missing_expected_findings, []);
+
+    const failed = spawnSync(process.execPath, [
+      "scripts/review-quality-evaluator.mjs",
+      "--packet",
+      "packet4_relay_governance",
+    ], {
+      cwd: REPO_ROOT,
+      input: "1. Verdict: APPROVE\n2. Blocking findings\nNone.\n",
+      encoding: "utf8",
+    });
+    assert.equal(failed.status, 1);
+    assert.equal(failed.stderr, "");
+    const failedParsed = JSON.parse(failed.stdout);
+    assert.equal(failedParsed.expected_findings_found, false);
+    assert.deepEqual(failedParsed.missing_expected_findings, ["duplicate_contents_key_bypass"]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("seeded evaluator rejects packet4 outputs that downgrade the governance bypass to non-blocking", () => {
+  const result = evaluateSeededReviewPacket({
+    packet: "packet4_relay_governance",
+    output: `
+Verdict: APPROVE
+
+Blocking findings:
+None.
+
+Non-blocking risks:
+- Duplicate-key bypass of the additional_permissions cap. A block containing
+  contents: read followed later by contents: write resolves to contents: write,
+  while verify_ai_review_governance.py would pass because it only checks for
+  the contents: read snippet.
+
+Merge recommendation:
+Safe to merge after sp-reviewer approval.
+`,
+  });
+
+  assert.equal(result.expected_findings_found, false);
+  assert.deepEqual(result.missing_expected_findings, ["duplicate_contents_key_bypass"]);
 });
 
 test("seeded evaluator parses packet3 blocking section without a lazy dot-star regex", () => {
@@ -254,6 +328,38 @@ test("seeded evaluator requires both packet1 correctness blockers", () => {
 
   assert.equal(complete.expected_findings_found, true);
   assert.deepEqual(complete.missing_expected_findings, []);
+});
+
+test("seeded evaluator requires the packet4 Relay governance duplicate-key bypass", () => {
+  const missed = evaluateSeededReviewPacket({
+    packet: "packet4_relay_governance",
+    output: `
+1. Verdict: APPROVE
+2. Blocking findings
+None.
+3. Non-blocking concerns
+- The verifier looks for additional_permissions and contents: read.
+`,
+  });
+
+  assert.equal(missed.expected_findings_found, false);
+  assert.deepEqual(missed.missing_expected_findings, ["duplicate_contents_key_bypass"]);
+
+  const found = evaluateSeededReviewPacket({
+    packet: "packet4_relay_governance",
+    output: `
+1. Verdict: REQUEST CHANGES
+2. Blocking findings
+- claude-code-review.yml can contain duplicate contents keys under additional_permissions:
+  contents: read followed later by contents: write. YAML parsing / the action permission
+  parser resolves the later contents value, while verify_ai_review_governance.py only
+  checks that the block contains contents: read. That bypass reintroduces a content-write
+  Claude app token while governance still passes.
+`,
+  });
+
+  assert.equal(found.expected_findings_found, true);
+  assert.deepEqual(found.missing_expected_findings, []);
 });
 
 test("seeded evaluator does not count quoting the expected equality operator as finding the packet1 assignment bug", () => {

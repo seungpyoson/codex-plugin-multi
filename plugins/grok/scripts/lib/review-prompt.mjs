@@ -100,6 +100,126 @@ function sourceManifest(sourceFiles = []) {
   });
 }
 
+function normalizeEvidenceRef(value) {
+  return String(value ?? "").trim().replace(/^`+|`+$/g, "").replace(/[),.;:]+$/g, "");
+}
+
+function selectedSourceRefSet(selectedSource) {
+  const refs = new Set();
+  for (const file of selectedSource?.files ?? []) {
+    const path = String(file?.path ?? "");
+    if (!path) continue;
+    refs.add(path);
+    const normalized = path.replaceAll("\\", "/");
+    refs.add(normalized);
+  }
+  return refs;
+}
+
+function selectedSourceBasenameSet(selectedSource) {
+  const refs = new Set();
+  for (const file of selectedSource?.files ?? []) {
+    const path = String(file?.path ?? "");
+    if (!path) continue;
+    const basename = path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
+    if (basename) refs.add(basename);
+  }
+  return refs;
+}
+
+function evidenceRefHasPathSegment(ref) {
+  return /[/\\]/u.test(String(ref ?? ""));
+}
+
+function requiredEvidenceLines(prompt) {
+  const lines = String(prompt ?? "").split(/\r?\n/u);
+  const out = [];
+  let inRequiredSection = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const lower = line.toLowerCase();
+    if (/^(required checks?|review goals?|required evidence|must verify|must inspect)\b/.test(lower)) {
+      inRequiredSection = true;
+    } else if (/^(output format|merge recommendation|non-blocking risks?|end-to-end caveat|selected files|files to inspect)\b/.test(lower)) {
+      inRequiredSection = false;
+    }
+    if (/\b(if needed|only if needed|optional)\b/.test(lower)) continue;
+    if (
+      inRequiredSection
+      || /\b(required|verify|inspect|confirm|prove|validate|check|must)\b/.test(lower)
+    ) {
+      out.push(line);
+    }
+  }
+  return out;
+}
+
+function requiredEvidenceReferences(prompt) {
+  const refs = [];
+  const push = (value) => {
+    const normalized = normalizeEvidenceRef(value);
+    if (!normalized) return;
+    if (!refs.includes(normalized)) refs.push(normalized);
+  };
+  for (const line of requiredEvidenceLines(prompt)) {
+    for (const match of line.matchAll(/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]{7,40}\b/gu)) {
+      push(match[0]);
+    }
+    for (const match of line.matchAll(/`([^`\n]+)`/gu)) {
+      const value = match[1];
+      if (looksLikeEvidenceFileReference(value)) push(value);
+    }
+    for (const match of line.matchAll(/\b(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:cjs|css|go|java|js|json|jsx|md|mjs|py|rb|rs|sh|toml|ts|tsx|yaml|yml)\b/gu)) {
+      push(match[0]);
+    }
+    for (const match of line.matchAll(/\b[A-Za-z0-9_.-]+\.(?:cjs|css|go|java|js|json|jsx|md|mjs|py|rb|rs|sh|toml|ts|tsx|yaml|yml)\b/gu)) {
+      push(match[0]);
+    }
+  }
+  return refs;
+}
+
+function looksLikeEvidenceFileReference(value) {
+  return /(?:^|[/\\])[A-Za-z0-9_.-]+\.(?:cjs|css|go|java|js|json|jsx|md|mjs|py|rb|rs|sh|toml|ts|tsx|yaml|yml)$/u.test(String(value ?? ""));
+}
+
+function requiredEvidenceManifest({ prompt, selectedSource }) {
+  const selectedRefs = selectedSourceRefSet(selectedSource);
+  const selectedBasenames = selectedSourceBasenameSet(selectedSource);
+  const missing = [];
+  for (const ref of requiredEvidenceReferences(prompt)) {
+    if (selectedRefs.has(ref)) continue;
+    const normalized = ref.replaceAll("\\", "/");
+    if (selectedRefs.has(normalized)) continue;
+    if (!evidenceRefHasPathSegment(normalized)) {
+      const basename = normalized.split("/").filter(Boolean).at(-1);
+      if (basename && selectedBasenames.has(basename)) continue;
+    }
+    missing.push(ref);
+  }
+  return Object.freeze({
+    has_missing_required_evidence: missing.length > 0,
+    missing_required_references: Object.freeze(missing),
+  });
+}
+
+export function requiredEvidencePreflightFailure(auditManifest) {
+  const requiredEvidence = auditManifest?.required_evidence ?? null;
+  if (requiredEvidence?.has_missing_required_evidence !== true) return null;
+  const missing = Array.isArray(requiredEvidence.missing_required_references)
+    ? requiredEvidence.missing_required_references
+    : [];
+  const refs = missing.length > 0 ? missing.join(", ") : "unknown required evidence";
+  return Object.freeze({
+    error_code: "required_evidence_missing",
+    error_message:
+      `required_evidence_missing: selected source packet is missing user-required evidence: ${refs}`,
+    suggested_action:
+      "Include the required evidence in the selected source packet, narrow the prompt to the provided source, or run a manual relay that explicitly supplies the missing evidence.",
+    required_evidence: requiredEvidence,
+  });
+}
+
 function isWordBoundary(char) {
   if (!char) return true;
   const code = char.charCodeAt(0);
@@ -195,6 +315,26 @@ function hasVerdict(text) {
       || startsWithFailVerdict(line)
       || startsWithToken(line, "reject")
       || startsWithToken(line, "rejected");
+  });
+}
+
+function hasApproveVerdict(text) {
+  return reviewLines(text).some((rawLine) => {
+    const line = unmarkReviewText(rawLine).toLowerCase();
+    if (
+      startsWithLabel(line, "verdict")
+      || startsWithLabel(line, "review verdict")
+      || startsWithLabel(line, "code review verdict")
+      || startsWithLabel(line, "overall verdict")
+      || startsWithLabel(line, "final verdict")
+      || startsWithLabel(line, "status")
+      || startsWithLabel(line, "summary")
+    ) {
+      const delimiterIndex = line.indexOf(":");
+      const value = delimiterIndex >= 0 ? line.slice(delimiterIndex + 1).trimStart() : "";
+      return startsWithToken(value, "approve") || startsWithToken(value, "approved");
+    }
+    return startsWithToken(line, "approve") || startsWithToken(line, "approved");
   });
 }
 
@@ -1184,10 +1324,84 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
   if (semanticLines.some((line) => lineHasConcretePermissionFailure(line))) {
     reasons.push("permission_blocked");
   }
+  if (semanticLines.some((line) => lineClaimsRequiredEvidenceMissing(line))) {
+    reasons.push("required_evidence_missing");
+  }
+  if (semanticLines.some((line) => lineClaimsUnresolvedVerifierBypass(line))) {
+    reasons.push("unresolved_verifier_bypass");
+  }
   if (looksShallow) {
     reasons.push("shallow_output");
   }
   return Object.freeze([...new Set(reasons)]);
+}
+
+function lineClaimsRequiredEvidenceMissing(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  if (isPromptPolicyEchoLine(line) || isReviewQualityMechanicsExplanationLine(line)) return false;
+  if (!includesAny(lower, [
+    "cannot definitively verify",
+    "cannot verify",
+    "can't verify",
+    "could not verify",
+    "unable to verify",
+    "not in scope",
+    "not supplied",
+    "not provided",
+    "not available",
+    "cannot read",
+    "can't read",
+    "could not read",
+    "unable to read",
+  ])) return false;
+  return includesAny(lower, [
+    "required check",
+    "required evidence",
+    "required validation",
+    "required security",
+    "security invariant",
+    "token-scope",
+    "token scope",
+    "app-token",
+    "app token",
+    "github app token",
+    "pinned action",
+    "action source",
+    "action's own source",
+    "upstream action",
+    "action.yml",
+    "token.ts",
+    "additional_permissions",
+    "effective permission",
+    "effective contents",
+    "regression guard",
+    "regression coverage",
+    "governance verifier",
+    "verifier",
+  ]);
+}
+
+function lineClaimsUnresolvedVerifierBypass(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  if (isPromptPolicyEchoLine(line) || isReviewQualityMechanicsExplanationLine(line)) return false;
+  if (!includesAny(lower, [
+    "verifier",
+    "governance",
+    "regression guard",
+    "regression coverage",
+  ])) return false;
+  return includesAny(lower, [
+    "would not catch",
+    "does not catch",
+    "doesn't catch",
+    "won't catch",
+    "will not catch",
+    "not caught",
+    "still passes",
+    "would pass",
+    "can be bypassed",
+    "bypass",
+  ]);
 }
 
 function lineClaimsFailedReviewSlot(line) {
@@ -1334,6 +1548,32 @@ function qualityFlags({
   });
 }
 
+function applyRequiredEvidenceQualityGate(reviewQuality, {
+  requiredEvidence,
+  result,
+  status,
+  errorCode,
+} = {}) {
+  const shouldFailApproval = requiredEvidence?.has_missing_required_evidence === true
+    && status === "completed"
+    && errorCode === null
+    && hasApproveVerdict(result);
+  if (!shouldFailApproval) return reviewQuality;
+  const reasons = Object.freeze([
+    ...new Set([
+      ...(Array.isArray(reviewQuality?.semantic_failure_reasons)
+        ? reviewQuality.semantic_failure_reasons
+        : []),
+      "required_evidence_missing",
+    ]),
+  ]);
+  return Object.freeze({
+    ...reviewQuality,
+    semantic_failure_reasons: reasons,
+    failed_review_slot: true,
+  });
+}
+
 export function scopeResolutionReason(scopeInfo = {}) {
   const paths = scopeInfo.scope_paths ?? scopeInfo.paths;
   if (scopeInfo.scope === "branch-diff" || scopeInfo.name === "branch-diff") {
@@ -1364,6 +1604,7 @@ export function buildReviewAuditManifest({
   errorCode = null,
 } = {}) {
   const selectedSource = sourceManifest(sourceFiles);
+  const requiredEvidence = requiredEvidenceManifest({ prompt, selectedSource });
   const renderedPromptHash = hashObject(prompt);
   const routeStep = route.routeStep ?? null;
   const routeSteps = Array.isArray(route.routeSteps)
@@ -1425,7 +1666,10 @@ export function buildReviewAuditManifest({
         "Do not launch another same-packet review until the packet is split, the provider is switched, the slot is waived, or an explicit override artifact is recorded.",
     })
     : sourcePacketPolicy;
-  const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource });
+  const reviewQuality = applyRequiredEvidenceQualityGate(
+    qualityFlags({ result, status, errorCode, selectedSource }),
+    { requiredEvidence, result, status, errorCode },
+  );
   const effectiveErrorCode = errorCode ?? reviewQualityPacketRecoveryErrorCode(reviewQuality);
   const sourceContentTransmission =
     effectiveSourcePacketPolicy.source_send_allowed === false
@@ -1493,6 +1737,7 @@ export function buildReviewAuditManifest({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,
     rendered_prompt_hash: renderedPromptHash,
     selected_source: selectedSource,
+    required_evidence: requiredEvidence,
     git_identity: Object.freeze({
       remote: git.remote ?? null,
       branch: git.branch ?? null,
@@ -1617,6 +1862,7 @@ function buildCompactReviewPrompt({
     "Output requirements",
     "- First line exactly one verdict marker: \"Verdict: APPROVE\", \"Verdict: REQUEST_CHANGES\", or \"Verdict: NOT_REVIEWED\".",
     "- Review only supplied selected source, refs, commits, scope paths, and audit metadata. Missing outside tools are NOT REVIEWED, not code blockers.",
+    "- If evidence for a user-required merge, release, security, or final recommendation check is missing, verdict is NOT_REVIEWED or REQUEST_CHANGES, not APPROVE.",
     "- Do not inspect original absolute workspace paths; use supplied selected source and granted relative/add-dir paths only.",
     "- Do not call filesystem, git, search, network, or other tools to inspect original repository paths; the supplied selected source packet is the review input.",
     "- Name inspected selected file path(s). Bare numbered answers or only 'None' are invalid.",
@@ -1760,6 +2006,7 @@ export function buildReviewPrompt({
     "- Do not inspect original absolute workspace paths; use supplied selected source and granted relative/add-dir paths only.",
     "- Do not call filesystem, git, search, network, or other tools to inspect original repository paths; the supplied selected source packet is the review input.",
     "- If git, GitHub, network, filesystem, or tool access is unavailable, mark only that check as NOT REVIEWED unless the required evidence is supplied here.",
+    "- If evidence for a user-required merge, release, security, or final recommendation check is missing, the verdict must be NOT_REVIEWED or REQUEST_CHANGES, not APPROVE.",
     "- Do not report missing external tool access as a blocking code finding by itself.",
     "- Distinguish real blocking code findings from missing supplied evidence, runtime/tool limitations, and stale or unavailable external comments.",
     "- For every checklist item, report PASS, FAIL, or NOT REVIEWED.",

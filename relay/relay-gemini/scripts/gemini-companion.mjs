@@ -67,7 +67,7 @@ import {
   summarizeScopeDirectory,
   writePromptSidecar,
 } from "./lib/companion-common.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock, selectedSourceFilesFromPrompt } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, buildSelectedSourcePromptBlock, requiredEvidencePreflightFailure, selectedSourceFilesFromPrompt } from "./lib/review-prompt.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
 import {
   acquireProviderWorkloadLease,
@@ -1363,6 +1363,7 @@ async function cmdRun(rest) {
         geminiSessionId: null,
         errorMessage: sourcePacketPreflight.errorMessage,
         reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
         ...redactionFieldsForPrompt(targetPrompt),
       }, []);
       writeJobFile(workspaceRoot, jobId, errorRecord);
@@ -1449,6 +1450,7 @@ async function executeRun(invocation, prompt, { foreground, lifecycleEvents = nu
       geminiSessionId: null,
       errorMessage: sourcePacketPreflight.errorMessage,
       reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+      runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
       ...redactionFieldsForPrompt(prompt),
     }, mutationContext.mutations);
     writeJobFile(workspaceRoot, jobId, errorRecord);
@@ -2162,6 +2164,7 @@ async function cmdContinue(rest) {
         geminiSessionId: null,
         errorMessage: sourcePacketPreflight.errorMessage,
         reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
+        runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
         ...redactionFieldsForPrompt(targetPrompt),
       }, []);
       writeJobFile(workspaceRoot, newJobId_, errorRecord);
@@ -2316,6 +2319,18 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
     errorMessage: "source_packet_too_large: source packet policy preflight pending",
   };
   const manifest = reviewAuditManifest(invocation, prompt, containmentPath, preflightExecution);
+  const evidenceFailure = requiredEvidencePreflightFailure(manifest);
+  if (evidenceFailure) {
+    const execution = {
+      ...preflightExecution,
+      errorMessage: evidenceFailure.error_message,
+      runtimeDiagnostics: {
+        required_evidence: evidenceFailure.required_evidence,
+      },
+    };
+    execution.reviewAuditManifest = reviewAuditManifest(invocation, prompt, containmentPath, execution);
+    return execution;
+  }
   const policy = manifest?.source_packet_policy ?? null;
   if (!policy || policy.source_send_allowed !== false) return null;
   const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";

@@ -960,6 +960,62 @@ test("kimi custom-review rejects over-budget source packets before Kimi launch",
   }
 });
 
+test("kimi custom-review rejects missing required evidence before Kimi launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "kimi-required-evidence-cwd-"));
+  let dataDir = null;
+  try {
+    fixtureSeedRepo(cwd);
+    const prompt = [
+      "Adversarial re-review.",
+      "Required checks:",
+      "1. Inspect the pinned anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 token path.",
+      "2. Verify token.ts and action.yml wiring for additional_permissions.",
+    ].join("\n");
+    const result = runCompanion([
+      "run",
+      "--mode",
+      "custom-review",
+      "--cwd",
+      cwd,
+      "--scope-paths",
+      "seed.txt",
+      "--foreground",
+      "--",
+      prompt,
+    ], {
+      cwd,
+      env: {
+        KIMI_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_KIMI",
+      },
+    });
+    dataDir = result.dataDir;
+    assert.equal(result.status, 2);
+    const record = parseJson(result.stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "required_evidence_missing");
+    assert.match(record.error_message, /selected source packet is missing user-required evidence/);
+    assert.equal(record.error_cause, "pre_send_required_evidence_gap");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.required_evidence.has_missing_required_evidence, true);
+    assert.deepEqual(
+      record.runtime_diagnostics.required_evidence.missing_required_references,
+      [
+        "anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464",
+        "token.ts",
+        "action.yml",
+      ],
+    );
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.required_evidence,
+      record.runtime_diagnostics.required_evidence,
+    );
+    assert.doesNotMatch(result.stdout, /external_review_launched|MUST_NOT_REACH_KIMI/);
+  } finally {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("kimi background custom-review rejects over-budget source packets before prompt sidecar write", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "kimi-bg-source-packet-cwd-"));
   const files = [];

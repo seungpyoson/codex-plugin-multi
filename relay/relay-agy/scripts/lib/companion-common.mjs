@@ -266,6 +266,7 @@ function reviewMetadataProjection(obj) {
     "source_send_approval_state",
     "source_packet_policy",
     "packet_recovery",
+    "required_evidence",
   ]) {
     if (manifest[key] !== undefined) projection[key] = manifest[key];
   }
@@ -276,7 +277,7 @@ function runtimeDiagnosticsProjection(obj) {
   const diagnostics = obj?.runtime_diagnostics;
   if (!diagnostics || typeof diagnostics !== "object") return null;
   const projection = {};
-  for (const key of ["source_packet_policy", "packet_recovery"]) {
+  for (const key of ["source_packet_policy", "packet_recovery", "required_evidence"]) {
     if (diagnostics[key] !== undefined) projection[key] = diagnostics[key];
   }
   return Object.keys(projection).length > 0 ? projection : null;
@@ -304,6 +305,7 @@ function terminalLifecycleProjection(obj) {
     http_status: obj.http_status ?? null,
     external_review: obj.external_review,
   };
+  if (obj.error_cause != null) projection.error_cause = obj.error_cause;
   if (obj.disclosure_note != null) projection.disclosure_note = obj.disclosure_note;
   if (obj.review_quality && typeof obj.review_quality === "object") {
     projection.review_quality = {
