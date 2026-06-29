@@ -47,6 +47,7 @@ test("package scripts expose per-target smoke commands", () => {
   assert.match(pkg.scripts["smoke:claude"] ?? "", /identity-resume-chain\.smoke\.test\.mjs/);
   assert.match(pkg.scripts["smoke:gemini"] ?? "", /gemini-companion\.smoke\.test\.mjs/);
   assert.match(pkg.scripts["smoke:kimi"] ?? "", /kimi-companion\.smoke\.test\.mjs/);
+  assert.match(pkg.scripts["smoke:agy"] ?? "", /agy-companion\.smoke\.test\.mjs/);
   assert.match(pkg.scripts["smoke:grok"] ?? "", /grok-web\.smoke\.test\.mjs/);
   assert.match(pkg.scripts["smoke:api-reviewers"] ?? "", /api-reviewers\.smoke\.test\.mjs/);
 });
@@ -72,7 +73,7 @@ test("pull-request CI runs unit tests and per-target smoke matrix separately", (
   assert.doesNotMatch(workflow, /compgen/);
   assert.doesNotMatch(workflow, /No unit tests yet/);
   assert.match(workflow, /\n\s+smoke:\n/);
-  assert.match(workflow, /target:\s*\[claude,\s*gemini,\s*kimi,\s*grok,\s*api-reviewers\]/);
+  assert.match(workflow, /target:\s*\[claude,\s*gemini,\s*kimi,\s*agy,\s*grok,\s*api-reviewers\]/);
   assert.match(workflow, /npm run smoke:\$\{\{ matrix\.target \}\}/);
 });
 
@@ -624,10 +625,12 @@ test("manual E2E scripts are opt-in and documented", () => {
   assert.match(pkg.scripts["e2e:claude"] ?? "", /tests\/e2e\/claude\.e2e\.test\.mjs/);
   assert.match(pkg.scripts["e2e:gemini"] ?? "", /tests\/e2e\/gemini\.e2e\.test\.mjs/);
   assert.match(pkg.scripts["e2e:kimi"] ?? "", /tests\/e2e\/kimi\.e2e\.test\.mjs/);
+  assert.match(pkg.scripts["e2e:agy"] ?? "", /tests\/e2e\/agy\.e2e\.test\.mjs/);
   assert.match(pkg.scripts["e2e:grok"] ?? "", /tests\/e2e\/grok\.e2e\.test\.mjs/);
   assert.match(e2eDocs, /CLAUDE_LIVE_E2E=1 npm run e2e:claude/);
   assert.match(e2eDocs, /GEMINI_LIVE_E2E=1 npm run e2e:gemini/);
   assert.match(e2eDocs, /KIMI_LIVE_E2E=1 npm run e2e:kimi/);
+  assert.match(e2eDocs, /AGY_LIVE_E2E=1 npm run e2e:agy/);
   assert.match(e2eDocs, /GROK_LIVE_E2E=1 npm run e2e:grok/);
   assert.match(e2eDocs, /skipped test/);
 });

@@ -161,6 +161,11 @@ test("Grok fallback configs strip every numeric env key parsed by their delegate
 
 const PROVIDER_RUNTIME_POLICY_ENTRYPOINTS = Object.freeze([
   Object.freeze({
+    provider: "agy",
+    runtimePath: "plugins/agy/scripts/agy-companion.mjs",
+    routeSelector: /\bresolveConcurrencyAdmission\s*\(/,
+  }),
+  Object.freeze({
     provider: "claude",
     runtimePath: "plugins/claude/scripts/claude-companion.mjs",
     routeSelector: /\bresolveAuthSelectionForProvider\b/,

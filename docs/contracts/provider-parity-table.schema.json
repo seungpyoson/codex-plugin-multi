@@ -16,14 +16,15 @@
         { "contains": { "const": "claude" } },
         { "contains": { "const": "gemini" } },
         { "contains": { "const": "kimi" } },
+        { "contains": { "const": "agy" } },
         { "contains": { "const": "grok" } },
         { "contains": { "const": "deepseek" } },
         { "contains": { "const": "glm" } }
       ],
       "items": {
-        "enum": ["claude", "gemini", "kimi", "grok", "deepseek", "glm"]
+        "enum": ["claude", "gemini", "kimi", "agy", "grok", "deepseek", "glm"]
       },
-      "minItems": 6
+      "minItems": 7
     },
     "policy_areas": {
       "type": "array",
@@ -106,7 +107,7 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "provider": { "enum": ["claude", "gemini", "kimi", "grok", "deepseek", "glm"] },
+        "provider": { "enum": ["claude", "gemini", "kimi", "agy", "grok", "deepseek", "glm"] },
         "policy_area": { "type": "string" },
         "difference_type": {
           "enum": [

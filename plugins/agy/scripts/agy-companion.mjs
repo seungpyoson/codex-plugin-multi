@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename as basenamePath, dirname as dirnamePath, join as joinPath, resolve as resolvePath } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -37,9 +37,17 @@ import { buildJobRecord, externalReviewForInvocation, resolveErrorSinkDisclosure
 import { sourceContentTransmissionForExecution } from "./lib/external-review.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import {
+  CONCURRENCY_FACTS,
   latestSourcePacketPreviousAttempt,
+  resolveConcurrencyAdmission,
   sourcePacketPreviousAttemptFromJobRecord,
 } from "./lib/provider-route-policy.mjs";
+import {
+  acquireProviderWorkloadLease,
+  concurrencyAdmissionBlockedExecution,
+  providerWorkloadBlockedExecution,
+  releaseProviderWorkloadLease,
+} from "./lib/review-workload.mjs";
 import {
   REVIEW_PROMPT_CONTRACT_VERSION,
   buildReviewAuditManifest,
@@ -67,7 +75,10 @@ const READINESS_PREFLIGHT_TIMEOUT_MS = 30000;
 const READINESS_PREFLIGHT_PROMPT = "Reply with exactly: relay-agy-readiness";
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "AGY FILE";
-const AGY_SOURCE_PACKET_MAX_BYTES = 256 * 1024;
+// AGY receives the rendered prompt as one --print argv value. Linux caps a
+// single argv string near 128 KiB, so keep the default packet budget below that
+// after prompt framing is added.
+const AGY_SOURCE_PACKET_MAX_BYTES = 96 * 1024;
 const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
 const AGY_WRITABLE_SIDECARS = new Set([
   "git-status-before.txt",
@@ -124,6 +135,43 @@ configureState({
   fallbackStateRootDir: resolvePath(tmpdir(), "agy-companion"),
   sessionIdEnv: "AGY_COMPANION_SESSION_ID",
 });
+
+function processHomeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+
+function resolveAgyHomeDir(env = process.env) {
+  return resolvePath(env.ANTIGRAVITY_HOME || joinPath(processHomeDir(env), ".antigravity"));
+}
+
+function resolveSharedStateDir(pathValue) {
+  mkdirSync(pathValue, { recursive: true });
+  return realpathSync(pathValue);
+}
+
+function resolveAgyAdmissionContext(provider, route, env = process.env) {
+  const fact = CONCURRENCY_FACTS[provider]?.[route];
+  if (!fact) {
+    throw new Error(`missing concurrency fact for source-bearing route ${provider}.${route}`);
+  }
+  const sharedStateIdentity = resolveSharedStateDir(resolveAgyHomeDir(env));
+  return resolveConcurrencyAdmission({
+    category: fact.category,
+    declaredLimit: fact.limit,
+    limitEnv: fact.limit_env,
+    sharedStateIdentity,
+    provider,
+    route,
+    env,
+  });
+}
+
+function assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing) {
+  if (workloadAdmission.ok && sourceBearing && workloadAdmission.lease == null) {
+    process.stderr.write("agy-companion: source-bearing admission returned no workload lease\n");
+    process.exit(2);
+  }
+}
 
 function commandBinary(options) {
   return typeof options.binary === "string" && options.binary ? options.binary : (process.env.AGY_BINARY || "agy");
@@ -1135,6 +1183,7 @@ async function run(rest) {
   let sidecarPrompt = null;
   let mutationContext = null;
   let execution = null;
+  let workloadLease = null;
   // Single guaranteed finalization for the whole containment-holding body: any
   // throw that escapes the inner handlers (e.g. a post-spawn git_binary_rejected
   // from consumeCancelMarker / buildAuditManifest / persistRecord under a mid-run
@@ -1241,11 +1290,89 @@ async function run(rest) {
       process.exit(2);
     }
 
+    const sourceBearing = modeSendsSelectedSource(invocation.mode);
+    let admissionContext = {};
+    if (sourceBearing) {
+      const route = "subscription";
+      try {
+        admissionContext = resolveAgyAdmissionContext(invocation.target, route, process.env);
+      } catch {
+        const workloadPreflight = concurrencyAdmissionBlockedExecution(invocation.target, route);
+        workloadPreflight.reviewAuditManifest = buildAuditManifest({
+          promptText: sidecarPrompt,
+          selectedFiles,
+          timeoutMs,
+          invocation,
+          result: "",
+          status: "failed",
+          errorCode: "provider_workload_blocked",
+          pidInfo: null,
+        });
+        if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+        const errorRecord = buildJobRecord(invocation, {
+          exitCode: workloadPreflight.exitCode,
+          endedAt: workloadPreflight.endedAt,
+          parsed: workloadPreflight.parsed,
+          pidInfo: null,
+          agySessionId: null,
+          errorMessage: workloadPreflight.errorMessage,
+          reviewAuditManifest: workloadPreflight.reviewAuditManifest,
+          runtimeDiagnostics: workloadPreflight.runtimeDiagnostics,
+          ...redactionFieldsForPrompt(sidecarPrompt),
+        }, mutationContext.mutations);
+        persistRecord(invocation.workspace_root, errorRecord);
+        printLifecycleJson(errorRecord, lifecycleEvents);
+        process.exit(2);
+      }
+    }
+
+    const workloadAdmission = acquireProviderWorkloadLease({
+      ...admissionContext,
+      provider: invocation.target,
+      jobId,
+      cwd,
+      sourceBearing,
+      env: process.env,
+    });
+    if (workloadAdmission.ok) {
+      assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing);
+      workloadLease = workloadAdmission.lease;
+    } else {
+      const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);
+      workloadPreflight.reviewAuditManifest = buildAuditManifest({
+        promptText: sidecarPrompt,
+        selectedFiles,
+        timeoutMs,
+        invocation,
+        result: "",
+        status: "failed",
+        errorCode: "provider_workload_blocked",
+        pidInfo: null,
+      });
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: workloadPreflight.exitCode,
+        endedAt: workloadPreflight.endedAt,
+        parsed: workloadPreflight.parsed,
+        pidInfo: null,
+        agySessionId: null,
+        errorMessage: workloadPreflight.errorMessage,
+        reviewAuditManifest: workloadPreflight.reviewAuditManifest,
+        runtimeDiagnostics: workloadPreflight.runtimeDiagnostics,
+        ...redactionFieldsForPrompt(sidecarPrompt),
+      }, mutationContext.mutations);
+      persistRecord(invocation.workspace_root, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
+
     const readinessFailure = agyReadinessPreflight({
       binary,
       model: options.model ?? null,
     });
     if (readinessFailure) {
+      releaseProviderWorkloadLease(workloadLease);
+      workloadLease = null;
       if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
       persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, readinessFailure.code, readinessFailure.error, {
         promptText: sidecarPrompt,
@@ -1296,6 +1423,8 @@ async function run(rest) {
         retryCount: 0,
       };
     }
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
     const cancelRequested = consumeCancelMarker(invocation.workspace_root, invocation.job_id);
     if (cancelRequested) {
       const reviewAuditManifest = buildAuditManifest({
@@ -1412,6 +1541,8 @@ async function run(rest) {
     // Guaranteed teardown: a source-bearing containment worktree must never leak
     // into os.tmpdir, no matter where the body threw. cleanup() is best-effort and
     // idempotent (a path an inner handler already removed just ENOENTs here).
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
     // The confirmed escape class: a mid-run RELAY_GIT_BINARY topology change makes a
     // post-setup git call (consumeCancelMarker / buildAuditManifest / persistRecord)

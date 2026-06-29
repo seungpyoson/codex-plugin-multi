@@ -97,7 +97,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [claude, gemini, kimi, grok, api-reviewers]
+        target: [claude, gemini, kimi, agy, grok, api-reviewers]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

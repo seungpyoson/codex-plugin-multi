@@ -12,6 +12,9 @@
       "source": "./relay/relay-gemini",
       "author": {
         "name": "relay-maintainer"
+      },
+      "policy": {
+        "installation": "HIDDEN"
       }
     },
     {

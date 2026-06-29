@@ -24,7 +24,6 @@ const FALLBACK_SOURCE_PATHS = new Map([
 ]);
 const FALLBACK_DEFAULT_PLUGINS = [
   "relay-claude",
-  "relay-gemini",
   "relay-kimi",
   "relay-agy",
   "relay-grok",
@@ -114,6 +113,7 @@ function readMarketplaceEntries(root) {
     entries.set(plugin.name, {
       sourcePath: normalizeSourcePath(sourcePath),
       version: typeof plugin.version === "string" && plugin.version.length > 0 ? plugin.version : null,
+      installation: typeof plugin.policy?.installation === "string" ? plugin.policy.installation : null,
     });
   }
   return entries;
@@ -323,12 +323,15 @@ function sourceInfoForHome(home, repo, repoSourcePaths) {
   const marketplacePresent = existsSync(manifestPath);
   const marketplaceEntries = marketplacePresent ? readMarketplaceEntries(marketplaceRoot) : new Map();
   const marketplaceSourcePaths = sourcePathsFromMarketplaceEntries(marketplaceEntries);
+  const repoEntries = readMarketplaceEntries(repo);
   return {
     marketplaceRoot,
     marketplaceManifestPath: manifestPath,
     marketplacePresent,
     marketplaceEntries,
     marketplaceSourcePaths,
+    repoEntries,
+    sourceEntries: marketplacePresent ? marketplaceEntries : repoEntries,
     sourceBaseRoot: marketplacePresent ? marketplaceRoot : repo,
     sourcePaths: marketplacePresent ? marketplaceSourcePaths : repoSourcePaths,
   };
@@ -348,7 +351,11 @@ function profileReport(name, home, plugins, { sourceInfo, repoBaseRoot, repoSour
     const sourcePluginPresent = existsSync(sourcePluginRoot);
     const listedInMarketplaceManifest = sourceInfo.marketplacePresent ? sourceInfo.marketplaceSourcePaths.has(plugin) : null;
     const sourceFiles = listComparableFiles(sourcePluginRoot);
-    const manifestVersion = sourceInfo.marketplaceEntries.get(plugin)?.version ?? null;
+    const sourceEntry = sourceInfo.sourceEntries.get(plugin) ?? null;
+    const repoEntry = sourceInfo.repoEntries.get(plugin) ?? null;
+    const marketplaceInstallation = repoEntry?.installation ?? sourceEntry?.installation ?? null;
+    const availableForInstall = marketplaceInstallation !== "NOT_AVAILABLE";
+    const manifestVersion = sourceInfo.marketplaceEntries.get(plugin)?.version ?? sourceEntry?.version ?? null;
     const cacheVersion = pluginCacheVersion(home, plugin, sourcePluginRoot, repoPluginRoot, manifestVersion, sourceFiles);
     const cacheRoot = join(home, "plugins", "cache", CACHE_NAMESPACE, plugin, cacheVersion);
     const cached = listSkills(cacheRoot, ".");
@@ -371,14 +378,22 @@ function profileReport(name, home, plugins, { sourceInfo, repoBaseRoot, repoSour
     const configuredEnabled = configEntries.get(plugin) === true;
     const requiredByDependency = requiredByEnabledPlugin(configEntries, plugin);
     const enabled = internalRuntime ? true : configuredEnabled;
+    const unavailableConfiguredEnabled = configuredEnabled && !availableForInstall;
+    const explicitlyRequestedUnavailable = requireAllPlugins && !availableForInstall;
     const requiredForOk = internalRuntime
-      ? configuredEnabled || requiredByDependency || requireAllPlugins
-      : configuredEnabled || requireAllPlugins;
+      ? ((configuredEnabled || requiredByDependency) && availableForInstall) || (requireAllPlugins && availableForInstall)
+      : (configuredEnabled && availableForInstall) || (requireAllPlugins && availableForInstall);
     const missingFromMarketplaceManifest = sourceInfo.marketplacePresent && !listedInMarketplaceManifest;
+    if (unavailableConfiguredEnabled) ok = false;
     if (requiredForOk && (!inSync || repoInSync === false || missingFromMarketplaceManifest || (!internalRuntime && !enabled))) ok = false;
     pluginReports[plugin] = {
       internal_runtime: internalRuntime,
+      marketplace_installation: marketplaceInstallation,
+      repo_marketplace_installation: repoEntry?.installation ?? null,
+      available_for_install: availableForInstall,
       configured_enabled: configuredEnabled,
+      unavailable_configured_enabled: unavailableConfiguredEnabled,
+      explicitly_requested_unavailable: explicitlyRequestedUnavailable,
       required_by_enabled_plugin: requiredByDependency,
       required_for_ok: requiredForOk,
       enabled,
@@ -429,7 +444,27 @@ function disabledRequiredPluginNames(profiles) {
   const names = new Set();
   for (const profile of Object.values(profiles)) {
     for (const [plugin, report] of Object.entries(profile.plugins)) {
-      if (report.required_for_ok && !report.internal_runtime && !report.enabled) names.add(plugin);
+      if (report.required_for_ok && report.available_for_install !== false && !report.internal_runtime && !report.enabled) names.add(plugin);
+    }
+  }
+  return Array.from(names).sort(comparePathStrings);
+}
+
+function unavailableEnabledPluginNames(profiles) {
+  const names = new Set();
+  for (const profile of Object.values(profiles)) {
+    for (const [plugin, report] of Object.entries(profile.plugins)) {
+      if (report.unavailable_configured_enabled) names.add(plugin);
+    }
+  }
+  return Array.from(names).sort(comparePathStrings);
+}
+
+function unavailableRequestedPluginNames(profiles) {
+  const names = new Set();
+  for (const profile of Object.values(profiles)) {
+    for (const [plugin, report] of Object.entries(profile.plugins)) {
+      if (report.explicitly_requested_unavailable) names.add(plugin);
     }
   }
   return Array.from(names).sort(comparePathStrings);
@@ -522,6 +557,14 @@ function main() {
   const disabledRequired = disabledRequiredPluginNames(profiles);
   if (disabledRequired.length > 0) {
     nextActions.push(`Enable required disabled plugins (${disabledRequired.join(", ")}) in \`/plugins\` or config.toml for the Codex profile that will run reviews.`);
+  }
+  const unavailableEnabled = unavailableEnabledPluginNames(profiles);
+  if (unavailableEnabled.length > 0) {
+    nextActions.push(`Disable unavailable plugins (${unavailableEnabled.join(", ")}) in \`/plugins\` or config.toml; they are no longer installable from ${MARKETPLACE}.`);
+  }
+  const unavailableRequested = unavailableRequestedPluginNames(profiles);
+  if (unavailableRequested.length > 0) {
+    nextActions.push(`Omit unavailable plugins (${unavailableRequested.join(", ")}) from explicit cache-doctor checks; they are no longer installable from ${MARKETPLACE}.`);
   }
   const unlistedRequired = unlistedRequiredPluginNames(profiles);
   if (unlistedRequired.length > 0) {

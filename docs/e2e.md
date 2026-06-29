@@ -1,14 +1,15 @@
 # Manual E2E runbook
 
-These checks use the real Claude Code, Gemini CLI, Kimi CLI, Grok web tunnel,
-DeepSeek API, and GLM API. They are not run in CI and are skipped by default
-unless the maintainer explicitly opts in.
+These checks use the real Claude Code, Kimi CLI, Grok web tunnel, DeepSeek API,
+and GLM API. They are not run in CI and are skipped by default unless the
+maintainer explicitly opts in. The Gemini lane is retained as hidden legacy
+adapter coverage because `relay-gemini` is no longer a public marketplace
+provider.
 
 ## Mock vs live
 
-- `npm test`, `npm run smoke:claude`, `npm run smoke:gemini`, `npm run smoke:kimi`, and `npm run smoke:api-reviewers` use mock CLIs or mock API responses.
-- `npm run e2e:claude`, `npm run e2e:gemini`, and `npm run e2e:kimi` use live
-  CLIs and require local auth.
+- `npm test`, `npm run smoke:claude`, `npm run smoke:kimi`, `npm run smoke:agy`, and `npm run smoke:api-reviewers` use mock CLIs or mock API responses. `npm run smoke:gemini` covers the hidden legacy Gemini adapter.
+- `npm run e2e:claude`, `npm run e2e:kimi`, and `npm run e2e:agy` use live CLIs and require local auth. `npm run e2e:gemini` is a hidden legacy lane.
 - `npm run e2e:grok` uses a live subscription-backed Grok web tunnel and
   requires the tunnel to be running before the test starts.
 - Running an E2E command without the opt-in env var exits successfully with a skipped test.
@@ -29,6 +30,8 @@ writable_roots = ["/Users/<you>/.kimi-code/logs"]
 may also need a writable root under `~/.kimi-code` because the first-party CLI writes
 logs and auth/session state there. Start with `/Users/<you>/.kimi-code/logs`; if the
 next denial names an OAuth/session file, fall back to `/Users/<you>/.kimi-code`.
+AGY checks may need `/Users/<you>/.antigravity` if the Antigravity CLI reports a
+state or session permission denial.
 
 If you do not want persistent sandbox network access, use one-off escalation for
 the single trusted E2E command. In an interactive Codex session, keep
@@ -59,7 +62,10 @@ Expected result:
 - The companion returns a completed Claude `JobRecord`.
 - Temporary cwd/data directories are removed after the test.
 
-## Gemini
+## Gemini (hidden legacy)
+
+`relay-gemini` is disabled in the Codex marketplace and hidden in the Claude
+marketplace. Use this lane only when maintaining the legacy adapter source.
 
 Prerequisites:
 
@@ -95,6 +101,25 @@ Expected result:
 
 - The test prints `live Kimi foreground review completes`.
 - The companion returns a completed Kimi `JobRecord`.
+- Temporary cwd/data directories are removed after the test.
+
+## AGY
+
+Prerequisites:
+
+- Google Antigravity CLI is installed and authenticated.
+- Optional: set `AGY_BINARY=/absolute/path/to/agy` if `agy` is not on `PATH`.
+
+Command:
+
+```sh
+AGY_LIVE_E2E=1 npm run e2e:agy
+```
+
+Expected result:
+
+- The test prints `live AGY foreground review completes`.
+- The companion returns a completed AGY `JobRecord`.
 - Temporary cwd/data directories are removed after the test.
 
 ## Grok

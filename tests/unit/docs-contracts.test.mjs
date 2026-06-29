@@ -333,7 +333,7 @@ test("cancel command docs enumerate the runtime status and error contracts", () 
 test("artifact cleanup inventory covers every provider, review mode, and owned artifact class", () => {
   const doc = readRepoFile("docs/artifact-cleanup-inventory.md");
 
-  for (const provider of ["Claude", "Gemini", "Kimi", "DeepSeek", "GLM", "Grok Web"]) {
+  for (const provider of ["Claude", "Gemini", "Kimi", "AGY", "DeepSeek", "GLM", "Grok Web"]) {
     assert.match(doc, new RegExp(`\\b${provider}\\b`), `missing provider ${provider}`);
   }
   for (const mode of ["review", "adversarial-review", "custom-review", "rescue", "foreground", "background", "continue"]) {
@@ -709,22 +709,20 @@ test("README documents shipped install path, first commands, and safety posture"
 
   assert.doesNotMatch(readme, /M0|M2\+|Planned surface/i);
   assert.match(readme, /codex plugin marketplace add relay-org\/relay/);
-  assert.match(readme, /relay-for-claude:relay-gemini/);
-  assert.match(readme, /relay-gemini@relay-for-claude/);
-  assert.match(readme, /\/relay-gemini:review/);
+  assert.match(readme, /relay-agy@relay-for-claude/);
+  assert.match(readme, /\/relay-kimi:review/);
   assert.match(readme, /\/plugins/);
   assert.match(readme, /user-invocable skill fallback/);
-  assert.match(readme, /Claude, Gemini, Kimi, and\s+Grok delegation skills/);
+  assert.match(readme, /Claude, Kimi, AGY, and\s+Grok delegation skills/);
   assert.match(readme, /DeepSeek and GLM are intentionally split/);
+  assert.match(readme, /relay-gemini[\s\S]*disabled[\s\S]*hidden/i);
   assert.doesNotMatch(readme, /Diagnostic plugin dispatch check/);
   assert.doesNotMatch(readme, /\/claude-ping/);
   assert.doesNotMatch(readme, /\/gemini-ping/);
   assert.match(readme, /\/claude-review/);
-  assert.match(readme, /\/gemini-review/);
+  assert.match(readme, /\/agy-review/);
   assert.match(readme, /\/claude-rescue/);
-  assert.match(readme, /\/gemini-rescue/);
-  assert.match(readme, /Gemini plan-mode is NOT a sandbox/);
-  assert.match(readme, /read-only\.toml/);
+  assert.match(readme, /relay-agy:agy-review/);
   assert.match(readme, /--dispose/);
   assert.doesNotMatch(readme, /Gemini `cancel`.*deferred/i,
     "gemini cancel is wired (PR #22); README must not claim it's deferred");
@@ -822,16 +820,16 @@ test("README documents Codex sandbox setup and provider-specific failure modes",
   assert.match(readme, /network_access = true/);
   assert.match(readme, /writable_roots/);
   assert.match(readme, /\/Users\/<you>\/\.claude/);
-  assert.match(readme, /\/Users\/<you>\/\.gemini/);
+  assert.match(readme, /\/Users\/<you>\/\.antigravity/);
   assert.match(readme, /\/Users\/<you>\/\.kimi-code\/logs/);
   assert.match(readme, /\/Users\/<you>\/\.kimi-code/);
   assert.match(readme, /sandbox_blocked[\s\S]*\.claude/);
-  assert.match(readme, /sandbox_blocked[\s\S]*\.gemini/);
+  assert.match(readme, /sandbox_blocked[\s\S]*\.antigravity/);
   assert.match(readme, /one-off escalation/i);
   assert.match(readme, /approve only that command/i);
   assert.match(readme, /danger-full-access|dangerously-bypass-approvals-and-sandbox/i);
   assert.match(readme, /do not make[\s\S]*default/i);
-  assert.match(readme, /Gemini CLI.*native.*sandbox|native.*Gemini.*sandbox/i);
+  assert.match(readme, /AGY[\s\S]*state or session permission denial/i);
   assert.match(readme, /Kimi.*\.kimi-code/i);
   assert.match(readme, /Direct API reviewers|DeepSeek.*GLM/i);
   assert.match(readme, /selected source content[\s\S]*sent/i);
@@ -942,7 +940,7 @@ test("provider architecture parity table is machine-validatable and complete", (
   assert.equal(Number.isInteger(table.schema_version), true);
   assert.equal(table.schema_version >= 1, true);
   assert.equal(table.feature, "provider-architecture-parity");
-  assert.deepEqual([...table.providers].sort(), ["claude", "deepseek", "gemini", "glm", "grok", "kimi"]);
+  assert.deepEqual([...table.providers].sort(), ["agy", "claude", "deepseek", "gemini", "glm", "grok", "kimi"]);
 
   const providerPolicyContract = buildProviderPolicyContract();
   assert.deepEqual(table.providers, providerPolicyContract.providers);
@@ -1125,6 +1123,10 @@ test("concurrency budget section mirrors CONCURRENCY_FACTS exactly (declarative 
   assert.deepEqual(
     find("grok-web", "subscription_web"),
     { provider: "grok-web", route: "subscription_web", category: "shared_state", limit: 1, limit_env: null },
+  );
+  assert.deepEqual(
+    find("agy", "subscription"),
+    { provider: "agy", route: "subscription", category: "shared_state", limit: 1, limit_env: null },
   );
   assert.equal(find("deepseek", "direct_api").limit, 4);
   assert.equal(find("glm", "direct_api").limit, 4);

@@ -9,6 +9,7 @@ export const PROVIDER_POLICY_PROVIDERS = Object.freeze([
   "claude",
   "gemini",
   "kimi",
+  "agy",
   "grok",
   "deepseek",
   "glm",
@@ -153,6 +154,9 @@ export const CONCURRENCY_FACTS = freezeConcurrencyFacts({
     subscription: { category: "shared_state", limit: 1 },
   },
   kimi: {
+    subscription: { category: "shared_state", limit: 1 },
+  },
+  agy: {
     subscription: { category: "shared_state", limit: 1 },
   },
   grok: {

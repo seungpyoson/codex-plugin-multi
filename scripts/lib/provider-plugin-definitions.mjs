@@ -58,6 +58,7 @@ function companionProvider({
   resultDescription,
   delegationDescription,
   synthesizeCustomReview,
+  disabledReason = null,
 }) {
   const prefix = envPrefix(id);
   const generatedResultDescription =
@@ -109,6 +110,7 @@ function companionProvider({
     jobRecordSessionField: `${id}_session_id`,
     reviewTimeoutEnv: `${prefix}_REVIEW_TIMEOUT_MS`,
     reviewTimeoutDefaultMs: 900000,
+    ...(disabledReason ? { disabledReason } : {}),
     workflows,
     generatedSkills: ["delegation"],
     ...descriptionFields,
@@ -175,6 +177,7 @@ export const RELAY_PROVIDER_DEFINITIONS = Object.freeze({
     shortDisplayName: "Gemini",
     homeDir: "~/.gemini",
     setupReadiness: "availability and OAuth readiness",
+    disabledReason: "Gemini Code Assist OAuth is no longer supported for this workflow; use relay-agy instead.",
     synthesizeCustomReview: true,
   }),
   grok: freezeProvider({

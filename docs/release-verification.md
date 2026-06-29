@@ -17,8 +17,8 @@ from Codex. Native plugin slash commands remain blocked by Codex CLI 0.125.0.
 - Git and Node.js are available on `PATH`.
 - Claude Code is installed and authenticated if verifying the Claude setup
   workflow.
-- Gemini CLI is installed and authenticated if verifying the Gemini setup
-  workflow.
+- Google Antigravity CLI is installed and authenticated if verifying the AGY
+  setup workflow.
 - Kimi Code CLI is installed and authenticated if verifying the Kimi setup
   workflow.
 - Grok CLI is installed and authenticated if verifying the Grok setup workflow.
@@ -62,9 +62,10 @@ codex
 /plugins
 ```
 
-Expected: `relay-claude`, `relay-gemini`, `relay-kimi`, `relay-grok`,
-`relay-deepseek`, and `relay-glm` are listed. Enable the plugins being
-verified.
+Expected: `relay-claude`, `relay-kimi`, `relay-agy`, `relay-grok`,
+`relay-deepseek`, and `relay-glm` are listed. `relay-gemini` is a disabled
+legacy path and must not be enabled for release verification. Enable the
+supported plugins being verified.
 
 5. Confirm supported fallback skills are model-visible.
 
@@ -73,15 +74,15 @@ Ask Codex what Relay plugin skills are available.
 ```
 
 Expected: enabled relay plugins expose their matching skills, such as
-`claude-delegation`, `gemini-delegation`, `kimi-delegation`,
+`claude-delegation`, `kimi-delegation`, `agy-delegation`,
 `grok-delegation`, `deepseek-review`, and `glm-review`.
 
 6. Run setup checks if the target CLIs are installed and authenticated:
 
 ```text
 Use the Claude delegation skill to run the setup check.
-Use the Gemini delegation skill to run the setup check.
 Use the Kimi delegation skill to run the setup check.
+Use the AGY delegation skill to run the setup check.
 Use the Grok setup skill to run the setup check.
 Use the DeepSeek setup skill to run the setup check.
 Use the GLM setup skill to run the setup check.
@@ -94,8 +95,8 @@ missing on the verification machine, record that as skipped with the reason.
 
 ```text
 Use the Claude delegation skill to review the seeded repository.
-Use the Gemini delegation skill to review the seeded repository.
 Use the Kimi delegation skill to review the seeded repository.
+Use the AGY delegation skill to review the seeded repository.
 Use the Grok delegation skill to review the seeded repository.
 Use the DeepSeek review skill to review the seeded repository.
 Use the GLM review skill to review the seeded repository.

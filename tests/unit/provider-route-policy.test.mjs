@@ -600,7 +600,7 @@ test("provider policy contract exposes the full cross-cutting policy surface", (
   );
 
   const contract = buildProviderPolicyContract();
-  assert.deepEqual(contract.providers, ["claude", "gemini", "kimi", "grok", "deepseek", "glm"]);
+  assert.deepEqual(contract.providers, ["claude", "gemini", "kimi", "agy", "grok", "deepseek", "glm"]);
   assert.deepEqual(
     contract.domains.map((domain) => domain.name),
     requiredPolicyDomains,
@@ -1756,6 +1756,7 @@ test("provider route policy applies one ladder shape to every named provider", (
     claude: subscriptionAndApi,
     gemini: subscriptionAndApi,
     kimi: subscriptionOnly,
+    agy: subscriptionOnly,
     grok: subscriptionOnly,
     deepseek: apiOnly,
     glm: apiOnly,

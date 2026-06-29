@@ -71,11 +71,11 @@ function writeMarketplaceManifest(root, plugins) {
     file,
     `${JSON.stringify({
       name: MARKETPLACE,
-      plugins: plugins.map(([name, sourcePath, version]) => {
+      plugins: plugins.map(([name, sourcePath, version, installation = "AVAILABLE"]) => {
         const entry = {
           name,
           source: { source: "local", path: sourcePath },
-          policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+          policy: { installation, authentication: "ON_USE" },
         };
         if (version) entry.version = version;
         return entry;
@@ -130,6 +130,118 @@ test("codex plugin cache doctor does not fail default profile for disabled unins
   assert.equal(profile.plugins["api-reviewers"].cache_in_sync, true);
   assert.doesNotMatch(report.next_actions.join("\n"), /enable missing plugins/i);
   assert.doesNotMatch(report.next_actions.join("\n"), /Enable required disabled plugins/i);
+});
+
+test("codex plugin cache doctor flags stale enabled plugins marked not available", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-unavailable-enabled-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-unavailable-enabled-home-"));
+  const marketplaceRoot = path.join(primary, ".tmp", "marketplaces", MARKETPLACE);
+  const plugins = [["relay-gemini", "./plugins/relay-gemini", null, "NOT_AVAILABLE"]];
+
+  writeMarketplaceManifest(repo, plugins);
+  writeMarketplaceManifest(marketplaceRoot, plugins);
+  writePluginFile(path.join(repo, "plugins"), "relay-gemini", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writePluginFile(path.join(marketplaceRoot, "plugins"), "relay-gemini", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writeSkill(path.join(repo, "plugins"), "relay-gemini", "relay-gemini-review");
+  writeSkill(path.join(marketplaceRoot, "plugins"), "relay-gemini", "relay-gemini-review");
+  writeCachedPluginFile(primary, "relay-gemini", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writeCachedSkill(primary, "relay-gemini", "relay-gemini-review");
+  writeConfig(primary, "relay-gemini", true);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const profile = report.profiles.primary;
+  const gemini = profile.plugins["relay-gemini"];
+  const nextActions = report.next_actions.join("\n");
+
+  assert.equal(report.ok, false);
+  assert.equal(profile.ok, false);
+  assert.equal(gemini.marketplace_installation, "NOT_AVAILABLE");
+  assert.equal(gemini.available_for_install, false);
+  assert.equal(gemini.configured_enabled, true);
+  assert.equal(gemini.unavailable_configured_enabled, true);
+  assert.equal(gemini.required_for_ok, false);
+  assert.equal(gemini.cache_in_sync, true);
+  assert.match(nextActions, /Disable unavailable plugins .*relay-gemini/i);
+  assert.doesNotMatch(nextActions, /Enable required disabled plugins .*relay-gemini/i);
+});
+
+test("codex plugin cache doctor treats repo not-available policy as authoritative over stale installed marketplace", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-stale-installed-policy-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-stale-installed-policy-home-"));
+  const marketplaceRoot = path.join(primary, ".tmp", "marketplaces", MARKETPLACE);
+  const repoPlugins = [["relay-gemini", "./plugins/relay-gemini", null, "NOT_AVAILABLE"]];
+  const staleInstalledPlugins = [["relay-gemini", "./plugins/relay-gemini", null, "AVAILABLE"]];
+
+  writeMarketplaceManifest(repo, repoPlugins);
+  writeMarketplaceManifest(marketplaceRoot, staleInstalledPlugins);
+  writePluginFile(path.join(repo, "plugins"), "relay-gemini", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writePluginFile(path.join(marketplaceRoot, "plugins"), "relay-gemini", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writeSkill(path.join(repo, "plugins"), "relay-gemini", "relay-gemini-review");
+  writeSkill(path.join(marketplaceRoot, "plugins"), "relay-gemini", "relay-gemini-review");
+  writeCachedPluginFile(primary, "relay-gemini", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writeCachedSkill(primary, "relay-gemini", "relay-gemini-review");
+  writeConfig(primary, "relay-gemini", true);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const gemini = report.profiles.primary.plugins["relay-gemini"];
+  const nextActions = report.next_actions.join("\n");
+
+  assert.equal(report.ok, false);
+  assert.equal(gemini.marketplace_installation, "NOT_AVAILABLE");
+  assert.equal(gemini.repo_marketplace_installation, "NOT_AVAILABLE");
+  assert.equal(gemini.available_for_install, false);
+  assert.equal(gemini.configured_enabled, true);
+  assert.equal(gemini.unavailable_configured_enabled, true);
+  assert.equal(gemini.required_for_ok, false);
+  assert.equal(gemini.cache_in_sync, true);
+  assert.match(nextActions, /Disable unavailable plugins .*relay-gemini/i);
+  assert.doesNotMatch(nextActions, /Enable required disabled plugins .*relay-gemini/i);
+});
+
+test("codex plugin cache doctor explains explicitly requested unavailable disabled plugins without failing", () => {
+  const repo = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-unavailable-explicit-repo-"));
+  const primary = mkdtempSync(path.join(tmpdir(), "plugin-cache-doctor-unavailable-explicit-home-"));
+  const marketplaceRoot = path.join(primary, ".tmp", "marketplaces", MARKETPLACE);
+  const plugins = [["relay-gemini", "./plugins/relay-gemini", null, "NOT_AVAILABLE"]];
+
+  writeMarketplaceManifest(repo, plugins);
+  writeMarketplaceManifest(marketplaceRoot, plugins);
+  writePluginFile(path.join(repo, "plugins"), "relay-gemini", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writePluginFile(path.join(marketplaceRoot, "plugins"), "relay-gemini", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writeSkill(path.join(repo, "plugins"), "relay-gemini", "relay-gemini-review");
+  writeSkill(path.join(marketplaceRoot, "plugins"), "relay-gemini", "relay-gemini-review");
+  writeCachedPluginFile(primary, "relay-gemini", "scripts/runtime.mjs", "export const version = 'source';\n");
+  writeCachedSkill(primary, "relay-gemini", "relay-gemini-review");
+  writeConfig(primary, "relay-gemini", false);
+
+  const stdout = execFileSync(process.execPath, [
+    DOCTOR,
+    "--repo", repo,
+    "--codex-home", primary,
+    "--plugin", "relay-gemini",
+  ], { encoding: "utf8" });
+  const report = JSON.parse(stdout);
+  const gemini = report.profiles.primary.plugins["relay-gemini"];
+  const nextActions = report.next_actions.join("\n");
+
+  assert.equal(report.ok, true);
+  assert.equal(gemini.available_for_install, false);
+  assert.equal(gemini.configured_enabled, false);
+  assert.equal(gemini.explicitly_requested_unavailable, true);
+  assert.equal(gemini.required_for_ok, false);
+  assert.match(nextActions, /Omit unavailable plugins .*relay-gemini/i);
+  assert.doesNotMatch(nextActions, /Enable required disabled plugins .*relay-gemini/i);
+  assert.doesNotMatch(nextActions, /Disable unavailable plugins .*relay-gemini/i);
 });
 
 test("codex plugin cache doctor requires api-reviewers only when direct API reviewers are enabled", () => {
