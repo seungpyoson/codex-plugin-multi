@@ -7532,7 +7532,6 @@ test("direct API reviewers approval-request blocks approvals when required evide
   assert.deepEqual(
     parsed.runtime_diagnostics?.required_evidence?.missing_required_references,
     [
-      "anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464",
       "token.ts",
       "action.yml",
     ],

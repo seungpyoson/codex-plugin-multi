@@ -61,6 +61,15 @@ function hashObject(value) {
   });
 }
 
+const EVIDENCE_FILE_EXTENSION_PATTERN = "c|cc|cjs|cpp|css|go|h|hpp|html|java|js|json|jsx|kt|md|mjs|php|proto|py|rb|rs|scala|sh|sql|swift|tf|toml|ts|tsx|vue|xml|yaml|yml";
+const EVIDENCE_FILE_REF_RE = new RegExp(
+  `(?:^|[\\s([{<])((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\\.(?:${EVIDENCE_FILE_EXTENSION_PATTERN})(?::\\d+(?::\\d+)?)?)\\b`,
+  "giu",
+);
+const REQUIRED_EVIDENCE_FILE_SECTION_RE = /^(?:focus(?:ed)? files?|files to inspect|required files?|required source|source files?)\b/u;
+const REQUIRED_EVIDENCE_CHECK_SECTION_RE = /^(?:required checks?|review goals?|required evidence|must verify|must inspect)\b/u;
+const REQUIRED_EVIDENCE_STOP_SECTION_RE = /^(?:claims verified|context|end-?to-?end caveat|merge recommendation|non-blocking(?: risks?| concerns?| findings?)?|output format|selected files?|selected source|verification caveat)\b/u;
+
 function lineCount(text) {
   const value = String(text ?? "");
   if (value.length === 0) return 0;
@@ -101,7 +110,16 @@ function sourceManifest(sourceFiles = []) {
 }
 
 function normalizeEvidenceRef(value) {
-  return String(value ?? "").trim().replace(/^`+|`+$/g, "").replace(/[),.;:]+$/g, "");
+  let normalized = String(value ?? "")
+    .trim()
+    .replace(/^`+|`+$/g, "")
+    .replace(/[),.;]+$/g, "")
+    .replaceAll("\\", "/");
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(normalized)) return "";
+  if (normalized.startsWith("/") || normalized.startsWith("~")) return "";
+  normalized = normalized.replace(/^(?:a|b)\//u, "");
+  normalized = normalized.replace(/:\d+(?::\d+)?$/u, "");
+  return normalized;
 }
 
 function selectedSourceRefSet(selectedSource) {
@@ -112,6 +130,7 @@ function selectedSourceRefSet(selectedSource) {
     refs.add(path);
     const normalized = path.replaceAll("\\", "/");
     refs.add(normalized);
+    refs.add(normalized.toLowerCase());
   }
   return refs;
 }
@@ -122,7 +141,10 @@ function selectedSourceBasenameSet(selectedSource) {
     const path = String(file?.path ?? "");
     if (!path) continue;
     const basename = path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
-    if (basename) refs.add(basename);
+    if (basename) {
+      refs.add(basename);
+      refs.add(basename.toLowerCase());
+    }
   }
   return refs;
 }
@@ -131,23 +153,88 @@ function evidenceRefHasPathSegment(ref) {
   return /[/\\]/u.test(String(ref ?? ""));
 }
 
-function requiredEvidenceLines(prompt) {
+function removeListMarker(line) {
+  return String(line ?? "").trimStart()
+    .replace(/^[-*]\s+/u, "")
+    .replace(/^\d+[.)]\s+/u, "")
+    .trim();
+}
+
+function isRequiredEvidenceListItem(line) {
+  return /^[-*]\s+\S/u.test(String(line ?? "").trimStart())
+    || /^\d+[.)]\s+\S/u.test(String(line ?? "").trimStart());
+}
+
+function normalizedRequiredEvidenceHeading(line) {
+  return removeListMarker(line)
+    .replace(/^#{1,6}\s+/u, "")
+    .replace(/:$/u, "")
+    .trim()
+    .toLowerCase();
+}
+
+function stripRenderedSelectedSourceBlocks(prompt) {
   const lines = String(prompt ?? "").split(/\r?\n/u);
   const out = [];
-  let inRequiredSection = false;
+  let skipUntil = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (skipUntil !== null) {
+      if (line === skipUntil) skipUntil = null;
+      continue;
+    }
+    if (/^selected (?:files|source):?$/iu.test(line.trim())) {
+      const nextNonBlank = lines.slice(index + 1).find((candidate) => candidate.trim().length > 0);
+      if (nextNonBlank?.startsWith("BEGIN ")) continue;
+    }
+    if (line.startsWith("BEGIN ")) {
+      skipUntil = `END ${line.slice("BEGIN ".length)}`;
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+function requiredEvidencePrompt(prompt) {
+  const text = String(prompt ?? "");
+  const marker = "User prompt:\n";
+  const markerIndex = text.lastIndexOf(marker);
+  const candidate = markerIndex >= 0 ? text.slice(markerIndex + marker.length) : text;
+  return stripRenderedSelectedSourceBlocks(candidate);
+}
+
+function requiredEvidenceLines(prompt) {
+  const lines = requiredEvidencePrompt(prompt).split(/\r?\n/u);
+  const out = [];
+  let section = null;
   for (const rawLine of lines) {
     const line = rawLine.trim();
+    if (!line) continue;
     const lower = line.toLowerCase();
-    if (/^(required checks?|review goals?|required evidence|must verify|must inspect)\b/.test(lower)) {
-      inRequiredSection = true;
-    } else if (/^(output format|merge recommendation|non-blocking risks?|end-to-end caveat|selected files|files to inspect)\b/.test(lower)) {
-      inRequiredSection = false;
+    const heading = normalizedRequiredEvidenceHeading(line);
+    if (REQUIRED_EVIDENCE_FILE_SECTION_RE.test(heading)) {
+      section = "files";
+      continue;
+    }
+    if (REQUIRED_EVIDENCE_CHECK_SECTION_RE.test(heading)) {
+      section = "checks";
+      continue;
+    }
+    if (REQUIRED_EVIDENCE_STOP_SECTION_RE.test(heading)) {
+      section = null;
+      continue;
     }
     if (/\b(if needed|only if needed|optional)\b/.test(lower)) continue;
-    if (
-      inRequiredSection
-      || /\b(required|verify|inspect|confirm|prove|validate|check|must)\b/.test(lower)
-    ) {
+    if (section === "files") {
+      if (isRequiredEvidenceListItem(line)) out.push(removeListMarker(line));
+      continue;
+    }
+    if (section === "checks") {
+      out.push(line);
+      continue;
+    }
+    if (/\b(required|must)\b/u.test(lower)) {
       out.push(line);
     }
   }
@@ -162,45 +249,100 @@ function requiredEvidenceReferences(prompt) {
     if (!refs.includes(normalized)) refs.push(normalized);
   };
   for (const line of requiredEvidenceLines(prompt)) {
-    for (const match of line.matchAll(/\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]{7,40}\b/gu)) {
-      push(match[0]);
-    }
     for (const match of line.matchAll(/`([^`\n]+)`/gu)) {
       const value = match[1];
       if (looksLikeEvidenceFileReference(value)) push(value);
     }
-    for (const match of line.matchAll(/\b(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:cjs|css|go|java|js|json|jsx|md|mjs|py|rb|rs|sh|toml|ts|tsx|yaml|yml)\b/gu)) {
-      push(match[0]);
-    }
-    for (const match of line.matchAll(/\b[A-Za-z0-9_.-]+\.(?:cjs|css|go|java|js|json|jsx|md|mjs|py|rb|rs|sh|toml|ts|tsx|yaml|yml)\b/gu)) {
-      push(match[0]);
+    for (const match of line.matchAll(EVIDENCE_FILE_REF_RE)) {
+      push(match[1]);
     }
   }
   return refs;
 }
 
 function looksLikeEvidenceFileReference(value) {
-  return /(?:^|[/\\])[A-Za-z0-9_.-]+\.(?:cjs|css|go|java|js|json|jsx|md|mjs|py|rb|rs|sh|toml|ts|tsx|yaml|yml)$/u.test(String(value ?? ""));
+  const normalized = normalizeEvidenceRef(value);
+  return new RegExp(`(?:^|[/\\\\])[A-Za-z0-9_.-]+\\.(?:${EVIDENCE_FILE_EXTENSION_PATTERN})$`, "iu")
+    .test(normalized);
 }
 
 function requiredEvidenceManifest({ prompt, selectedSource }) {
   const selectedRefs = selectedSourceRefSet(selectedSource);
   const selectedBasenames = selectedSourceBasenameSet(selectedSource);
+  const required = requiredEvidenceReferences(prompt);
+  const satisfied = [];
   const missing = [];
-  for (const ref of requiredEvidenceReferences(prompt)) {
-    if (selectedRefs.has(ref)) continue;
+  for (const ref of required) {
+    if (selectedRefs.has(ref) || selectedRefs.has(ref.toLowerCase())) {
+      satisfied.push(ref);
+      continue;
+    }
     const normalized = ref.replaceAll("\\", "/");
-    if (selectedRefs.has(normalized)) continue;
+    if (selectedRefs.has(normalized) || selectedRefs.has(normalized.toLowerCase())) {
+      satisfied.push(ref);
+      continue;
+    }
     if (!evidenceRefHasPathSegment(normalized)) {
       const basename = normalized.split("/").filter(Boolean).at(-1);
-      if (basename && selectedBasenames.has(basename)) continue;
+      if (basename && (selectedBasenames.has(basename) || selectedBasenames.has(basename.toLowerCase()))) {
+        satisfied.push(ref);
+        continue;
+      }
     }
     missing.push(ref);
   }
   return Object.freeze({
+    required_references: Object.freeze(required),
+    satisfied_required_references: Object.freeze(satisfied),
     has_missing_required_evidence: missing.length > 0,
     missing_required_references: Object.freeze(missing),
   });
+}
+
+function selectedSourcePathsForEvidenceRef(ref, selectedSource) {
+  const normalizedRef = normalizeEvidenceRef(ref).replaceAll("\\", "/");
+  if (!normalizedRef) return [];
+  const lowerRef = normalizedRef.toLowerCase();
+  const hasPathSegment = evidenceRefHasPathSegment(normalizedRef);
+  const paths = [];
+  for (const file of selectedSource?.files ?? []) {
+    const path = String(file?.path ?? "").replaceAll("\\", "/");
+    if (!path) continue;
+    const lowerPath = path.toLowerCase();
+    if (hasPathSegment) {
+      if (lowerPath === lowerRef) paths.push(path);
+      continue;
+    }
+    const basename = path.split("/").filter(Boolean).at(-1);
+    if (basename?.toLowerCase() === lowerRef) paths.push(path);
+  }
+  return paths;
+}
+
+function resultCitesRequiredEvidenceRef(result, ref, selectedSource) {
+  const lowerText = normalizeReviewSearchText(result).replaceAll("\\", "/").toLowerCase();
+  const normalizedRef = normalizeEvidenceRef(ref).replaceAll("\\", "/");
+  const candidates = new Set([normalizedRef]);
+  for (const path of selectedSourcePathsForEvidenceRef(ref, selectedSource)) {
+    candidates.add(path);
+    if (!evidenceRefHasPathSegment(normalizedRef)) {
+      const basename = path.split("/").filter(Boolean).at(-1);
+      if (basename) candidates.add(basename);
+    }
+  }
+  for (const candidate of candidates) {
+    const normalized = normalizeEvidenceRef(candidate).replaceAll("\\", "/").toLowerCase();
+    if (normalized && lowerText.includes(normalized)) return true;
+  }
+  return false;
+}
+
+function uncitedRequiredEvidenceReferences({ requiredEvidence, result, selectedSource }) {
+  const refs = Array.isArray(requiredEvidence?.satisfied_required_references)
+    ? requiredEvidence.satisfied_required_references
+    : [];
+  if (refs.length === 0) return [];
+  return refs.filter((ref) => !resultCitesRequiredEvidenceRef(result, ref, selectedSource));
 }
 
 export function requiredEvidencePreflightFailure(auditManifest) {
@@ -1532,7 +1674,10 @@ function qualityFlags({
     && text.trim().length < 500
     && !conciseTinyReview;
   const isFinalReviewAttempt = !["approval_request", "preflight_failed", "queued", "running"].includes(status);
-  const failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
+  let failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
+  if (!hasApproveVerdict(text)) {
+    failureReasons = failureReasons.filter((reason) => reason !== "unresolved_verifier_bypass");
+  }
   if (isFinalReviewAttempt && status === "completed" && !hasVerdictFlag) {
     failureReasons.push("missing_verdict");
   }
@@ -1553,23 +1698,34 @@ function applyRequiredEvidenceQualityGate(reviewQuality, {
   result,
   status,
   errorCode,
+  selectedSource,
 } = {}) {
-  const shouldFailApproval = requiredEvidence?.has_missing_required_evidence === true
-    && status === "completed"
+  const isCompletedApproval = status === "completed"
     && errorCode === null
     && hasApproveVerdict(result);
-  if (!shouldFailApproval) return reviewQuality;
+  const shouldFailMissingEvidenceApproval = requiredEvidence?.has_missing_required_evidence === true
+    && isCompletedApproval;
+  const uncitedRequiredRefs = isCompletedApproval
+    ? uncitedRequiredEvidenceReferences({ requiredEvidence, result, selectedSource })
+    : [];
+  const shouldFailUncitedEvidenceApproval = requiredEvidence?.has_missing_required_evidence !== true
+    && status === "completed"
+    && errorCode === null
+    && uncitedRequiredRefs.length > 0;
+  if (!shouldFailMissingEvidenceApproval && !shouldFailUncitedEvidenceApproval) return reviewQuality;
   const reasons = Object.freeze([
     ...new Set([
       ...(Array.isArray(reviewQuality?.semantic_failure_reasons)
         ? reviewQuality.semantic_failure_reasons
         : []),
-      "required_evidence_missing",
+      ...(shouldFailMissingEvidenceApproval ? ["required_evidence_missing"] : []),
+      ...(shouldFailUncitedEvidenceApproval ? ["required_evidence_not_cited"] : []),
     ]),
   ]);
   return Object.freeze({
     ...reviewQuality,
     semantic_failure_reasons: reasons,
+    required_evidence_uncited_references: Object.freeze(uncitedRequiredRefs),
     failed_review_slot: true,
   });
 }
@@ -1668,7 +1824,7 @@ export function buildReviewAuditManifest({
     : sourcePacketPolicy;
   const reviewQuality = applyRequiredEvidenceQualityGate(
     qualityFlags({ result, status, errorCode, selectedSource }),
-    { requiredEvidence, result, status, errorCode },
+    { requiredEvidence, result, status, errorCode, selectedSource },
   );
   const effectiveErrorCode = errorCode ?? reviewQualityPacketRecoveryErrorCode(reviewQuality);
   const sourceContentTransmission =

@@ -362,6 +362,44 @@ None.
   assert.deepEqual(found.missing_expected_findings, []);
 });
 
+test("seeded evaluator requires packet4 bypass to have a blocking verdict", () => {
+  const approveWithBlockingText = evaluateSeededReviewPacket({
+    packet: "packet4_relay_governance",
+    output: `
+1. Verdict: APPROVE
+2. Blocking findings
+- claude-code-review.yml can contain duplicate contents keys under additional_permissions:
+  contents: read followed later by contents: write. YAML parsing / the action permission
+  parser resolves the later contents value, while verify_ai_review_governance.py only
+  checks that the block contains contents: read. That bypass reintroduces a content-write
+  Claude app token while governance still passes.
+`,
+  });
+
+  assert.equal(approveWithBlockingText.expected_findings_found, false);
+  assert.deepEqual(approveWithBlockingText.missing_expected_findings, ["duplicate_contents_key_bypass"]);
+
+  const approveWithStrayNotSafe = evaluateSeededReviewPacket({
+    packet: "packet4_relay_governance",
+    output: `
+1. Verdict: APPROVE
+2. Blocking findings
+None.
+3. Non-blocking concerns
+- claude-code-review.yml can contain duplicate contents keys under additional_permissions:
+  contents: read followed later by contents: write. YAML parsing / the action permission
+  parser resolves the later contents value, while verify_ai_review_governance.py only
+  checks that the block contains contents: read. That bypass reintroduces a content-write
+  Claude app token while governance still passes.
+4. Merge recommendation
+Not safe to merge would have been the right recommendation if this were blocking.
+`,
+  });
+
+  assert.equal(approveWithStrayNotSafe.expected_findings_found, false);
+  assert.deepEqual(approveWithStrayNotSafe.missing_expected_findings, ["duplicate_contents_key_bypass"]);
+});
+
 test("seeded evaluator does not count quoting the expected equality operator as finding the packet1 assignment bug", () => {
   const result = evaluateSeededReviewPacket({
     packet: "packet1_correctness",

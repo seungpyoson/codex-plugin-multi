@@ -168,9 +168,14 @@ function packet4DuplicateContentsBypassFound(output) {
 }
 
 function packet4TreatsBypassAsBlocking(output) {
+  const squashed = compact(output);
   const blockingBody = blockingSectionBody(output);
-  if (blockingBody && packet4DuplicateContentsBypassFound(blockingBody)) return true;
-  return /\bnot safe to merge\b/i.test(compact(output));
+  const bypassInBlocking = Boolean(blockingBody && packet4DuplicateContentsBypassFound(blockingBody));
+  if (!bypassInBlocking) return false;
+  return (
+    /verdict\s*:\s*(?:request changes|reject(?:ed)?|fail|not reviewed)\b/i.test(squashed)
+    || /\bnot safe to merge\b/i.test(squashed)
+  );
 }
 
 const PACKET_FINDERS = Object.freeze({
