@@ -204,7 +204,7 @@ function requiredEvidencePrompt(prompt) {
   return stripRenderedSelectedSourceBlocks(candidate);
 }
 
-function requiredEvidenceLines(prompt) {
+function requiredEvidenceLineEntries(prompt) {
   const lines = requiredEvidencePrompt(prompt).split(/\r?\n/u);
   const out = [];
   let section = null;
@@ -227,18 +227,38 @@ function requiredEvidenceLines(prompt) {
     }
     if (/\b(if needed|only if needed|optional)\b/.test(lower)) continue;
     if (section === "files") {
-      if (isRequiredEvidenceListItem(line)) out.push(removeListMarker(line));
+      if (isRequiredEvidenceListItem(line)) {
+        out.push(Object.freeze({ text: removeListMarker(line), section: "files" }));
+      }
       continue;
     }
     if (section === "checks") {
-      out.push(line);
+      out.push(Object.freeze({ text: line, section: "checks" }));
       continue;
     }
     if (/\b(required|must)\b/u.test(lower)) {
-      out.push(line);
+      out.push(Object.freeze({ text: line, section: "inline" }));
     }
   }
   return out;
+}
+
+function requiredEvidenceLines(prompt) {
+  return requiredEvidenceLineEntries(prompt).map((entry) => entry.text);
+}
+
+function commonStandaloneEvidenceFileRef(ref) {
+  return /^(?:AGENTS|CHANGELOG|CLAUDE|CODEOWNERS|CONTRIBUTING|LICENSE|NOTICE|README)\.(?:md|txt)$/iu
+    .test(String(ref ?? ""));
+}
+
+function plainEvidenceRefLooksFileLike(ref, section) {
+  const normalized = normalizeEvidenceRef(ref);
+  if (!normalized) return false;
+  if (evidenceRefHasPathSegment(normalized)) return true;
+  if (section === "files") return true;
+  if (commonStandaloneEvidenceFileRef(normalized)) return true;
+  return /^[a-z0-9_.-]+\.[a-z0-9]+$/u.test(normalized);
 }
 
 function requiredEvidenceReferences(prompt) {
@@ -248,13 +268,14 @@ function requiredEvidenceReferences(prompt) {
     if (!normalized) return;
     if (!refs.includes(normalized)) refs.push(normalized);
   };
-  for (const line of requiredEvidenceLines(prompt)) {
+  for (const { text: line, section } of requiredEvidenceLineEntries(prompt)) {
     for (const match of line.matchAll(/`([^`\n]+)`/gu)) {
       const value = match[1];
       if (looksLikeEvidenceFileReference(value)) push(value);
     }
     for (const match of line.matchAll(EVIDENCE_FILE_REF_RE)) {
-      push(match[1]);
+      const value = match[1];
+      if (plainEvidenceRefLooksFileLike(value, section)) push(value);
     }
   }
   return refs;

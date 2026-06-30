@@ -206,6 +206,30 @@ test("required evidence detection covers bare markdown and CSS file references",
   assert.equal(manifest.review_quality.failed_review_slot, true);
 });
 
+test("required evidence ignores technology names in check prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: [
+      "Required checks:",
+      "1. Verify Node.js 20 compatibility before approving.",
+    ].join("\n"),
+    sourceFiles: [
+      { path: "scripts/app.mjs", text: "export const value = 1;\n" },
+    ],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: No blocking findings in scripts/app.mjs.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I inspected scripts/app.mjs.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.required_evidence.required_references, []);
+  assert.equal(manifest.required_evidence.has_missing_required_evidence, false);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), false);
+});
+
 test("required evidence ignores filename-like refs embedded in selected source", () => {
   const selectedSource = buildSelectedSourcePromptBlock([
     {

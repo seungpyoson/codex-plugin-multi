@@ -167,15 +167,28 @@ function packet4DuplicateContentsBypassFound(output) {
   return mentionsDuplicateContents && mentionsEffectiveWrite && mentionsVerifierBypass;
 }
 
+function firstReviewVerdict(output) {
+  for (const line of text(output).split(/\r?\n/)) {
+    const match = line.match(/\bverdict\s*:\s*([^\r\n]+)/i);
+    if (!match) continue;
+    const value = compact(match[1]).toLowerCase();
+    if (/\bapprove(?:d)?\b/.test(value)) return "approve";
+    if (/\brequest[-_\s]?changes?\b/.test(value)) return "request_changes";
+    if (/\breject(?:ed)?\b/.test(value)) return "reject";
+    if (/\bfail(?:ed)?\b/.test(value)) return "fail";
+    if (/\bnot[-_\s]?reviewed\b/.test(value)) return "not_reviewed";
+    return "other";
+  }
+  return null;
+}
+
 function packet4TreatsBypassAsBlocking(output) {
-  const squashed = compact(output);
   const blockingBody = blockingSectionBody(output);
   const bypassInBlocking = Boolean(blockingBody && packet4DuplicateContentsBypassFound(blockingBody));
   if (!bypassInBlocking) return false;
-  return (
-    /verdict\s*:\s*(?:request changes|reject(?:ed)?|fail|not reviewed)\b/i.test(squashed)
-    || /\bnot safe to merge\b/i.test(squashed)
-  );
+  const verdict = firstReviewVerdict(output);
+  if (["request_changes", "reject", "fail", "not_reviewed"].includes(verdict)) return true;
+  return false;
 }
 
 const PACKET_FINDERS = Object.freeze({
