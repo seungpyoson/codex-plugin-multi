@@ -1480,6 +1480,7 @@ export function buildReviewAuditManifest({
       provider: route.providerId ?? effectiveSourcePacketPolicy.provider ?? request.provider ?? null,
       mode: route.mode ?? scope.name ?? null,
       routeStep,
+      renderedPromptBudgetChars: route.renderedPromptBudgetChars ?? null,
       reviewSurface: route.packetRecoveryReviewSurface ?? packetRecoveryReviewSurface({
         selectedSource,
         previousAttempt: route.previousAttempt ?? null,

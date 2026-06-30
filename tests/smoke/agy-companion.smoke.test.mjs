@@ -17,6 +17,7 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COMPANION = path.join(REPO_ROOT, "plugins/agy/scripts/agy-companion.mjs");
 const AGY_ARGV_SAFE_SOURCE_PACKET_BYTES = 96 * 1024;
+const AGY_RENDERED_PROMPT_ARGV_MAX_BYTES = 112 * 1024;
 
 function rmTree(target) {
   rmSync(target, { recursive: true, force: true });
@@ -401,6 +402,18 @@ for (const mode of ["review", "adversarial-review"]) {
       assert.equal(record.status, "completed");
       assert.equal(record.event, "external_review_terminal");
       assert.equal(record.external_review.source_content_transmission, "sent");
+      assert.equal(record.review_metadata.audit_manifest.selected_route, "subscription_oauth");
+      const result = runCompanion(["result", "--job", record.job_id, "--cwd", cwd], { cwd, dataDir });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const persistedAudit = JSON.parse(result.stdout).review_metadata.audit_manifest;
+      assert.equal(persistedAudit.route_step, "subscription");
+      assert.deepEqual(
+        persistedAudit.route_steps.map((step) => step.route),
+        ["subscription", "direct_api", "openrouter"],
+      );
+      assert.equal(persistedAudit.selected_route, "subscription_oauth");
+      assert.equal(persistedAudit.auth_path, "subscription_oauth");
+      assert.equal(persistedAudit.billing_path, null);
       assert.equal(record.review_metadata.audit_manifest.selected_source.files[0].path, changedFileName);
     } finally {
       rmTree(dataDir);
@@ -552,6 +565,53 @@ test("agy custom-review rejects over-budget source packets before AGY launch", (
     assert.equal(record.review_metadata.audit_manifest.source_send_approval_required, false);
     assert.equal(record.review_metadata.audit_manifest.source_send_approval_state, "not_required");
     assert.equal(record.review_metadata.audit_manifest.packet_recovery.reason, "source_packet_too_large");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
+test("agy custom-review rejects rendered prompts that exceed the --print argv transport cap", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-rendered-argv-budget-cwd-"));
+  const binary = writeAgyCaptureMock(cwd);
+  const capturePath = path.join(cwd, "agy-capture.json");
+  const tinyDir = path.join(cwd, "tiny");
+  mkdirSync(tinyDir);
+  for (let i = 0; i < 1700; i += 1) {
+    writeFileSync(path.join(tinyDir, `file-${String(i).padStart(4, "0")}.txt`), "x\n", "utf8");
+  }
+
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-paths", "tiny/**", "--timeout-ms", "12345",
+     "--allow-large-source-packet", "--", "review many tiny files"],
+    { cwd, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: ${stderr}\n${stdout}`);
+    assert.equal(existsSync(capturePath), false, "AGY mock must not spawn when rendered argv is too large");
+    const record = readOnlyJobRecord(dataDir).record;
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "prompt_too_large");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.match(record.error_message, /rendered AGY --print argv/);
+    const policy = record.runtime_diagnostics?.source_packet_policy;
+    assert.ok(policy, "source packet policy diagnostic must be present");
+    assert.equal(policy.source_send_allowed, false);
+    assert.equal(policy.source_packet_policy_error_code, "prompt_too_large");
+    assert.equal(policy.source_content_transmission, "not_sent");
+    assert.ok(policy.selected_source_bytes < AGY_ARGV_SAFE_SOURCE_PACKET_BYTES);
+    assert.ok(policy.rendered_prompt_bytes > AGY_RENDERED_PROMPT_ARGV_MAX_BYTES);
+    assert.equal(policy.rendered_prompt_argv_budget_bytes, AGY_RENDERED_PROMPT_ARGV_MAX_BYTES);
+    assert.equal(policy.source_packet_override_approved, true);
+    assert.equal(policy.source_packet_override_source, "--allow-large-source-packet");
+    const recovery = record.review_metadata.audit_manifest.packet_recovery;
+    assert.equal(recovery.reason, "prompt_too_large");
+    assert.equal(
+      recovery.provider_capabilities.rendered_prompt_budget_chars,
+      AGY_RENDERED_PROMPT_ARGV_MAX_BYTES,
+    );
+    assert.equal(record.review_metadata.audit_manifest.source_content_transmission, "not_sent");
   } finally {
     rmTree(dataDir);
     rmTree(cwd);

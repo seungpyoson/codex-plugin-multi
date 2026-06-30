@@ -40,6 +40,7 @@ import {
   CONCURRENCY_FACTS,
   latestSourcePacketPreviousAttempt,
   resolveConcurrencyAdmission,
+  selectProviderRoute,
   sourcePacketPreviousAttemptFromJobRecord,
 } from "./lib/provider-route-policy.mjs";
 import {
@@ -76,9 +77,11 @@ const READINESS_PREFLIGHT_PROMPT = "Reply with exactly: relay-agy-readiness";
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "AGY FILE";
 // AGY receives the rendered prompt as one --print argv value. Linux caps a
-// single argv string near 128 KiB, so keep the default packet budget below that
-// after prompt framing is added.
+// single argv string near 128 KiB. The source-packet budget keeps normal review
+// packets below that after framing, and the rendered-prompt cap below is a hard
+// transport preflight for pathological many-small-file packets or huge focus text.
 const AGY_SOURCE_PACKET_MAX_BYTES = 96 * 1024;
+const AGY_RENDERED_PROMPT_ARGV_MAX_BYTES = 112 * 1024;
 const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
 const AGY_WRITABLE_SIDECARS = new Set([
   "git-status-before.txt",
@@ -124,9 +127,13 @@ function errorSinkDisclosure() {
 const NON_TRANSMITTING_DISCLOSURE = Object.freeze({ source_content_transmission: "not_sent" });
 
 const ROUTE_CAPABILITIES = Object.freeze({
-  source_packet: Object.freeze({
-    max_bytes: AGY_SOURCE_PACKET_MAX_BYTES,
-    resume_without_resend_supported: false,
+  subscription: Object.freeze({
+    kind: "oauth",
+    auth_path: "subscription_oauth",
+    source_packet: Object.freeze({
+      max_bytes: AGY_SOURCE_PACKET_MAX_BYTES,
+      resume_without_resend_supported: false,
+    }),
   }),
 });
 
@@ -606,6 +613,24 @@ function modeSendsSelectedSource(mode) {
   return mode === "review" || mode === "adversarial-review" || mode === "custom-review";
 }
 
+function subscriptionRouteFields({ sourceBearing = false } = {}) {
+  const route = selectProviderRoute({
+    requestedRoute: "subscription",
+    providerCapabilities: ROUTE_CAPABILITIES,
+    sourceBearing,
+  });
+  return Object.freeze({
+    selected_route: route.selected_route,
+    route_step: route.route_step,
+    route_steps: route.route_steps,
+    fallback_reason: route.fallback_reason,
+    selected_auth_path: route.auth_path,
+    billing_path: route.billing_path,
+    source_send_approval_required: route.source_send_approval_required,
+    source_send_approval_state: route.source_send_approval_state,
+  });
+}
+
 function reviewSlotInvocationFields(options = {}) {
   return Object.freeze({
     review_slot_disposition: typeof options["review-slot-disposition"] === "string"
@@ -713,6 +738,7 @@ function buildInvocation({
   reviewSlotFields = {},
   sourcePacketOverrideFields = {},
 }) {
+  const routeFields = subscriptionRouteFields({ sourceBearing: modeSendsSelectedSource(mode) });
   return {
     job_id: jobId,
     target: "agy",
@@ -734,14 +760,7 @@ function buildInvocation({
     review_prompt_provider: PROVIDER_DISPLAY,
     schema_spec: null,
     binary,
-    selected_route: "companion_cli",
-    route_step: "agy_print",
-    route_steps: null,
-    fallback_reason: null,
-    selected_auth_path: null,
-    billing_path: null,
-    source_send_approval_required: false,
-    source_send_approval_state: "not_required",
+    ...routeFields,
     previous_source_attempt: previousSourceAttempt,
     review_slot_prior_attempts: reviewSlotPriorAttempts,
     resend_confirmation_approved: resendConfirmationApproved,
@@ -753,7 +772,18 @@ function buildInvocation({
   };
 }
 
-function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, result, status, errorCode, pidInfo = null, gitIdentity = null }) {
+function buildAuditManifest({
+  promptText,
+  selectedFiles,
+  timeoutMs,
+  invocation,
+  result,
+  status,
+  errorCode,
+  pidInfo = null,
+  gitIdentity = null,
+  sourcePacketPolicy = null,
+}) {
   const sourceContentTransmission = sourceContentTransmissionForExecution({ status, errorCode, pidInfo });
   return buildReviewAuditManifest({
     prompt: promptText,
@@ -794,6 +824,8 @@ function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, 
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
       providerCapabilities: ROUTE_CAPABILITIES,
+      sourcePacketPolicy,
+      renderedPromptBudgetChars: AGY_RENDERED_PROMPT_ARGV_MAX_BYTES,
       previousAttempt: invocation.previous_source_attempt ?? null,
       resendConfirmationApproved: invocation.resend_confirmation_approved === true,
       resumeWithoutSourceResend: invocation.resume_without_source_resend === true,
@@ -840,6 +872,72 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
     status: "failed",
     errorCode,
     pidInfo: null,
+  });
+  execution.runtimeDiagnostics = sourcePacketRuntimeDiagnosticsForManifest(
+    execution.reviewAuditManifest,
+    execution.runtimeDiagnostics,
+  );
+  return execution;
+}
+
+function renderedPromptArgvPreflight(invocation, prompt, containmentPath) {
+  const renderedPromptBytes = Buffer.byteLength(prompt ?? "", "utf8");
+  if (renderedPromptBytes <= AGY_RENDERED_PROMPT_ARGV_MAX_BYTES) return null;
+
+  const selectedFiles = auditSourceFilesForPrompt(prompt, containmentPath);
+  const baseManifest = buildAuditManifest({
+    promptText: prompt,
+    selectedFiles,
+    timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+    invocation,
+    result: "",
+    status: "preflight_failed",
+    errorCode: null,
+  });
+  const basePolicy = baseManifest?.source_packet_policy ?? {};
+  const policy = Object.freeze({
+    ...basePolicy,
+    source_send_allowed: false,
+    source_packet_action: "narrow_source_packet",
+    source_content_transmission: NON_TRANSMITTING_DISCLOSURE.source_content_transmission,
+    source_packet_policy_error_code: "prompt_too_large",
+    suggested_action:
+      "Do not send selected source. Narrow or shard the AGY prompt before retrying; --allow-large-source-packet cannot bypass the platform argv transport cap.",
+    rendered_prompt_bytes: renderedPromptBytes,
+    rendered_prompt_argv_budget_bytes: AGY_RENDERED_PROMPT_ARGV_MAX_BYTES,
+    transport: "argv_print",
+  });
+  const execution = {
+    preflight: true,
+    exitCode: null,
+    parsed: {
+      ok: false,
+      reason: "prompt_too_large",
+      error: `rendered AGY --print argv is ${renderedPromptBytes} bytes; limit is ${AGY_RENDERED_PROMPT_ARGV_MAX_BYTES} bytes`,
+    },
+    pidInfo: null,
+    agySessionId: null,
+    stdout: "",
+    stderr: "",
+    errorMessage:
+      `prompt_too_large: rendered AGY --print argv is ${renderedPromptBytes} bytes; limit is ${AGY_RENDERED_PROMPT_ARGV_MAX_BYTES} bytes`,
+    runtimeDiagnostics: {
+      agy_transport_argv: {
+        rendered_prompt_bytes: renderedPromptBytes,
+        max_bytes: AGY_RENDERED_PROMPT_ARGV_MAX_BYTES,
+      },
+    },
+  };
+  execution.reviewAuditManifest = buildAuditManifest({
+    promptText: prompt,
+    selectedFiles,
+    timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+    invocation,
+    result: "",
+    status: "failed",
+    errorCode: "prompt_too_large",
+    pidInfo: null,
+    sourcePacketPolicy: policy,
   });
   execution.runtimeDiagnostics = sourcePacketRuntimeDiagnosticsForManifest(
     execution.reviewAuditManifest,
@@ -1283,6 +1381,25 @@ async function run(rest) {
         errorMessage: sourcePacketPreflight.errorMessage,
         reviewAuditManifest: sourcePacketPreflight.reviewAuditManifest,
         runtimeDiagnostics: sourcePacketPreflight.runtimeDiagnostics,
+        ...redactionFieldsForPrompt(sidecarPrompt),
+      }, mutationContext.mutations);
+      persistRecord(invocation.workspace_root, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
+
+    const argvPreflight = renderedPromptArgvPreflight(invocation, sidecarPrompt, containment.path);
+    if (argvPreflight) {
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: argvPreflight.exitCode,
+        endedAt: argvPreflight.endedAt,
+        parsed: argvPreflight.parsed,
+        pidInfo: null,
+        agySessionId: null,
+        errorMessage: argvPreflight.errorMessage,
+        reviewAuditManifest: argvPreflight.reviewAuditManifest,
+        runtimeDiagnostics: argvPreflight.runtimeDiagnostics,
         ...redactionFieldsForPrompt(sidecarPrompt),
       }, mutationContext.mutations);
       persistRecord(invocation.workspace_root, errorRecord);

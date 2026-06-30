@@ -163,7 +163,7 @@ const PROVIDER_RUNTIME_POLICY_ENTRYPOINTS = Object.freeze([
   Object.freeze({
     provider: "agy",
     runtimePath: "plugins/agy/scripts/agy-companion.mjs",
-    routeSelector: /\bresolveConcurrencyAdmission\s*\(/,
+    routeSelector: /\bselectProviderRoute\s*\(/,
   }),
   Object.freeze({
     provider: "claude",

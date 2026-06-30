@@ -1170,11 +1170,28 @@ test("provider parity concurrency budget rows validate against the concurrency_f
 
 test("packet-recovery schema keeps the no-source resume capability guard", () => {
   const schema = readRepoJson("docs/contracts/packet-recovery.schema.json");
+  const providerMatrix = buildProviderPolicyContract().providers;
+  const sortEnum = (values) => values.map((value) => value ?? "<null>").sort();
 
   assert.equal(schema.title, "PacketRecovery");
   assert.ok(schema.required.includes("provider_capabilities"));
   assert.ok(schema.required.includes("review_surface"));
   assert.ok(schema.required.includes("actions"));
+  assert.deepEqual(
+    sortEnum(schema.properties.provider.enum),
+    sortEnum([...providerMatrix, null]),
+    "packet recovery top-level provider enum must cover every provider that can emit runtime policy records",
+  );
+  assert.deepEqual(
+    sortEnum(schema.$defs.providerRecoveryCapabilities.properties.provider.enum),
+    sortEnum([...providerMatrix, null]),
+    "provider capability provider enum must track the provider policy matrix",
+  );
+  assert.deepEqual(
+    sortEnum(schema.$defs.providerRecoveryCapabilities.properties.canonical_provider.enum),
+    sortEnum([...providerMatrix, null]),
+    "provider capability canonical_provider enum must track the provider policy matrix",
+  );
   assert.deepEqual(
     schema.$defs.providerRecoveryCapabilities.required,
     [
@@ -1206,6 +1223,15 @@ test("packet-recovery schema keeps the no-source resume capability guard", () =>
   const noSourceResumeGuard = schema.allOf.find((entry) => (
     entry?.if?.properties?.provider_capabilities?.properties?.supports_no_source_resume?.const === false
   ));
+  const sentSourceProviderGuard = schema.allOf.find((entry) => (
+    Array.isArray(entry?.if?.properties?.source_content_transmission?.enum)
+  ));
+  assert.ok(sentSourceProviderGuard, "schema must require a non-null provider when source may have been sent");
+  assert.deepEqual(
+    sortEnum(sentSourceProviderGuard.then.properties.provider.enum),
+    sortEnum(providerMatrix),
+    "source-sent packet recovery records must allow every provider in the policy matrix",
+  );
   assert.ok(noSourceResumeGuard, "schema must guard supports_no_source_resume:false");
   assert.equal(
     noSourceResumeGuard.then.properties.actions.not.contains.properties.type.const,
