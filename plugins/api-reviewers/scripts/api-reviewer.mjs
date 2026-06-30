@@ -3626,7 +3626,9 @@ function errorCauseFor(errorCode) {
   if (errorCode === "approval_required") return "approval_gate";
   if (errorCode === "config_error") return "provider_config";
   if (errorCode === "scope_failed") return "scope_resolution";
-  if (errorCode === "source_packet_too_large" || errorCode === "resend_confirmation_required") {
+  if (errorCode === "source_packet_too_large"
+    || errorCode === "required_evidence_missing"
+    || errorCode === "resend_confirmation_required") {
     return buildExternalModelFailureDiagnostic(errorCode, "external model")?.error_cause ?? "source_packet_policy";
   }
   if (errorCode === "provider_workload_blocked") {

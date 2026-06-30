@@ -138,6 +138,7 @@ test("buildReviewAuditManifest does not demote request-changes when required pro
       "Non-blocking concerns: none.",
       "Inspection status: I inspected the selected workflow and verifier files.",
       "The selected workflow grants id-token write for an app-token exchange but does not pass the required contents read cap, so the token request can still retain content write capability through the app installation defaults.",
+      "I cannot verify token.ts because token.ts is not supplied in the selected packet, but the selected workflow and verifier are enough to request changes.",
       "The selected verifier file also lacks a regression check for that cap, so a future edit could remove the control without failing governance.",
       "This is a concrete request-changes result based on the selected source packet; the missing external action evidence remains recorded separately but is not what makes this result fail.",
     ].join("\n"),
@@ -277,6 +278,7 @@ test("required evidence does not treat action refs as local source files", () =>
       "Required checks:",
       "1. Verify the fix in anthropics/claude-code-action@main.",
       "2. Verify the fix in seungpyoson/relay@c4bbb2ff1a8d51624f18b7ba3cc69a97de8549be.",
+      "3. Verify the fix in owner/repo.js@abc1234.",
     ].join("\n"),
     sourceFiles: [
       { path: "scripts/app.mjs", text: "export const app = true;\n" },
@@ -353,6 +355,50 @@ test("approve must cite each required selected file", () => {
   assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_not_cited"), true);
   assert.equal(manifest.review_quality.failed_review_slot, true);
   assert.equal(manifest.review_slot.verdict, "failed_slot");
+});
+
+test("approve citation requires path-token boundaries for required evidence refs", () => {
+  for (const { name, promptRef, selectedPath, bogusCitation } of [
+    {
+      name: "bare basename",
+      promptRef: "a.js",
+      selectedPath: "scripts/a.js",
+      bogusCitation: "data.js",
+    },
+    {
+      name: "path ref",
+      promptRef: "scripts/a.js",
+      selectedPath: "scripts/a.js",
+      bogusCitation: "not-scripts/a.js",
+    },
+  ]) {
+    const manifest = buildReviewAuditManifest({
+      prompt: [
+        "Focus files:",
+        `- ${promptRef}`,
+      ].join("\n"),
+      sourceFiles: [
+        { path: selectedPath, text: "export const value = 1;\n" },
+      ],
+      result: [
+        "Verdict: APPROVE",
+        `Blocking findings: No blocking findings in ${bogusCitation}.`,
+        "Non-blocking concerns: none.",
+        `Inspection status: I inspected ${bogusCitation}.`,
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.required_evidence.missing_required_references, [], name);
+    assert.equal(
+      manifest.review_quality.semantic_failure_reasons.includes("required_evidence_not_cited"),
+      true,
+      name,
+    );
+    assert.equal(manifest.review_quality.failed_review_slot, true, name);
+    assert.equal(manifest.review_slot.verdict, "failed_slot", name);
+  }
 });
 
 test("request-changes verifier bypass finding remains a usable review", () => {

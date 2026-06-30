@@ -172,6 +172,7 @@ function firstReviewVerdict(output) {
     const match = line.match(/\bverdict\s*:\s*([^\r\n]+)/i);
     if (!match) continue;
     const value = compact(match[1]).toLowerCase();
+    if (/\b(?:do\s+not\s+approve|not\s+approved?|disapprove(?:d)?)\b/.test(value)) return "reject";
     if (/\bapprove(?:d)?\b/.test(value)) return "approve";
     if (/\brequest[-_\s]?changes?\b/.test(value)) return "request_changes";
     if (/\breject(?:ed)?\b/.test(value)) return "reject";

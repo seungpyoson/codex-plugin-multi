@@ -63,7 +63,7 @@ function hashObject(value) {
 
 const EVIDENCE_FILE_EXTENSION_PATTERN = "c|cc|cjs|cpp|css|go|h|hpp|html|java|js|json|jsx|kt|md|mjs|php|proto|py|rb|rs|scala|sh|sql|swift|tf|toml|ts|tsx|vue|xml|yaml|yml";
 const EVIDENCE_FILE_REF_RE = new RegExp(
-  `(?:^|[\\s([{<])((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\\.(?:${EVIDENCE_FILE_EXTENSION_PATTERN})(?::\\d+(?::\\d+)?)?)\\b`,
+  `(?:^|[\\s([{<])((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\\.(?:${EVIDENCE_FILE_EXTENSION_PATTERN})(?::\\d+(?::\\d+)?)?)(?!@)\\b`,
   "giu",
 );
 const REQUIRED_EVIDENCE_FILE_SECTION_RE = /^(?:focus(?:ed)? files?|files to inspect|required files?|required source|source files?)\b/u;
@@ -353,7 +353,7 @@ function resultCitesRequiredEvidenceRef(result, ref, selectedSource) {
   }
   for (const candidate of candidates) {
     const normalized = normalizeEvidenceRef(candidate).replaceAll("\\", "/").toLowerCase();
-    if (normalized && lowerText.includes(normalized)) return true;
+    if (normalized && includesPathToken(lowerText, normalized)) return true;
   }
   return false;
 }
@@ -1697,7 +1697,10 @@ function qualityFlags({
   const isFinalReviewAttempt = !["approval_request", "preflight_failed", "queued", "running"].includes(status);
   let failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
   if (!hasApproveVerdict(text)) {
-    failureReasons = failureReasons.filter((reason) => reason !== "unresolved_verifier_bypass");
+    failureReasons = failureReasons.filter((reason) => ![
+      "required_evidence_missing",
+      "unresolved_verifier_bypass",
+    ].includes(reason));
   }
   if (isFinalReviewAttempt && status === "completed" && !hasVerdictFlag) {
     failureReasons.push("missing_verdict");

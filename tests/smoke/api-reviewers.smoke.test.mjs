@@ -7541,6 +7541,44 @@ test("direct API reviewers approval-request blocks approvals when required evide
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });
 
+test("direct API reviewers run uses canonical cause when required evidence is missing", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--foreground",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", [
+      "Adversarial final review.",
+      "Required checks:",
+      "1. Verify token.ts and action.yml wiring for additional_permissions.",
+    ].join("\n"),
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.status, "failed");
+  assert.equal(parsed.error_code, "required_evidence_missing");
+  assert.equal(parsed.error_cause, "pre_send_required_evidence_gap");
+  assert.deepEqual(
+    parsed.runtime_diagnostics?.required_evidence?.missing_required_references,
+    [
+      "token.ts",
+      "action.yml",
+    ],
+  );
+  assert.doesNotMatch(result.stdout, /hello from selected scope/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
 for (const promptCapProvider of [
   { provider: "deepseek", env: { DEEPSEEK_API_KEY: "secret-test-value" } },
   { provider: "glm", env: { ZAI_API_KEY: "secret-test-value" } },
