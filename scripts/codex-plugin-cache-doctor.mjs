@@ -500,6 +500,50 @@ function marketplaceReport(info) {
   };
 }
 
+function pushPluginNamesAction(nextActions, pluginNames, buildAction) {
+  if (pluginNames.length > 0) nextActions.push(buildAction(pluginNames));
+}
+
+function buildNextActions(profileSourceInfos, profiles) {
+  const nextActions = [];
+  if (profileSourceInfos.some((info) => !info.marketplacePresent)) {
+    nextActions.push(`Add the marketplace with \`codex plugin marketplace add ${MARKETPLACE_REPOSITORY}\`.`);
+  }
+  if (profileSourceInfos.some((info) => info.marketplacePresent)) {
+    nextActions.push(`Refresh Git marketplace installs with \`codex plugin marketplace upgrade ${MARKETPLACE}\`.`);
+  }
+  nextActions.push("If repo working tree differs from installed plugin cache, commit/publish or refresh marketplace/cache before opening new Codex sessions.");
+  nextActions.push("If upgrade reports `not configured as a Git marketplace`, remove and re-add the marketplace from GitHub.");
+  pushPluginNamesAction(
+    nextActions,
+    disabledRequiredPluginNames(profiles),
+    (names) => `Enable required disabled plugins (${names.join(", ")}) in \`/plugins\` or config.toml for the Codex profile that will run reviews.`,
+  );
+  pushPluginNamesAction(
+    nextActions,
+    unavailableEnabledPluginNames(profiles),
+    (names) => `Disable unavailable plugins (${names.join(", ")}) in \`/plugins\` or config.toml; they are no longer installable from ${MARKETPLACE}.`,
+  );
+  pushPluginNamesAction(
+    nextActions,
+    unavailableRequestedPluginNames(profiles),
+    (names) => `Omit unavailable plugins (${names.join(", ")}) from explicit cache-doctor checks; they are no longer installable from ${MARKETPLACE}.`,
+  );
+  pushPluginNamesAction(
+    nextActions,
+    unlistedRequiredPluginNames(profiles),
+    (names) => `Refresh ${MARKETPLACE} so required plugins appear in the installed marketplace manifest: ${names.join(", ")}.`,
+  );
+  pushPluginNamesAction(
+    nextActions,
+    unhealthyRequiredInternalRuntimeNames(profiles),
+    (names) => `Refresh required internal runtime caches (${names.join(", ")}) by upgrading ${MARKETPLACE} before running direct API reviews.`,
+  );
+  nextActions.push("Restart already-open Codex TUI sessions; skill picker inventory is loaded in memory.");
+  nextActions.push("Verify with `codex debug prompt-input 'list skills'` from the target CODEX_HOME.");
+  return nextActions;
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -544,38 +588,8 @@ function main() {
   }
 
   const ok = Object.values(profiles).every((profile) => profile.ok);
-  const nextActions = [];
   const profileSourceInfos = [primarySourceInfo, secondSourceInfo].filter(Boolean);
-  if (profileSourceInfos.some((info) => !info.marketplacePresent)) {
-    nextActions.push(`Add the marketplace with \`codex plugin marketplace add ${MARKETPLACE_REPOSITORY}\`.`);
-  }
-  if (profileSourceInfos.some((info) => info.marketplacePresent)) {
-    nextActions.push(`Refresh Git marketplace installs with \`codex plugin marketplace upgrade ${MARKETPLACE}\`.`);
-  }
-  nextActions.push("If repo working tree differs from installed plugin cache, commit/publish or refresh marketplace/cache before opening new Codex sessions.");
-  nextActions.push("If upgrade reports `not configured as a Git marketplace`, remove and re-add the marketplace from GitHub.");
-  const disabledRequired = disabledRequiredPluginNames(profiles);
-  if (disabledRequired.length > 0) {
-    nextActions.push(`Enable required disabled plugins (${disabledRequired.join(", ")}) in \`/plugins\` or config.toml for the Codex profile that will run reviews.`);
-  }
-  const unavailableEnabled = unavailableEnabledPluginNames(profiles);
-  if (unavailableEnabled.length > 0) {
-    nextActions.push(`Disable unavailable plugins (${unavailableEnabled.join(", ")}) in \`/plugins\` or config.toml; they are no longer installable from ${MARKETPLACE}.`);
-  }
-  const unavailableRequested = unavailableRequestedPluginNames(profiles);
-  if (unavailableRequested.length > 0) {
-    nextActions.push(`Omit unavailable plugins (${unavailableRequested.join(", ")}) from explicit cache-doctor checks; they are no longer installable from ${MARKETPLACE}.`);
-  }
-  const unlistedRequired = unlistedRequiredPluginNames(profiles);
-  if (unlistedRequired.length > 0) {
-    nextActions.push(`Refresh ${MARKETPLACE} so required plugins appear in the installed marketplace manifest: ${unlistedRequired.join(", ")}.`);
-  }
-  const unhealthyInternalRuntimes = unhealthyRequiredInternalRuntimeNames(profiles);
-  if (unhealthyInternalRuntimes.length > 0) {
-    nextActions.push(`Refresh required internal runtime caches (${unhealthyInternalRuntimes.join(", ")}) by upgrading ${MARKETPLACE} before running direct API reviews.`);
-  }
-  nextActions.push("Restart already-open Codex TUI sessions; skill picker inventory is loaded in memory.");
-  nextActions.push("Verify with `codex debug prompt-input 'list skills'` from the target CODEX_HOME.");
+  const nextActions = buildNextActions(profileSourceInfos, profiles);
 
   process.stdout.write(`${JSON.stringify({
     ok,
