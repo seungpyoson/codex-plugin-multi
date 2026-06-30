@@ -211,6 +211,7 @@ test("required evidence ignores technology names in check prose", () => {
     prompt: [
       "Required checks:",
       "1. Verify Node.js 20 compatibility before approving.",
+      "2. Confirm `Node.js` and `Next.js` runtime compatibility.",
     ].join("\n"),
     sourceFiles: [
       { path: "scripts/app.mjs", text: "export const value = 1;\n" },

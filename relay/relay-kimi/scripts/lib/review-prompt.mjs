@@ -271,7 +271,7 @@ function requiredEvidenceReferences(prompt) {
   for (const { text: line, section } of requiredEvidenceLineEntries(prompt)) {
     for (const match of line.matchAll(/`([^`\n]+)`/gu)) {
       const value = match[1];
-      if (looksLikeEvidenceFileReference(value)) push(value);
+      if (looksLikeEvidenceFileReference(value) && plainEvidenceRefLooksFileLike(value, section)) push(value);
     }
     for (const match of line.matchAll(EVIDENCE_FILE_REF_RE)) {
       const value = match[1];
