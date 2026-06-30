@@ -10,6 +10,7 @@ import {
   buildReviewAuditManifest,
   buildReviewPrompt,
   buildSelectedSourcePromptBlock,
+  requiredEvidencePreflightFailure,
   scopeResolutionReason,
   selectedSourceFilesFromPrompt,
 } from "../../scripts/lib/review-prompt.mjs";
@@ -26,7 +27,7 @@ const REVIEW_PROMPT_MODULES = Object.freeze([
 
 async function loadReviewPromptModule(file) {
   return file === "scripts/lib/review-prompt.mjs"
-    ? { buildReviewAuditManifest }
+    ? { buildReviewAuditManifest, requiredEvidencePreflightFailure }
     : await import(pathToFileURL(resolve(file)).href);
 }
 
@@ -424,6 +425,91 @@ test("request-changes verifier bypass finding remains a usable review", () => {
   assert.equal(manifest.review_quality.semantic_failure_reasons.includes("unresolved_verifier_bypass"), false);
   assert.equal(manifest.review_quality.failed_review_slot, false);
   assert.equal(manifest.review_slot.verdict, "request_changes");
+});
+
+test("required evidence provider copies enforce explicit evidence and preflight diagnostics", async () => {
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const {
+      buildReviewAuditManifest: targetBuildReviewAuditManifest,
+      requiredEvidencePreflightFailure: targetRequiredEvidencePreflightFailure,
+    } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: [
+        "Selected files:",
+        "This is prose from the user prompt, not a rendered selected-source block.",
+        "You must confirm src/cli.ts does not regress.",
+        "Files to inspect:",
+        "- README.md",
+        "- src/App.tsx",
+        "Required checks:",
+        "1. Verify `src/App.tsx`, README.md, token.ts, owner/repo.js@abc1234, and Node.js compatibility.",
+        "2. Optional config.yaml only if needed.",
+        "Output format:",
+        "Blocking findings first.",
+      ].join("\n"),
+      sourceFiles: [
+        { path: "README.md", text: "# Relay\n" },
+        { path: "src/App.tsx", text: "export function App() { return null; }\n" },
+        { path: "src/cli.ts", text: "export const cli = true;\n" },
+      ],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: No blocking findings in README.md, src/App.tsx, or src/cli.ts.",
+        "Non-blocking concerns: none.",
+        "Inspection status: I inspected README.md, src/App.tsx, and src/cli.ts.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(
+      manifest.required_evidence.required_references,
+      ["src/cli.ts", "README.md", "src/App.tsx", "token.ts"],
+      name,
+    );
+    assert.deepEqual(manifest.required_evidence.missing_required_references, ["token.ts"], name);
+    assert.equal(manifest.required_evidence.has_missing_required_evidence, true, name);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), true, name);
+
+    const preflight = targetRequiredEvidencePreflightFailure(manifest);
+    assert.equal(preflight.error_code, "required_evidence_missing", name);
+    assert.match(preflight.error_message, /token\.ts/, name);
+    assert.equal(targetRequiredEvidencePreflightFailure({ required_evidence: { has_missing_required_evidence: false } }), null, name);
+  }
+});
+
+test("required evidence provider copies require cited selected files for approvals", async () => {
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: [
+        "Focus files:",
+        "- scripts/a.js",
+        "- scripts/b.js",
+      ].join("\n"),
+      sourceFiles: [
+        { path: "scripts/a.js", text: "export const a = 1;\n" },
+        { path: "scripts/b.js", text: "export const b = 2;\n" },
+      ],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: No blocking findings in scripts/a.js or data.js.",
+        "Non-blocking concerns: none.",
+        "Inspection status: I inspected scripts/a.js and data.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.required_evidence.missing_required_references, [], name);
+    assert.deepEqual(manifest.review_quality.required_evidence_uncited_references, ["scripts/b.js"], name);
+    assert.equal(
+      manifest.review_quality.semantic_failure_reasons.includes("required_evidence_not_cited"),
+      true,
+      name,
+    );
+    assert.equal(manifest.review_quality.failed_review_slot, true, name);
+  }
 });
 
 test("buildReviewAuditManifest fail-closes third same-packet retry before source send", () => {
