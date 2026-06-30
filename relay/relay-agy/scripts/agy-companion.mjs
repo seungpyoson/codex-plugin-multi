@@ -45,7 +45,6 @@ import {
 } from "./lib/provider-route-policy.mjs";
 import {
   acquireProviderWorkloadLease,
-  concurrencyAdmissionBlockedExecution,
   providerWorkloadBlockedExecution,
   releaseProviderWorkloadLease,
 } from "./lib/review-workload.mjs";
@@ -170,6 +169,36 @@ function resolveAgyAdmissionContext(provider, route, env = process.env) {
     provider,
     route,
     env,
+  });
+}
+
+function classifyAgyAdmissionContextError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/\b(?:EACCES|EPERM)\b|permission denied|operation not permitted/i.test(message)) {
+    return {
+      reason: "concurrency_admission_state_dir_permission_denied",
+      message: "Antigravity state directory is not writable from this sandbox",
+    };
+  }
+  if (/\b(?:ENOTDIR|ENOENT|ELOOP)\b|not a directory|no such file|too many symbolic links/i.test(message)) {
+    return {
+      reason: "concurrency_admission_state_dir_unavailable",
+      message: "Antigravity state directory could not be resolved",
+    };
+  }
+  return {
+    reason: "concurrency_admission_failed",
+    message: "Antigravity workload admission could not be resolved",
+  };
+}
+
+function agyAdmissionContextBlockedExecution(provider, route, error) {
+  const classified = classifyAgyAdmissionContextError(error);
+  return providerWorkloadBlockedExecution({
+    ok: false,
+    reason: classified.reason,
+    message: `concurrency admission failed for ${provider}.${route}: ${classified.message}`,
+    capacity: null,
   });
 }
 
@@ -838,11 +867,11 @@ function buildAuditManifest({
   });
 }
 
-function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
-  const selectedFiles = auditSourceFilesForPrompt(prompt, containmentPath);
+function sourcePacketPolicyPreflight(invocation, prompt, containmentPath, selectedFiles = null) {
+  const auditFiles = selectedFiles ?? auditSourceFilesForPrompt(prompt, containmentPath);
   const preflightManifest = buildAuditManifest({
     promptText: prompt,
-    selectedFiles,
+    selectedFiles: auditFiles,
     timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
     invocation,
     result: "",
@@ -865,7 +894,7 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
   };
   execution.reviewAuditManifest = buildAuditManifest({
     promptText: prompt,
-    selectedFiles,
+    selectedFiles: auditFiles,
     timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
     invocation,
     result: "",
@@ -880,14 +909,14 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
   return execution;
 }
 
-function renderedPromptArgvPreflight(invocation, prompt, containmentPath) {
+function renderedPromptArgvPreflight(invocation, prompt, containmentPath, selectedFiles = null) {
   const renderedPromptBytes = Buffer.byteLength(prompt ?? "", "utf8");
   if (renderedPromptBytes <= AGY_RENDERED_PROMPT_ARGV_MAX_BYTES) return null;
 
-  const selectedFiles = auditSourceFilesForPrompt(prompt, containmentPath);
+  const auditFiles = selectedFiles ?? auditSourceFilesForPrompt(prompt, containmentPath);
   const baseManifest = buildAuditManifest({
     promptText: prompt,
-    selectedFiles,
+    selectedFiles: auditFiles,
     timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
     invocation,
     result: "",
@@ -930,7 +959,7 @@ function renderedPromptArgvPreflight(invocation, prompt, containmentPath) {
   };
   execution.reviewAuditManifest = buildAuditManifest({
     promptText: prompt,
-    selectedFiles,
+    selectedFiles: auditFiles,
     timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
     invocation,
     result: "",
@@ -1369,7 +1398,7 @@ async function run(rest) {
       process.exit(0);
     }
 
-    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, sidecarPrompt, containment.path);
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, sidecarPrompt, containment.path, selectedFiles);
     if (sourcePacketPreflight) {
       if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
       const errorRecord = buildJobRecord(invocation, {
@@ -1388,7 +1417,7 @@ async function run(rest) {
       process.exit(2);
     }
 
-    const argvPreflight = renderedPromptArgvPreflight(invocation, sidecarPrompt, containment.path);
+    const argvPreflight = renderedPromptArgvPreflight(invocation, sidecarPrompt, containment.path, selectedFiles);
     if (argvPreflight) {
       if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
       const errorRecord = buildJobRecord(invocation, {
@@ -1413,8 +1442,8 @@ async function run(rest) {
       const route = "subscription";
       try {
         admissionContext = resolveAgyAdmissionContext(invocation.target, route, process.env);
-      } catch {
-        const workloadPreflight = concurrencyAdmissionBlockedExecution(invocation.target, route);
+      } catch (error) {
+        const workloadPreflight = agyAdmissionContextBlockedExecution(invocation.target, route, error);
         workloadPreflight.reviewAuditManifest = buildAuditManifest({
           promptText: sidecarPrompt,
           selectedFiles,

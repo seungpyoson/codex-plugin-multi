@@ -475,6 +475,57 @@ test("agy custom-review maps held workload lease to provider_workload_blocked wi
   }
 });
 
+test("agy custom-review reports Antigravity state-dir admission failures without spawn", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-admission-state-cwd-"));
+  const captureDir = mkdtempSync(path.join(tmpdir(), "agy-admission-state-capture-"));
+  const capturePath = path.join(captureDir, "spawn.jsonl");
+  fixtureSeedRepo(cwd);
+  const binary = writeAgySpawnCountingMock(cwd);
+  const notDirectory = path.join(cwd, "not-a-directory");
+  writeFileSync(notDirectory, "not a directory\n", "utf8");
+  const blockedHome = path.join(notDirectory, "state");
+
+  const { stdout, stderr, status, dataDir } = runCompanion([
+    "run",
+    "--mode", "custom-review",
+    "--foreground",
+    "--lifecycle-events", "jsonl",
+    "--binary", binary,
+    "--cwd", cwd,
+    "--scope-paths", "seed.txt",
+    "--",
+    "Review this scope.",
+  ], {
+    cwd,
+    env: {
+      ANTIGRAVITY_HOME: blockedHome,
+      RELAY_TEST_SPAWN_COUNT_OUT: capturePath,
+    },
+  });
+
+  try {
+    assert.equal(status, 2, stderr || stdout);
+    const terminal = stdout.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+    assert.equal(terminal.status, "failed");
+    assert.equal(terminal.error_code, "provider_workload_blocked");
+    assert.equal(terminal.external_review.source_content_transmission, "not_sent");
+    const result = runCompanion(["result", "--job", terminal.job_id, "--cwd", cwd], { cwd, dataDir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const record = JSON.parse(result.stdout);
+    assert.equal(
+      record.runtime_diagnostics?.provider_workload?.reason,
+      "concurrency_admission_state_dir_unavailable",
+    );
+    assert.match(record.error_message, /Antigravity state directory could not be resolved/);
+    assert.doesNotMatch(record.error_message, new RegExp(notDirectory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.equal(existsSync(capturePath), false, "admission failure must happen before AGY readiness or review spawn");
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+    rmTree(captureDir);
+  }
+});
+
 test("agy review fails the review slot when the target mutates source workspace files", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "agy-mutation-cwd-"));
   const binary = writeAgyMutatingMock(cwd);

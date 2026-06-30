@@ -184,6 +184,13 @@ state or session permission denial. AGY source-bearing review commands still use
 scoped input, mutation detection, and the Relay source-transmission disclosure
 contract.
 
+AGY currently receives the rendered review prompt as one `--print` command-line
+argument. Relay keeps AGY's default selected-source packet at 96 KiB and blocks
+rendered prompts over 112 KiB before launch so Linux does not fail with
+`spawn E2BIG`. `--allow-large-source-packet` can approve the source-packet
+policy budget, but it cannot bypass that hard argv transport cap; narrow or
+shard very broad AGY reviews instead.
+
 If you do not want sandbox-wide network access, use one-off escalation for a
 specific trusted reviewer command instead. In an interactive Codex session,
 leave `network_access` disabled, run the reviewer command, and when Codex asks
