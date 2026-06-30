@@ -146,23 +146,23 @@ function packet4Findings(output) {
 }
 
 function packet4DuplicateContentsBypassFound(output) {
-  const squashed = compact(output);
+  const squashed = compact(output).toLowerCase();
   const mentionsDuplicateContents = (
-    /\bduplicate\b/i.test(squashed)
-    && /\bcontents\b/i.test(squashed)
+    /\bduplicate\b/.test(squashed)
+    && /\bcontents\b/.test(squashed)
   ) || (
-    /contents\s*:\s*read/i.test(output)
-    && /contents\s*:\s*write/i.test(output)
+    /contents\s*:\s*read/.test(squashed)
+    && /contents\s*:\s*write/.test(squashed)
   );
   const mentionsEffectiveWrite = (
-    /\b(later|last|second|subsequent)\b/i.test(squashed)
-    && /\b(wins|overrides|takes effect|effective|resolves?)\b/i.test(squashed)
-    && /\bwrite\b/i.test(squashed)
-  ) || /\beffective (?:permission|contents(?: permission)?) (?:can become|becomes|is) write\b/i.test(squashed);
+    /\b(later|last|second|subsequent)\b/.test(squashed)
+    && /\b(wins|overrides|takes effect|effective|resolves?)\b/.test(squashed)
+    && /\bwrite\b/.test(squashed)
+  ) || /\beffective (?:permission|contents(?: permission)?) (?:can become|becomes|is) write\b/.test(squashed);
   const mentionsVerifierBypass = (
-    /\b(verifier|verify_ai_review_governance|governance)\b/i.test(squashed)
-    && /\b(pass|passes|bypass|miss|misses|not catch|does not catch|substring|snippet|presence)\b/i.test(squashed)
-    && /contents\s*:\s*read/i.test(output)
+    /\b(verifier|verify_ai_review_governance|governance)\b/.test(squashed)
+    && /\b(pass|passes|bypass|miss|misses|not catch|does not catch|substring|snippet|presence)\b/.test(squashed)
+    && /contents\s*:\s*read/.test(squashed)
   );
   return mentionsDuplicateContents && mentionsEffectiveWrite && mentionsVerifierBypass;
 }

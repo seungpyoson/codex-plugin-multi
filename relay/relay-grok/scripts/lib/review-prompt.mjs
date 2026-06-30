@@ -262,11 +262,11 @@ function plainEvidenceRefLooksFileLike(ref, section) {
 }
 
 function requiredEvidenceReferences(prompt) {
-  const refs = [];
+  const refs = new Set();
   const push = (value) => {
     const normalized = normalizeEvidenceRef(value);
     if (!normalized) return;
-    if (!refs.includes(normalized)) refs.push(normalized);
+    refs.add(normalized);
   };
   for (const { text: line, section } of requiredEvidenceLineEntries(prompt)) {
     for (const match of line.matchAll(/`([^`\n]+)`/gu)) {
@@ -278,7 +278,7 @@ function requiredEvidenceReferences(prompt) {
       if (plainEvidenceRefLooksFileLike(value, section)) push(value);
     }
   }
-  return refs;
+  return [...refs];
 }
 
 function looksLikeEvidenceFileReference(value) {
