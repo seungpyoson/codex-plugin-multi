@@ -61,6 +61,15 @@ function hashObject(value) {
   });
 }
 
+const EVIDENCE_FILE_EXTENSION_PATTERN = "c|cc|cjs|cpp|css|go|h|hpp|html|java|js|json|jsx|kt|md|mjs|php|proto|py|rb|rs|scala|sh|sql|swift|tf|toml|ts|tsx|vue|xml|yaml|yml";
+const EVIDENCE_FILE_REF_RE = new RegExp(
+  `(?:^|[\\s([{<])((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\\.(?:${EVIDENCE_FILE_EXTENSION_PATTERN})(?::\\d+(?::\\d+)?)?)(?!@)\\b`,
+  "giu",
+);
+const REQUIRED_EVIDENCE_FILE_SECTION_RE = /^(?:focus(?:ed)? files?|files to inspect|required files?|required source|source files?)\b/u;
+const REQUIRED_EVIDENCE_CHECK_SECTION_RE = /^(?:required checks?|review goals?|required evidence|must verify|must inspect)\b/u;
+const REQUIRED_EVIDENCE_STOP_SECTION_RE = /^(?:claims verified|context|end-?to-?end caveat|merge recommendation|non-blocking(?: risks?| concerns?| findings?)?|output format|selected files?|selected source|verification caveat)\b/u;
+
 function lineCount(text) {
   const value = String(text ?? "");
   if (value.length === 0) return 0;
@@ -97,6 +106,280 @@ function sourceManifest(sourceFiles = []) {
       bytes: entries.reduce((sum, file) => sum + file.bytes, 0),
       lines: entries.reduce((sum, file) => sum + file.lines, 0),
     }),
+  });
+}
+
+function normalizeEvidenceRef(value) {
+  let normalized = String(value ?? "")
+    .trim()
+    .replace(/^`+|`+$/g, "")
+    .replace(/[),.;]+$/g, "")
+    .replaceAll("\\", "/");
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(normalized)) return "";
+  if (normalized.startsWith("/") || normalized.startsWith("~")) return "";
+  normalized = normalized.replace(/^(?:a|b)\//u, "");
+  normalized = normalized.replace(/:\d+(?::\d+)?$/u, "");
+  return normalized;
+}
+
+function selectedSourceRefSet(selectedSource) {
+  const refs = new Set();
+  for (const file of selectedSource?.files ?? []) {
+    const path = String(file?.path ?? "");
+    if (!path) continue;
+    refs.add(path);
+    const normalized = path.replaceAll("\\", "/");
+    refs.add(normalized);
+    refs.add(normalized.toLowerCase());
+  }
+  return refs;
+}
+
+function selectedSourceBasenameSet(selectedSource) {
+  const refs = new Set();
+  for (const file of selectedSource?.files ?? []) {
+    const path = String(file?.path ?? "");
+    if (!path) continue;
+    const basename = path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
+    if (basename) {
+      refs.add(basename);
+      refs.add(basename.toLowerCase());
+    }
+  }
+  return refs;
+}
+
+function evidenceRefHasPathSegment(ref) {
+  return /[/\\]/u.test(String(ref ?? ""));
+}
+
+function removeListMarker(line) {
+  return String(line ?? "").trimStart()
+    .replace(/^[-*]\s+/u, "")
+    .replace(/^\d+[.)]\s+/u, "")
+    .trim();
+}
+
+function isRequiredEvidenceListItem(line) {
+  return /^[-*]\s+\S/u.test(String(line ?? "").trimStart())
+    || /^\d+[.)]\s+\S/u.test(String(line ?? "").trimStart());
+}
+
+function normalizedRequiredEvidenceHeading(line) {
+  return removeListMarker(line)
+    .replace(/^#{1,6}\s+/u, "")
+    .replace(/:$/u, "")
+    .trim()
+    .toLowerCase();
+}
+
+function stripRenderedSelectedSourceBlocks(prompt) {
+  const lines = String(prompt ?? "").split(/\r?\n/u);
+  const out = [];
+  let skipUntil = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (skipUntil !== null) {
+      if (line === skipUntil) skipUntil = null;
+      continue;
+    }
+    if (/^selected (?:files|source):?$/iu.test(line.trim())) {
+      const nextNonBlank = lines.slice(index + 1).find((candidate) => candidate.trim().length > 0);
+      if (nextNonBlank?.startsWith("BEGIN ")) continue;
+    }
+    if (line.startsWith("BEGIN ")) {
+      skipUntil = `END ${line.slice("BEGIN ".length)}`;
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+function requiredEvidencePrompt(prompt) {
+  const text = String(prompt ?? "");
+  const marker = "User prompt:\n";
+  const markerIndex = text.lastIndexOf(marker);
+  const candidate = markerIndex >= 0 ? text.slice(markerIndex + marker.length) : text;
+  return stripRenderedSelectedSourceBlocks(candidate);
+}
+
+function requiredEvidenceLineEntries(prompt) {
+  const lines = requiredEvidencePrompt(prompt).split(/\r?\n/u);
+  const out = [];
+  let section = null;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const lower = line.toLowerCase();
+    const heading = normalizedRequiredEvidenceHeading(line);
+    if (REQUIRED_EVIDENCE_FILE_SECTION_RE.test(heading)) {
+      section = "files";
+      continue;
+    }
+    if (REQUIRED_EVIDENCE_CHECK_SECTION_RE.test(heading)) {
+      section = "checks";
+      continue;
+    }
+    if (REQUIRED_EVIDENCE_STOP_SECTION_RE.test(heading)) {
+      section = null;
+      continue;
+    }
+    if (/\b(if needed|only if needed|optional)\b/.test(lower)) continue;
+    if (section === "files") {
+      if (isRequiredEvidenceListItem(line)) {
+        out.push(Object.freeze({ text: removeListMarker(line), section: "files" }));
+      }
+      continue;
+    }
+    if (section === "checks") {
+      out.push(Object.freeze({ text: line, section: "checks" }));
+      continue;
+    }
+    if (/\b(required|must)\b/u.test(lower)) {
+      out.push(Object.freeze({ text: line, section: "inline" }));
+    }
+  }
+  return out;
+}
+
+function requiredEvidenceLines(prompt) {
+  return requiredEvidenceLineEntries(prompt).map((entry) => entry.text);
+}
+
+function commonStandaloneEvidenceFileRef(ref) {
+  return /^(?:AGENTS|CHANGELOG|CLAUDE|CODEOWNERS|CONTRIBUTING|LICENSE|NOTICE|README)\.(?:md|txt)$/iu
+    .test(String(ref ?? ""));
+}
+
+function plainEvidenceRefLooksFileLike(ref, section) {
+  const normalized = normalizeEvidenceRef(ref);
+  if (!normalized) return false;
+  if (evidenceRefHasPathSegment(normalized)) return true;
+  if (section === "files") return true;
+  if (commonStandaloneEvidenceFileRef(normalized)) return true;
+  return /^[a-z0-9_.-]+\.[a-z0-9]+$/u.test(normalized);
+}
+
+function requiredEvidenceReferences(prompt) {
+  const refs = new Set();
+  const push = (value) => {
+    const normalized = normalizeEvidenceRef(value);
+    if (!normalized) return;
+    refs.add(normalized);
+  };
+  for (const { text: line, section } of requiredEvidenceLineEntries(prompt)) {
+    for (const match of line.matchAll(/`([^`\n]+)`/gu)) {
+      const value = match[1];
+      if (looksLikeEvidenceFileReference(value) && plainEvidenceRefLooksFileLike(value, section)) push(value);
+    }
+    for (const match of line.matchAll(EVIDENCE_FILE_REF_RE)) {
+      const value = match[1];
+      if (plainEvidenceRefLooksFileLike(value, section)) push(value);
+    }
+  }
+  return [...refs];
+}
+
+function looksLikeEvidenceFileReference(value) {
+  const normalized = normalizeEvidenceRef(value);
+  return new RegExp(`(?:^|[/\\\\])[A-Za-z0-9_.-]+\\.(?:${EVIDENCE_FILE_EXTENSION_PATTERN})$`, "iu")
+    .test(normalized);
+}
+
+function requiredEvidenceManifest({ prompt, selectedSource }) {
+  const selectedRefs = selectedSourceRefSet(selectedSource);
+  const selectedBasenames = selectedSourceBasenameSet(selectedSource);
+  const required = requiredEvidenceReferences(prompt);
+  const satisfied = [];
+  const missing = [];
+  for (const ref of required) {
+    if (selectedRefs.has(ref) || selectedRefs.has(ref.toLowerCase())) {
+      satisfied.push(ref);
+      continue;
+    }
+    const normalized = ref.replaceAll("\\", "/");
+    if (selectedRefs.has(normalized) || selectedRefs.has(normalized.toLowerCase())) {
+      satisfied.push(ref);
+      continue;
+    }
+    if (!evidenceRefHasPathSegment(normalized)) {
+      const basename = normalized.split("/").filter(Boolean).at(-1);
+      if (basename && (selectedBasenames.has(basename) || selectedBasenames.has(basename.toLowerCase()))) {
+        satisfied.push(ref);
+        continue;
+      }
+    }
+    missing.push(ref);
+  }
+  return Object.freeze({
+    required_references: Object.freeze(required),
+    satisfied_required_references: Object.freeze(satisfied),
+    has_missing_required_evidence: missing.length > 0,
+    missing_required_references: Object.freeze(missing),
+  });
+}
+
+function selectedSourcePathsForEvidenceRef(ref, selectedSource) {
+  const normalizedRef = normalizeEvidenceRef(ref).replaceAll("\\", "/");
+  if (!normalizedRef) return [];
+  const lowerRef = normalizedRef.toLowerCase();
+  const hasPathSegment = evidenceRefHasPathSegment(normalizedRef);
+  const paths = [];
+  for (const file of selectedSource?.files ?? []) {
+    const path = String(file?.path ?? "").replaceAll("\\", "/");
+    if (!path) continue;
+    const lowerPath = path.toLowerCase();
+    if (hasPathSegment) {
+      if (lowerPath === lowerRef) paths.push(path);
+      continue;
+    }
+    const basename = path.split("/").filter(Boolean).at(-1);
+    if (basename?.toLowerCase() === lowerRef) paths.push(path);
+  }
+  return paths;
+}
+
+function resultCitesRequiredEvidenceRef(result, ref, selectedSource) {
+  const lowerText = normalizeReviewSearchText(result).replaceAll("\\", "/").toLowerCase();
+  const normalizedRef = normalizeEvidenceRef(ref).replaceAll("\\", "/");
+  const candidates = new Set([normalizedRef]);
+  for (const path of selectedSourcePathsForEvidenceRef(ref, selectedSource)) {
+    candidates.add(path);
+    if (!evidenceRefHasPathSegment(normalizedRef)) {
+      const basename = path.split("/").filter(Boolean).at(-1);
+      if (basename) candidates.add(basename);
+    }
+  }
+  for (const candidate of candidates) {
+    const normalized = normalizeEvidenceRef(candidate).replaceAll("\\", "/").toLowerCase();
+    if (normalized && includesPathToken(lowerText, normalized)) return true;
+  }
+  return false;
+}
+
+function uncitedRequiredEvidenceReferences({ requiredEvidence, result, selectedSource }) {
+  const refs = Array.isArray(requiredEvidence?.satisfied_required_references)
+    ? requiredEvidence.satisfied_required_references
+    : [];
+  if (refs.length === 0) return [];
+  return refs.filter((ref) => !resultCitesRequiredEvidenceRef(result, ref, selectedSource));
+}
+
+export function requiredEvidencePreflightFailure(auditManifest) {
+  const requiredEvidence = auditManifest?.required_evidence ?? null;
+  if (requiredEvidence?.has_missing_required_evidence !== true) return null;
+  const missing = Array.isArray(requiredEvidence.missing_required_references)
+    ? requiredEvidence.missing_required_references
+    : [];
+  const refs = missing.length > 0 ? missing.join(", ") : "unknown required evidence";
+  return Object.freeze({
+    error_code: "required_evidence_missing",
+    error_message:
+      `required_evidence_missing: selected source packet is missing user-required evidence: ${refs}`,
+    suggested_action:
+      "Include the required evidence in the selected source packet, narrow the prompt to the provided source, or run a manual relay that explicitly supplies the missing evidence.",
+    required_evidence: requiredEvidence,
   });
 }
 
@@ -195,6 +478,26 @@ function hasVerdict(text) {
       || startsWithFailVerdict(line)
       || startsWithToken(line, "reject")
       || startsWithToken(line, "rejected");
+  });
+}
+
+function hasApproveVerdict(text) {
+  return reviewLines(text).some((rawLine) => {
+    const line = unmarkReviewText(rawLine).toLowerCase();
+    if (
+      startsWithLabel(line, "verdict")
+      || startsWithLabel(line, "review verdict")
+      || startsWithLabel(line, "code review verdict")
+      || startsWithLabel(line, "overall verdict")
+      || startsWithLabel(line, "final verdict")
+      || startsWithLabel(line, "status")
+      || startsWithLabel(line, "summary")
+    ) {
+      const delimiterIndex = line.indexOf(":");
+      const value = delimiterIndex >= 0 ? line.slice(delimiterIndex + 1).trimStart() : "";
+      return startsWithToken(value, "approve") || startsWithToken(value, "approved");
+    }
+    return startsWithToken(line, "approve") || startsWithToken(line, "approved");
   });
 }
 
@@ -1184,10 +1487,84 @@ function semanticFailureReasons(text, looksShallow, selectedSource = null) {
   if (semanticLines.some((line) => lineHasConcretePermissionFailure(line))) {
     reasons.push("permission_blocked");
   }
+  if (semanticLines.some((line) => lineClaimsRequiredEvidenceMissing(line))) {
+    reasons.push("required_evidence_missing");
+  }
+  if (semanticLines.some((line) => lineClaimsUnresolvedVerifierBypass(line))) {
+    reasons.push("unresolved_verifier_bypass");
+  }
   if (looksShallow) {
     reasons.push("shallow_output");
   }
   return Object.freeze([...new Set(reasons)]);
+}
+
+function lineClaimsRequiredEvidenceMissing(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  if (isPromptPolicyEchoLine(line) || isReviewQualityMechanicsExplanationLine(line)) return false;
+  if (!includesAny(lower, [
+    "cannot definitively verify",
+    "cannot verify",
+    "can't verify",
+    "could not verify",
+    "unable to verify",
+    "not in scope",
+    "not supplied",
+    "not provided",
+    "not available",
+    "cannot read",
+    "can't read",
+    "could not read",
+    "unable to read",
+  ])) return false;
+  return includesAny(lower, [
+    "required check",
+    "required evidence",
+    "required validation",
+    "required security",
+    "security invariant",
+    "token-scope",
+    "token scope",
+    "app-token",
+    "app token",
+    "github app token",
+    "pinned action",
+    "action source",
+    "action's own source",
+    "upstream action",
+    "action.yml",
+    "token.ts",
+    "additional_permissions",
+    "effective permission",
+    "effective contents",
+    "regression guard",
+    "regression coverage",
+    "governance verifier",
+    "verifier",
+  ]);
+}
+
+function lineClaimsUnresolvedVerifierBypass(line) {
+  const lower = unmarkReviewText(line).toLowerCase();
+  if (isPromptPolicyEchoLine(line) || isReviewQualityMechanicsExplanationLine(line)) return false;
+  if (!includesAny(lower, [
+    "verifier",
+    "governance",
+    "regression guard",
+    "regression coverage",
+  ])) return false;
+  return includesAny(lower, [
+    "would not catch",
+    "does not catch",
+    "doesn't catch",
+    "won't catch",
+    "will not catch",
+    "not caught",
+    "still passes",
+    "would pass",
+    "can be bypassed",
+    "bypass",
+  ]);
 }
 
 function lineClaimsFailedReviewSlot(line) {
@@ -1318,7 +1695,13 @@ function qualityFlags({
     && text.trim().length < 500
     && !conciseTinyReview;
   const isFinalReviewAttempt = !["approval_request", "preflight_failed", "queued", "running"].includes(status);
-  const failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
+  let failureReasons = [...semanticFailureReasons(text, looksShallow, selectedSource)];
+  if (!hasApproveVerdict(text)) {
+    failureReasons = failureReasons.filter((reason) => ![
+      "required_evidence_missing",
+      "unresolved_verifier_bypass",
+    ].includes(reason));
+  }
   if (isFinalReviewAttempt && status === "completed" && !hasVerdictFlag) {
     failureReasons.push("missing_verdict");
   }
@@ -1331,6 +1714,43 @@ function qualityFlags({
     looks_shallow: looksShallow,
     semantic_failure_reasons: semanticReasons,
     failed_review_slot: isFinalReviewAttempt && (status !== "completed" || errorCode !== null || semanticReasons.length > 0),
+  });
+}
+
+function applyRequiredEvidenceQualityGate(reviewQuality, {
+  requiredEvidence,
+  result,
+  status,
+  errorCode,
+  selectedSource,
+} = {}) {
+  const isCompletedApproval = status === "completed"
+    && errorCode === null
+    && hasApproveVerdict(result);
+  const shouldFailMissingEvidenceApproval = requiredEvidence?.has_missing_required_evidence === true
+    && isCompletedApproval;
+  const uncitedRequiredRefs = isCompletedApproval
+    ? uncitedRequiredEvidenceReferences({ requiredEvidence, result, selectedSource })
+    : [];
+  const shouldFailUncitedEvidenceApproval = requiredEvidence?.has_missing_required_evidence !== true
+    && status === "completed"
+    && errorCode === null
+    && uncitedRequiredRefs.length > 0;
+  if (!shouldFailMissingEvidenceApproval && !shouldFailUncitedEvidenceApproval) return reviewQuality;
+  const reasons = Object.freeze([
+    ...new Set([
+      ...(Array.isArray(reviewQuality?.semantic_failure_reasons)
+        ? reviewQuality.semantic_failure_reasons
+        : []),
+      ...(shouldFailMissingEvidenceApproval ? ["required_evidence_missing"] : []),
+      ...(shouldFailUncitedEvidenceApproval ? ["required_evidence_not_cited"] : []),
+    ]),
+  ]);
+  return Object.freeze({
+    ...reviewQuality,
+    semantic_failure_reasons: reasons,
+    required_evidence_uncited_references: Object.freeze(uncitedRequiredRefs),
+    failed_review_slot: true,
   });
 }
 
@@ -1364,6 +1784,7 @@ export function buildReviewAuditManifest({
   errorCode = null,
 } = {}) {
   const selectedSource = sourceManifest(sourceFiles);
+  const requiredEvidence = requiredEvidenceManifest({ prompt, selectedSource });
   const renderedPromptHash = hashObject(prompt);
   const routeStep = route.routeStep ?? null;
   const routeSteps = Array.isArray(route.routeSteps)
@@ -1425,7 +1846,10 @@ export function buildReviewAuditManifest({
         "Do not launch another same-packet review until the packet is split, the provider is switched, the slot is waived, or an explicit override artifact is recorded.",
     })
     : sourcePacketPolicy;
-  const reviewQuality = qualityFlags({ result, status, errorCode, selectedSource });
+  const reviewQuality = applyRequiredEvidenceQualityGate(
+    qualityFlags({ result, status, errorCode, selectedSource }),
+    { requiredEvidence, result, status, errorCode, selectedSource },
+  );
   const effectiveErrorCode = errorCode ?? reviewQualityPacketRecoveryErrorCode(reviewQuality);
   const sourceContentTransmission =
     effectiveSourcePacketPolicy.source_send_allowed === false
@@ -1493,6 +1917,7 @@ export function buildReviewAuditManifest({
     schema_version: REVIEW_AUDIT_MANIFEST_VERSION,
     rendered_prompt_hash: renderedPromptHash,
     selected_source: selectedSource,
+    required_evidence: requiredEvidence,
     git_identity: Object.freeze({
       remote: git.remote ?? null,
       branch: git.branch ?? null,
@@ -1617,6 +2042,7 @@ function buildCompactReviewPrompt({
     "Output requirements",
     "- First line exactly one verdict marker: \"Verdict: APPROVE\", \"Verdict: REQUEST_CHANGES\", or \"Verdict: NOT_REVIEWED\".",
     "- Review only supplied selected source, refs, commits, scope paths, and audit metadata. Missing outside tools are NOT REVIEWED, not code blockers.",
+    "- If evidence for a user-required merge, release, security, or final recommendation check is missing, verdict is NOT_REVIEWED or REQUEST_CHANGES, not APPROVE.",
     "- Do not inspect original absolute workspace paths; use supplied selected source and granted relative/add-dir paths only.",
     "- Do not call filesystem, git, search, network, or other tools to inspect original repository paths; the supplied selected source packet is the review input.",
     "- Name inspected selected file path(s). Bare numbered answers or only 'None' are invalid.",
@@ -1760,6 +2186,7 @@ export function buildReviewPrompt({
     "- Do not inspect original absolute workspace paths; use supplied selected source and granted relative/add-dir paths only.",
     "- Do not call filesystem, git, search, network, or other tools to inspect original repository paths; the supplied selected source packet is the review input.",
     "- If git, GitHub, network, filesystem, or tool access is unavailable, mark only that check as NOT REVIEWED unless the required evidence is supplied here.",
+    "- If evidence for a user-required merge, release, security, or final recommendation check is missing, the verdict must be NOT_REVIEWED or REQUEST_CHANGES, not APPROVE.",
     "- Do not report missing external tool access as a blocking code finding by itself.",
     "- Distinguish real blocking code findings from missing supplied evidence, runtime/tool limitations, and stale or unavailable external comments.",
     "- For every checklist item, report PASS, FAIL, or NOT REVIEWED.",

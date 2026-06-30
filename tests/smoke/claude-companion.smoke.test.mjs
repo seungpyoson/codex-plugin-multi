@@ -499,6 +499,53 @@ test("custom-review rejects over-budget source packets before Claude launch", ()
   }
 });
 
+test("custom-review rejects missing required evidence before Claude launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "claude-required-evidence-cwd-"));
+  fixtureSeedRepo(cwd);
+
+  const { stdout, status, dataDir } = runCompanion(
+    [
+      "run",
+      "--mode=custom-review",
+      "--foreground",
+      "--model", "claude-haiku-4-5-20251001",
+      "--cwd", cwd,
+      "--scope-paths", "seed.txt",
+      "--",
+      [
+        "Adversarial final review.",
+        "Required checks:",
+        "1. Inspect the pinned anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 token path.",
+        "2. Verify token.ts and action.yml wiring for additional_permissions.",
+      ].join("\n"),
+    ],
+    { cwd, env: { CLAUDE_MOCK_ASSERT_PROMPT_INCLUDES: "MUST_NOT_REACH_CLAUDE" } },
+  );
+  try {
+    assert.equal(status, 2);
+    const record = JSON.parse(stdout);
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "required_evidence_missing");
+    assert.match(record.error_message, /selected source packet is missing user-required evidence/);
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.deepEqual(
+      record.runtime_diagnostics?.required_evidence?.missing_required_references,
+      [
+        "token.ts",
+        "action.yml",
+      ],
+    );
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.required_evidence.missing_required_references,
+      record.runtime_diagnostics.required_evidence.missing_required_references,
+    );
+    assert.doesNotMatch(stdout, /external_review_launched|MUST_NOT_REACH_CLAUDE/);
+  } finally {
+    cleanup(dataDir);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("background custom-review rejects over-budget source packets before prompt sidecar write", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "claude-bg-source-packet-cwd-"));
   fixtureSeedRepo(cwd);

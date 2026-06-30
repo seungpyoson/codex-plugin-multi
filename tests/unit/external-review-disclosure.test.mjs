@@ -20,7 +20,7 @@ const COPIES = [
 // the inline special cases).
 const NOT_SENT_CODES = [
   "approval_scope_changed", "cache_install", "cli_contract_mismatch", "preflight_stale",
-  "prompt_too_large", "scope_failed", "spawn_failed", "oauth_inference_rejected",
+  "prompt_too_large", "required_evidence_missing", "scope_failed", "spawn_failed", "oauth_inference_rejected",
   "source_packet_too_large", "resend_confirmation_required", "not_authed", "sandbox_blocked",
   "model_unavailable", "acp_protocol_error", "usage_limited_preflight", "some_unmapped_code",
 ];

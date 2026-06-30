@@ -12,7 +12,7 @@ import { hostname, tmpdir } from "node:os";
 import { cleanGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
 import { isCodexSandbox } from "./lib/codex-env.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, requiredEvidencePreflightFailure, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import { elapsedMs } from "./lib/time.mjs";
 import { diffSourceFiles } from "./lib/diff-source.mjs";
@@ -3106,6 +3106,19 @@ function buildApprovalAuditManifest({ cfg, provider = null, mode = null, rendere
 }
 
 function sourcePacketPolicyFailureFromManifest(auditManifest) {
+  const evidenceFailure = requiredEvidencePreflightFailure(auditManifest);
+  if (evidenceFailure) {
+    return providerFailureWithDiagnostics(
+      evidenceFailure.error_code,
+      evidenceFailure.error_message,
+      null,
+      null,
+      false,
+      {
+        required_evidence: evidenceFailure.required_evidence,
+      },
+    );
+  }
   const policy = auditManifest?.source_packet_policy ?? null;
   if (!policy || policy.source_send_allowed !== false) return null;
   const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
@@ -3613,7 +3626,9 @@ function errorCauseFor(errorCode) {
   if (errorCode === "approval_required") return "approval_gate";
   if (errorCode === "config_error") return "provider_config";
   if (errorCode === "scope_failed") return "scope_resolution";
-  if (errorCode === "source_packet_too_large" || errorCode === "resend_confirmation_required") {
+  if (errorCode === "source_packet_too_large"
+    || errorCode === "required_evidence_missing"
+    || errorCode === "resend_confirmation_required") {
     return buildExternalModelFailureDiagnostic(errorCode, "external model")?.error_cause ?? "source_packet_policy";
   }
   if (errorCode === "provider_workload_blocked") {
@@ -3801,6 +3816,9 @@ function buildRuntimeDiagnostics(diagnostics, redactText = (value) => value) {
   }
   if (diagnostics.review_slot) {
     out.review_slot = diagnostics.review_slot;
+  }
+  if (diagnostics.required_evidence) {
+    out.required_evidence = diagnostics.required_evidence;
   }
   const providerWorkload = sanitizeProviderWorkloadDiagnostic(diagnostics.provider_workload, redactText);
   if (providerWorkload) {

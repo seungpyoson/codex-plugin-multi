@@ -8,7 +8,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } fro
 import { fileURLToPath } from "node:url";
 import { cleanGitEnv as cleanCanonicalGitEnv } from "./lib/git-env.mjs";
 import { GIT_BINARY_ENV, gitEnv, isGitBinaryPolicyError, resolveGitBinary } from "./lib/git-binary.mjs";
-import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, scopeResolutionReason } from "./lib/review-prompt.mjs";
+import { REVIEW_PROMPT_CONTRACT_VERSION, buildReviewAuditManifest, buildReviewPrompt, requiredEvidencePreflightFailure, scopeResolutionReason } from "./lib/review-prompt.mjs";
 import { USAGE_LIMIT_SAFE_MESSAGE, isUsageLimitDetail } from "./lib/usage-limit.mjs";
 import { elapsedMs } from "./lib/time.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
@@ -236,7 +236,9 @@ function reviewMetadataProjection(obj) {
     "selected_route",
     "fallback_reason",
     "approval_scope",
+    "source_packet_policy",
     "packet_recovery",
+    "required_evidence",
   ]) {
     if (manifest[key] !== undefined) projection[key] = manifest[key];
   }
@@ -261,6 +263,7 @@ function terminalLifecycleProjection(obj) {
     error_code: obj.error_code ?? null,
     error_message: obj.error_message ?? null,
     error_summary: obj.error_summary ?? null,
+    error_cause: obj.error_cause ?? null,
     suggested_action: obj.suggested_action ?? null,
     http_status: obj.http_status ?? null,
     external_review: obj.external_review,
@@ -1597,6 +1600,23 @@ function sourcePacketPolicyPreflight({ cfg, mode, prompt, scopeInfo, options = {
     status: "preflight_failed",
     errorCode: "source_packet_policy_preflight",
   });
+  const evidenceFailure = requiredEvidencePreflightFailure(auditManifest);
+  if (evidenceFailure) {
+    const execution = providerFailureWithDiagnostic(
+      evidenceFailure.error_code,
+      evidenceFailure.error_message,
+      null,
+      null,
+      false,
+      {
+        source_packet_policy: auditManifest.source_packet_policy ?? null,
+        packet_recovery: auditManifest.packet_recovery ?? null,
+        required_evidence: evidenceFailure.required_evidence,
+      },
+    );
+    execution.prompt = prompt;
+    return execution;
+  }
   const policy = auditManifest.source_packet_policy ?? null;
   if (!policy || policy.source_send_allowed !== false) return null;
   const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
@@ -3451,7 +3471,7 @@ function suggestedAction(errorCode, errorMessage = "", tunnelStart = null) {
 function errorCauseFor(errorCode) {
   if (errorCode === "bad_args") return "caller";
   if (errorCode === "scope_failed") return "scope_resolution";
-  if (errorCode === "source_packet_too_large" || errorCode === "resend_confirmation_required") {
+  if (errorCode === "source_packet_too_large" || errorCode === "resend_confirmation_required" || errorCode === "required_evidence_missing") {
     return buildExternalModelFailureDiagnostic(errorCode, "Grok")?.error_cause ?? "source_packet_policy";
   }
   if (errorCode === "provider_workload_blocked") {
@@ -3765,6 +3785,9 @@ function buildRecord({ cfg, mode, options, scopeInfo, execution, startedAt, ende
   }) : null;
   if (runtimeDiagnostics && safeDiagnostics?.source_packet_policy) {
     runtimeDiagnostics.source_packet_policy = safeDiagnostics.source_packet_policy;
+  }
+  if (runtimeDiagnostics && safeDiagnostics?.required_evidence) {
+    runtimeDiagnostics.required_evidence = safeDiagnostics.required_evidence;
   }
   if (packetRecovery) {
     runtimeDiagnostics ??= {};

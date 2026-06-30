@@ -345,7 +345,7 @@ function expireGlmSessionGrantRecord(dataDir, activation, expiresAt = new Date(D
 function makeMultiFileScopeWorkspace() {
   const cwd = mkdtempSync(path.join(tmpdir(), "api-reviewers-multifile-"));
   for (let i = 1; i <= 5; i += 1) {
-    const filler = `file ${i} content line ${"x".repeat(40)}\n`.repeat(26);
+    const filler = `file ${i} content line ${"x".repeat(40)}\n`.repeat(10);
     writeFileSync(path.join(cwd, `f${i}.txt`), filler);
   }
   writeFileSync(path.join(cwd, "seed.txt"), "hello from selected scope\n");
@@ -7497,6 +7497,84 @@ test("direct API reviewers approval-request rejects rendered prompt over provide
   assert.equal(parsed.error_code, "prompt_too_large");
   assert.match(parsed.error_message, /prompt_too_large:/);
   assert.doesNotMatch(result.stdout, /external_review_approval_request/);
+  assert.doesNotMatch(result.stdout, /hello from selected scope/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API reviewers approval-request blocks approvals when required evidence is missing", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "approval-request",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", [
+      "Adversarial final review.",
+      "Required checks:",
+      "1. Inspect the pinned anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 token path.",
+      "2. Verify token.ts and action.yml wiring for additional_permissions.",
+    ].join("\n"),
+  ], {
+    cwd,
+    env: {
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.provider, "deepseek");
+  assert.equal(parsed.status, "required_evidence_missing");
+  assert.equal(parsed.error_code, "required_evidence_missing");
+  assert.match(parsed.error_message, /required_evidence_missing:/);
+  assert.deepEqual(
+    parsed.runtime_diagnostics?.required_evidence?.missing_required_references,
+    [
+      "token.ts",
+      "action.yml",
+    ],
+  );
+  assert.doesNotMatch(result.stdout, /external_review_approval_request/);
+  assert.doesNotMatch(result.stdout, /hello from selected scope/);
+  assert.doesNotMatch(result.stdout, /secret-test-value/);
+});
+
+test("direct API reviewers run uses canonical cause when required evidence is missing", async () => {
+  const cwd = makeWorkspace();
+  const result = await run([
+    "run",
+    "--provider", "deepseek",
+    "--mode", "custom-review",
+    "--foreground",
+    "--scope", "custom",
+    "--scope-paths", "seed.txt",
+    "--prompt", [
+      "Adversarial final review.",
+      "Required checks:",
+      "1. Verify token.ts and action.yml wiring for additional_permissions.",
+    ].join("\n"),
+  ], {
+    cwd,
+    env: {
+      API_REVIEWERS_TEST_AUTO_APPROVAL: "0",
+      DEEPSEEK_API_KEY: "secret-test-value",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const parsed = parseJson(result.stdout);
+  assert.equal(parsed.status, "failed");
+  assert.equal(parsed.error_code, "required_evidence_missing");
+  assert.equal(parsed.error_cause, "pre_send_required_evidence_gap");
+  assert.deepEqual(
+    parsed.runtime_diagnostics?.required_evidence?.missing_required_references,
+    [
+      "token.ts",
+      "action.yml",
+    ],
+  );
   assert.doesNotMatch(result.stdout, /hello from selected scope/);
   assert.doesNotMatch(result.stdout, /secret-test-value/);
 });

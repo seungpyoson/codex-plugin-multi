@@ -7,6 +7,7 @@ const CANCEL_SIGNALS = new Set(["SIGTERM", "SIGKILL", "SIGINT", "SIGHUP"]);
 const FINALIZATION_FAILED_PREFIX = "finalization_failed:";
 const APPROVAL_REQUIRED_PREFIX = "approval_required:";
 const SOURCE_PACKET_TOO_LARGE_PREFIX = "source_packet_too_large:";
+const REQUIRED_EVIDENCE_MISSING_PREFIX = "required_evidence_missing:";
 const RESEND_CONFIRMATION_REQUIRED_PREFIX = "resend_confirmation_required:";
 const PROVIDER_WORKLOAD_BLOCKED_PREFIX = `${PROVIDER_WORKLOAD_BLOCKED_CODE}:`;
 const GIT_BINARY_POLICY_PREFIX = "RELAY_GIT_BINARY ";
@@ -127,6 +128,13 @@ export function classifyCompanionErrorMessage(message, options = {}) {
       status: "failed",
       error_code: "source_packet_too_large",
       error_message: text.slice(SOURCE_PACKET_TOO_LARGE_PREFIX.length).trim(),
+    };
+  }
+  if (text.startsWith(REQUIRED_EVIDENCE_MISSING_PREFIX)) {
+    return {
+      status: "failed",
+      error_code: "required_evidence_missing",
+      error_message: text.slice(REQUIRED_EVIDENCE_MISSING_PREFIX.length).trim(),
     };
   }
   if (text.startsWith(RESEND_CONFIRMATION_REQUIRED_PREFIX)) {

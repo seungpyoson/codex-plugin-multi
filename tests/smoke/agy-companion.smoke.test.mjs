@@ -643,6 +643,52 @@ test("agy custom-review blocks same-packet resend after a failed source-sent slo
   }
 });
 
+test("agy custom-review rejects missing required evidence before AGY launch", () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), "agy-required-evidence-cwd-"));
+  const binary = writeAgyCaptureMock(cwd);
+  const capturePath = path.join(cwd, "agy-required-evidence-capture.json");
+  writeFileSync(path.join(cwd, "seed.txt"), "selected AGY source only\n", "utf8");
+  const prompt = [
+    "Adversarial re-review.",
+    "Required checks:",
+    "1. Inspect the pinned anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 token path.",
+    "2. Verify token.ts and action.yml wiring for additional_permissions.",
+  ].join("\n");
+  const { stdout, stderr, status, dataDir } = runCompanion(
+    ["run", "--mode", "custom-review", "--foreground", "--lifecycle-events", "jsonl",
+     "--binary", binary, "--cwd", cwd, "--scope-paths", "seed.txt", "--timeout-ms", "12345",
+     "--", prompt],
+    { cwd, env: { RELAY_TEST_CAPTURE_OUT: capturePath } },
+  );
+  try {
+    assert.equal(status, 2, `exit ${status}: ${stderr}\n${stdout}`);
+    assert.equal(existsSync(capturePath), false, "AGY mock must not spawn for missing required evidence");
+    const events = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(events.some((event) => event.event === "external_review_launched"), false);
+    assert.equal(events.length, 1);
+    const record = events[0];
+    assert.equal(record.status, "failed");
+    assert.equal(record.error_code, "required_evidence_missing");
+    assert.equal(record.error_cause, "pre_send_required_evidence_gap");
+    assert.equal(record.external_review.source_content_transmission, "not_sent");
+    assert.equal(record.runtime_diagnostics.required_evidence.has_missing_required_evidence, true);
+    assert.deepEqual(
+      record.runtime_diagnostics.required_evidence.missing_required_references,
+      [
+        "token.ts",
+        "action.yml",
+      ],
+    );
+    assert.deepEqual(
+      record.review_metadata.audit_manifest.required_evidence,
+      record.runtime_diagnostics.required_evidence,
+    );
+  } finally {
+    rmTree(dataDir);
+    rmTree(cwd);
+  }
+});
+
 test("agy custom-review permits explicit large source packet override", () => {
   const cwd = mkdtempSync(path.join(tmpdir(), "agy-over-budget-override-cwd-"));
   const binary = writeAgyCaptureMock(cwd);

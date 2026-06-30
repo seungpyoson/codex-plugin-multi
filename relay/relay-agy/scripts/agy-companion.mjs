@@ -45,6 +45,7 @@ import {
   buildReviewAuditManifest,
   buildReviewPrompt,
   buildSelectedSourcePromptBlock,
+  requiredEvidencePreflightFailure,
   scopeResolutionReason,
   selectedSourceFilesFromPrompt,
 } from "./lib/review-prompt.mjs";
@@ -769,6 +770,37 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
     status: "preflight_failed",
     errorCode: null,
   });
+  const evidenceFailure = requiredEvidencePreflightFailure(preflightManifest);
+  if (evidenceFailure) {
+    const execution = {
+      preflight: true,
+      exitCode: null,
+      parsed: null,
+      pidInfo: null,
+      agySessionId: null,
+      stdout: "",
+      stderr: "",
+      errorMessage: evidenceFailure.error_message,
+      runtimeDiagnostics: {
+        required_evidence: evidenceFailure.required_evidence,
+      },
+    };
+    execution.reviewAuditManifest = buildAuditManifest({
+      promptText: prompt,
+      selectedFiles,
+      timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+      invocation,
+      result: "",
+      status: "failed",
+      errorCode: evidenceFailure.error_code,
+      pidInfo: null,
+    });
+    execution.runtimeDiagnostics = sourcePacketRuntimeDiagnosticsForManifest(
+      execution.reviewAuditManifest,
+      execution.runtimeDiagnostics,
+    );
+    return execution;
+  }
   const policy = preflightManifest?.source_packet_policy ?? null;
   if (!policy || policy.source_send_allowed !== false) return null;
   const errorCode = policy.source_packet_policy_error_code ?? "source_packet_policy_blocked";
@@ -807,6 +839,9 @@ function sourcePacketRuntimeDiagnosticsForManifest(manifest, base = null) {
   }
   if (manifest?.packet_recovery && typeof manifest.packet_recovery === "object") {
     diagnostics.packet_recovery = manifest.packet_recovery;
+  }
+  if (manifest?.required_evidence && typeof manifest.required_evidence === "object") {
+    diagnostics.required_evidence = manifest.required_evidence;
   }
   return Object.keys(diagnostics).length > 0 ? diagnostics : null;
 }

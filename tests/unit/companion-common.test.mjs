@@ -284,10 +284,15 @@ test("shared companion lifecycle jsonl terminal output is redacted projection", 
     cwd: "/tmp/privacy-workspace",
     workspace_root: "/tmp/privacy-workspace",
     status: "completed",
+    error_cause: "review_quality_failed",
     result: "Verdict: APPROVE\nSOURCE_BODY_SENTINEL_DO_NOT_PERSIST",
     runtime_diagnostics: {
       stdout_log: "raw stdout must not project",
       stderr_log: "raw stderr must not project",
+      required_evidence: {
+        has_missing_required_evidence: true,
+        missing_required_references: ["token.ts"],
+      },
     },
     structured_output: {
       verdict: "APPROVE",
@@ -303,6 +308,10 @@ test("shared companion lifecycle jsonl terminal output is redacted projection", 
         selected_source: {
           total_files: 1,
           total_bytes: 64,
+        },
+        required_evidence: {
+          has_missing_required_evidence: true,
+          missing_required_references: ["token.ts"],
         },
       },
     },
@@ -328,6 +337,7 @@ test("shared companion lifecycle jsonl terminal output is redacted projection", 
   assert.equal(projected.event, "external_review_terminal");
   assert.equal(projected.job_id, "job-privacy");
   assert.equal(projected.status, "completed");
+  assert.equal(projected.error_cause, "review_quality_failed");
   assert.equal(projected.external_review.source_content_transmission, "sent");
   assert.equal(projected.review_quality.failed_review_slot, false);
   assert.equal(projected.review_metadata.audit_manifest.rendered_prompt_hash, "prompt-hash");
@@ -335,8 +345,15 @@ test("shared companion lifecycle jsonl terminal output is redacted projection", 
     total_files: 1,
     total_bytes: 64,
   });
+  assert.deepEqual(projected.review_metadata.audit_manifest.required_evidence, {
+    has_missing_required_evidence: true,
+    missing_required_references: ["token.ts"],
+  });
+  assert.deepEqual(projected.runtime_diagnostics.required_evidence, {
+    has_missing_required_evidence: true,
+    missing_required_references: ["token.ts"],
+  });
   assert.equal(Object.hasOwn(projected, "result"), false);
-  assert.equal(Object.hasOwn(projected, "runtime_diagnostics"), false);
   assert.equal(Object.hasOwn(projected, "structured_output"), false);
 });
 
