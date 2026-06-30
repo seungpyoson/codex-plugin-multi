@@ -109,6 +109,66 @@ export function canReadDocument(user, document) {
     expected_findings: Object.freeze([]),
     expected_result: "No blocking findings. Minor non-blocking concerns or test gaps are acceptable; invented blockers are false positives.",
   }),
+  Object.freeze({
+    id: "packet4_relay_governance",
+    files: Object.freeze([
+      Object.freeze({
+        path: "packet4_relay_governance/.github/workflows/claude-code-review.yml",
+        source: `name: Claude Code Review
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Claude Code review
+        uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464
+        with:
+          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            contents: read
+            contents: write
+          claude_args: >-
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*)"
+`,
+      }),
+      Object.freeze({
+        path: "packet4_relay_governance/scripts/verify_ai_review_governance.py",
+        source: `from pathlib import Path
+
+
+WORKFLOW = Path(".github/workflows/claude-code-review.yml")
+
+
+def verify_claude_app_token_cap() -> list[str]:
+    text = WORKFLOW.read_text()
+    findings = []
+    for snippet in ("additional_permissions: |", "contents: read"):
+        if snippet not in text:
+            findings.append(
+                "Claude review must cap the GitHub App token contents permission to read"
+            )
+    return findings
+
+
+def main() -> int:
+    findings = verify_claude_app_token_cap()
+    if findings:
+        print("\\n".join(findings))
+        return 1
+    return 0
+`,
+      }),
+    ]),
+    expected_findings: Object.freeze([
+      "The duplicate contents key bypasses the governance check: the workflow contains contents: read and later contents: write, so the effective permission can become write while the verifier still passes because it only checks for the read snippet.",
+    ]),
+    expected_result: "REQUEST CHANGES with the duplicate additional_permissions contents-key bypass.",
+  }),
 ]);
 
 export const MANUAL_RELAY_JUDGE_CONTEXT = [
@@ -127,7 +187,7 @@ export function buildManualRelayPacketPrompt(packetId) {
   if (!packet) throw new Error(`unknown A/B review packet: ${packetId}`);
   const files = packet.files.map((file) => [
     `File: ${file.path}`,
-    "```js",
+    `\`\`\`${languageForPath(file.path)}`,
     file.source.trimEnd(),
     "```",
   ].join("\n")).join("\n\n");
@@ -136,4 +196,10 @@ export function buildManualRelayPacketPrompt(packetId) {
     "",
     files,
   ].join("\n");
+}
+
+function languageForPath(path) {
+  if (/\.ya?ml$/i.test(path)) return "yaml";
+  if (/\.py$/i.test(path)) return "python";
+  return "js";
 }

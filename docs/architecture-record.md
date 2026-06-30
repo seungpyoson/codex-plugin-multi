@@ -60,9 +60,15 @@ from being treated as a successful external review.
 
 The seeded A/B quality fixture is source-controlled in
 `scripts/lib/review-quality-ab-fixture.mjs` and exposed through
-`scripts/review-quality-ab-fixture.mjs`. Reviewer prompts and judge-only answer
-keys are deliberately separate so manual relay and plugin runs can use the same
-review contract without leaking expected findings into the model prompt.
+`scripts/review-quality-ab-fixture.mjs`. Collected reviewer outputs are scored
+with `scripts/review-quality-evaluator.mjs`. Reviewer prompts and judge-only
+answer keys are deliberately separate so manual relay and plugin runs can use
+the same review contract without leaking expected findings into the model
+prompt.
+`packet4_relay_governance` encodes the PR-1094 class of discrepancy: a manual
+relay caught a duplicate `contents` permission bypass that a plugin-mediated
+approval missed. That packet must remain usable as both a reviewer prompt and a
+judge fixture for parity checks.
 
 Provider panels are rendered from JobRecords with `scripts/review-panel.mjs`.
 The panel row is the user-facing reliability surface: provider, Job ID,

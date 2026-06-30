@@ -10,6 +10,7 @@ import {
   buildReviewAuditManifest,
   buildReviewPrompt,
   buildSelectedSourcePromptBlock,
+  requiredEvidencePreflightFailure,
   scopeResolutionReason,
   selectedSourceFilesFromPrompt,
 } from "../../scripts/lib/review-prompt.mjs";
@@ -26,7 +27,7 @@ const REVIEW_PROMPT_MODULES = Object.freeze([
 
 async function loadReviewPromptModule(file) {
   return file === "scripts/lib/review-prompt.mjs"
-    ? { buildReviewAuditManifest }
+    ? { buildReviewAuditManifest, requiredEvidencePreflightFailure }
     : await import(pathToFileURL(resolve(file)).href);
 }
 
@@ -82,6 +83,433 @@ test("buildReviewAuditManifest projects provider-neutral review slot disposition
   assert.match(manifest.review_slot.retry_fingerprint, /^[a-f0-9]{64}$/);
   assert.match(manifest.review_slot.request_settings_hash, /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(manifest.review_slot).includes("secret"), false);
+});
+
+test("buildReviewAuditManifest fails approvals when required prompt evidence is outside the selected packet", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: [
+      "Adversarial re-review.",
+      "Files to inspect:",
+      "- .github/workflows/claude-code-review.yml",
+      "- scripts/verify_ai_review_governance.py",
+      "Required checks:",
+      "1. Inspect the pinned anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 token path.",
+      "2. Verify token.ts and action.yml wiring for additional_permissions.",
+    ].join("\n"),
+    sourceFiles: [
+      { path: ".github/workflows/claude-code-review.yml", text: "name: Claude\n" },
+      { path: "scripts/verify_ai_review_governance.py", text: "print('ok')\n" },
+    ],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I inspected the two selected files.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(
+    manifest.required_evidence.missing_required_references,
+    [
+      "token.ts",
+      "action.yml",
+    ],
+  );
+  assert.equal(manifest.required_evidence.has_missing_required_evidence, true);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+  assert.equal(manifest.review_slot.verdict, "failed_slot");
+});
+
+test("buildReviewAuditManifest does not demote request-changes when required prompt evidence is missing", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: [
+      "Required checks:",
+      "1. Inspect token.ts for the app-token exchange path.",
+    ].join("\n"),
+    sourceFiles: [
+      { path: ".github/workflows/claude-code-review.yml", text: "name: Claude\n" },
+      { path: "scripts/verify_ai_review_governance.py", text: "print('ok')\n" },
+    ],
+    result: [
+      "Verdict: REQUEST_CHANGES",
+      "Blocking findings: .github/workflows/claude-code-review.yml lacks the required app-token cap.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I inspected the selected workflow and verifier files.",
+      "The selected workflow grants id-token write for an app-token exchange but does not pass the required contents read cap, so the token request can still retain content write capability through the app installation defaults.",
+      "I cannot verify token.ts because token.ts is not supplied in the selected packet, but the selected workflow and verifier are enough to request changes.",
+      "The selected verifier file also lacks a regression check for that cap, so a future edit could remove the control without failing governance.",
+      "This is a concrete request-changes result based on the selected source packet; the missing external action evidence remains recorded separately but is not what makes this result fail.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.required_evidence.has_missing_required_evidence, true);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), false);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+  assert.equal(manifest.review_slot.verdict, "request_changes");
+});
+
+test("required evidence matching does not satisfy path refs with a different same-basename file", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: [
+      "Required checks:",
+      "1. Verify scripts/verify_ai_review_governance.py catches weakening of additional_permissions.",
+    ].join("\n"),
+    sourceFiles: [
+      { path: "tests/fixtures/verify_ai_review_governance.py", text: "print('wrong file')\n" },
+    ],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I inspected the selected fixture file.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(
+    manifest.required_evidence.missing_required_references,
+    ["scripts/verify_ai_review_governance.py"],
+  );
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("required evidence detection covers bare markdown and CSS file references", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: [
+      "Required checks:",
+      "1. Verify README.md before approving the release note claim.",
+      "2. Check style.css before approving the UI regression claim.",
+    ].join("\n"),
+    sourceFiles: [
+      { path: "src/app.js", text: "console.log('selected source')\n" },
+    ],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: none.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I inspected only src/app.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(
+    manifest.required_evidence.missing_required_references,
+    ["README.md", "style.css"],
+  );
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("required evidence ignores technology names in check prose", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: [
+      "Required checks:",
+      "1. Verify Node.js 20 compatibility before approving.",
+      "2. Confirm `Node.js` and `Next.js` runtime compatibility.",
+    ].join("\n"),
+    sourceFiles: [
+      { path: "scripts/app.mjs", text: "export const value = 1;\n" },
+    ],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: No blocking findings in scripts/app.mjs.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I inspected scripts/app.mjs.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.required_evidence.required_references, []);
+  assert.equal(manifest.required_evidence.has_missing_required_evidence, false);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), false);
+});
+
+test("required evidence ignores filename-like refs embedded in selected source", () => {
+  const selectedSource = buildSelectedSourcePromptBlock([
+    {
+      path: "scripts/app.mjs",
+      text: [
+        "// must validate config.yaml before write",
+        "throw new Error('must provide settings.json');",
+        "return check(opts); // verify against lib/schema.json",
+      ].join("\n"),
+    },
+  ], {
+    delimiterPrefix: "CLAUDE REVIEW FILE",
+  });
+  const prompt = buildReviewPrompt({
+    provider: "Claude Code",
+    mode: "custom-review",
+    repository: "owner/repo",
+    scope: "custom",
+    userPrompt: "Review the selected file for correctness.",
+    extraInstructions: [selectedSource],
+  });
+
+  const manifest = buildReviewAuditManifest({
+    prompt,
+    sourceFiles: selectedSourceFilesFromPrompt(prompt, { delimiterPrefix: "CLAUDE REVIEW FILE" }),
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: No blocking findings in scripts/app.mjs.",
+      "Non-blocking concerns: No non-blocking concerns in scripts/app.mjs.",
+      "Inspection status: I inspected scripts/app.mjs.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.required_evidence.missing_required_references, []);
+  assert.equal(manifest.required_evidence.has_missing_required_evidence, false);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), false);
+});
+
+test("required evidence does not treat action refs as local source files", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: [
+      "Required checks:",
+      "1. Verify the fix in anthropics/claude-code-action@main.",
+      "2. Verify the fix in seungpyoson/relay@c4bbb2ff1a8d51624f18b7ba3cc69a97de8549be.",
+      "3. Verify the fix in owner/repo.js@abc1234.",
+    ].join("\n"),
+    sourceFiles: [
+      { path: "scripts/app.mjs", text: "export const app = true;\n" },
+    ],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: No blocking findings in scripts/app.mjs.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I inspected scripts/app.mjs.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.required_evidence.required_references, []);
+  assert.equal(manifest.required_evidence.has_missing_required_evidence, false);
+});
+
+test("focus files section is treated as required source evidence", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: [
+      "Adversarial review.",
+      "",
+      "Focus files:",
+      "- scripts/lib/review-prompt.mjs",
+      "- tests/unit/review-prompt.test.mjs",
+      "",
+      "Output format:",
+      "Blocking findings first.",
+    ].join("\n"),
+    sourceFiles: [
+      { path: "scripts/lib/review-prompt.mjs", text: "export const value = 1;\n" },
+    ],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: No blocking findings in scripts/lib/review-prompt.mjs.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I inspected scripts/lib/review-prompt.mjs.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(
+    manifest.required_evidence.missing_required_references,
+    ["tests/unit/review-prompt.test.mjs"],
+  );
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("approve must cite each required selected file", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: [
+      "Focus files:",
+      "- scripts/a.js",
+      "- scripts/b.js",
+    ].join("\n"),
+    sourceFiles: [
+      { path: "scripts/a.js", text: "export const a = 1;\n" },
+      { path: "scripts/b.js", text: "export const b = 2;\n" },
+    ],
+    result: [
+      "Verdict: APPROVE",
+      "Blocking findings: No blocking findings in scripts/a.js.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I inspected scripts/a.js.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.deepEqual(manifest.required_evidence.missing_required_references, []);
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_not_cited"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+  assert.equal(manifest.review_slot.verdict, "failed_slot");
+});
+
+test("approve citation requires path-token boundaries for required evidence refs", () => {
+  for (const { name, promptRef, selectedPath, bogusCitation } of [
+    {
+      name: "bare basename",
+      promptRef: "a.js",
+      selectedPath: "scripts/a.js",
+      bogusCitation: "data.js",
+    },
+    {
+      name: "path ref",
+      promptRef: "scripts/a.js",
+      selectedPath: "scripts/a.js",
+      bogusCitation: "not-scripts/a.js",
+    },
+  ]) {
+    const manifest = buildReviewAuditManifest({
+      prompt: [
+        "Focus files:",
+        `- ${promptRef}`,
+      ].join("\n"),
+      sourceFiles: [
+        { path: selectedPath, text: "export const value = 1;\n" },
+      ],
+      result: [
+        "Verdict: APPROVE",
+        `Blocking findings: No blocking findings in ${bogusCitation}.`,
+        "Non-blocking concerns: none.",
+        `Inspection status: I inspected ${bogusCitation}.`,
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.required_evidence.missing_required_references, [], name);
+    assert.equal(
+      manifest.review_quality.semantic_failure_reasons.includes("required_evidence_not_cited"),
+      true,
+      name,
+    );
+    assert.equal(manifest.review_quality.failed_review_slot, true, name);
+    assert.equal(manifest.review_slot.verdict, "failed_slot", name);
+  }
+});
+
+test("request-changes verifier bypass finding remains a usable review", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: [
+      "Required checks:",
+      "1. Verify scripts/verify_ai_review_governance.py catches weakened additional_permissions.",
+    ].join("\n"),
+    sourceFiles: [
+      { path: "scripts/verify_ai_review_governance.py", text: "print('ok')\n" },
+    ],
+    result: [
+      "Verdict: REQUEST_CHANGES",
+      "Blocking findings:",
+      "- scripts/verify_ai_review_governance.py has a governance verifier bypass: duplicate contents keys can be bypassed because the later contents: write wins while the verifier still sees contents: read.",
+      "Non-blocking concerns: none.",
+      "Inspection status: I inspected scripts/verify_ai_review_governance.py.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("unresolved_verifier_bypass"), false);
+  assert.equal(manifest.review_quality.failed_review_slot, false);
+  assert.equal(manifest.review_slot.verdict, "request_changes");
+});
+
+test("required evidence provider copies enforce explicit evidence and preflight diagnostics", async () => {
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const {
+      buildReviewAuditManifest: targetBuildReviewAuditManifest,
+      requiredEvidencePreflightFailure: targetRequiredEvidencePreflightFailure,
+    } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: [
+        "Selected files:",
+        "This is prose from the user prompt, not a rendered selected-source block.",
+        "You must confirm src/cli.ts does not regress.",
+        "Files to inspect:",
+        "- README.md",
+        "- src/App.tsx",
+        "Required checks:",
+        "1. Verify `src/App.tsx`, README.md, token.ts, owner/repo.js@abc1234, and Node.js compatibility.",
+        "2. Optional config.yaml only if needed.",
+        "Output format:",
+        "Blocking findings first.",
+      ].join("\n"),
+      sourceFiles: [
+        { path: "README.md", text: "# Relay\n" },
+        { path: "src/App.tsx", text: "export function App() { return null; }\n" },
+        { path: "src/cli.ts", text: "export const cli = true;\n" },
+      ],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: No blocking findings in README.md, src/App.tsx, or src/cli.ts.",
+        "Non-blocking concerns: none.",
+        "Inspection status: I inspected README.md, src/App.tsx, and src/cli.ts.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(
+      manifest.required_evidence.required_references,
+      ["src/cli.ts", "README.md", "src/App.tsx", "token.ts"],
+      name,
+    );
+    assert.deepEqual(manifest.required_evidence.missing_required_references, ["token.ts"], name);
+    assert.equal(manifest.required_evidence.has_missing_required_evidence, true, name);
+    assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), true, name);
+
+    const preflight = targetRequiredEvidencePreflightFailure(manifest);
+    assert.equal(preflight.error_code, "required_evidence_missing", name);
+    assert.match(preflight.error_message, /token\.ts/, name);
+    assert.equal(targetRequiredEvidencePreflightFailure({ required_evidence: { has_missing_required_evidence: false } }), null, name);
+  }
+});
+
+test("required evidence provider copies require cited selected files for approvals", async () => {
+  for (const [name, file] of REVIEW_PROMPT_MODULES) {
+    const { buildReviewAuditManifest: targetBuildReviewAuditManifest } = await loadReviewPromptModule(file);
+    const manifest = targetBuildReviewAuditManifest({
+      prompt: [
+        "Focus files:",
+        "- scripts/a.js",
+        "- scripts/b.js",
+      ].join("\n"),
+      sourceFiles: [
+        { path: "scripts/a.js", text: "export const a = 1;\n" },
+        { path: "scripts/b.js", text: "export const b = 2;\n" },
+      ],
+      result: [
+        "Verdict: APPROVE",
+        "Blocking findings: No blocking findings in scripts/a.js or data.js.",
+        "Non-blocking concerns: none.",
+        "Inspection status: I inspected scripts/a.js and data.js.",
+      ].join("\n"),
+      status: "completed",
+      errorCode: null,
+    });
+
+    assert.deepEqual(manifest.required_evidence.missing_required_references, [], name);
+    assert.deepEqual(manifest.review_quality.required_evidence_uncited_references, ["scripts/b.js"], name);
+    assert.equal(
+      manifest.review_quality.semantic_failure_reasons.includes("required_evidence_not_cited"),
+      true,
+      name,
+    );
+    assert.equal(manifest.review_quality.failed_review_slot, true, name);
+  }
 });
 
 test("buildReviewAuditManifest fail-closes third same-packet retry before source send", () => {
@@ -764,6 +1192,7 @@ function assertReviewPromptContract(targetBuildReviewPrompt = buildReviewPrompt,
   assert.match(prompt, /Do not inspect original absolute workspace paths/);
   assert.match(prompt, /git, GitHub, network, filesystem, or tool access is unavailable/);
   assert.match(prompt, /mark only that check as NOT REVIEWED/);
+  assert.match(prompt, /If evidence for a user-required merge, release, security, or final recommendation check is missing, the verdict must be NOT_REVIEWED or REQUEST_CHANGES, not APPROVE/);
   assert.match(prompt, /Do not report missing external tool access as a blocking code finding by itself/);
   assert.match(prompt, /runtime\/tool limitations/);
   assert.match(prompt, /Blocking findings first/);
@@ -805,6 +1234,7 @@ function assertCompactReviewPromptContract(targetBuildReviewPrompt = buildReview
   assert.match(prompt, /Verdict: NOT_REVIEWED/);
   assert.match(prompt, /Review only supplied selected source/);
   assert.match(prompt, /Do not inspect original absolute workspace paths/);
+  assert.match(prompt, /If evidence for a user-required merge, release, security, or final recommendation check is missing, verdict is NOT_REVIEWED or REQUEST_CHANGES, not APPROVE/);
   assert.match(prompt, /Name inspected selected file path/);
   assert.match(prompt, /Blocking findings/);
   assert.match(prompt, /Non-blocking concerns/);
@@ -1819,6 +2249,62 @@ test("review audit manifest still fails NOT REVIEWED checklist rows that deny se
 
   assert.equal(manifest.review_quality.checklist_items_seen, 1);
   assert.equal(manifest.review_quality.semantic_failure_reasons.includes("not_reviewed"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest fails approvals that lack required action evidence", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "scripts/verify_ai_review_governance.py", text: "print('ok')\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "",
+      "## Blocking findings",
+      "None.",
+      "",
+      "## Non-blocking concerns",
+      "None.",
+      "",
+      "## Required-check analysis",
+      "- Pinned action token behavior: NOT REVIEWED. The action's own source is not in scope here, so I cannot read token.ts or action.yml and cannot definitively verify the app-token permission request.",
+      "- Current source files were inspected and the visible governance script appears internally consistent.",
+      "- Additional context: the selected packet was read carefully, but the required upstream action evidence was absent from the packet. A manual relay with that action source could make a stronger claim; this plugin result cannot count as a completed approval for that required check.",
+      "",
+      "## Checklist",
+      "1. Verify exact base/head refs and commits before judging the diff. — PASS.",
+      "2. Review only the declared scope and list any scope gaps as NOT REVIEWED. — PASS.",
+      "3. Evaluate correctness bugs, security risks, regressions, and missing tests. — PASS for supplied source only.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("required_evidence_missing"), true);
+  assert.equal(manifest.review_quality.failed_review_slot, true);
+});
+
+test("review audit manifest fails approvals that downgrade verifier bypasses to non-blocking", () => {
+  const manifest = buildReviewAuditManifest({
+    prompt: "rendered prompt",
+    sourceFiles: [{ path: "scripts/verify_ai_review_governance.py", text: "print('ok')\n" }],
+    result: [
+      "Verdict: APPROVE",
+      "",
+      "## Blocking findings",
+      "None.",
+      "",
+      "## Non-blocking concerns",
+      "- Duplicate-key bypass of the additional_permissions cap: a block containing contents: read followed by contents: write resolves to contents: write, while the governance verifier would not catch it. This is a hardening note, not an active gap.",
+      "",
+      "## Claims verified",
+      "The selected source was inspected and the current exact file looks fine. The review still reports that a realistic governance bypass exists, so the approval cannot be treated as equivalent to a manual relay that would make that bypass a blocking finding.",
+      "This extra prose keeps the review substantive enough that the failure reason is the unresolved verifier bypass, not a shallow-output fallback.",
+    ].join("\n"),
+    status: "completed",
+    errorCode: null,
+  });
+
+  assert.equal(manifest.review_quality.semantic_failure_reasons.includes("unresolved_verifier_bypass"), true);
   assert.equal(manifest.review_quality.failed_review_slot, true);
 });
 

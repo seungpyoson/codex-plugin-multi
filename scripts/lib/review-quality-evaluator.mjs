@@ -67,6 +67,8 @@ const BLOCKING_SECTION_STOP_HEADINGS = new Set([
   "non blocking concerns",
   "non-blocking findings",
   "non blocking findings",
+  "non-blocking risks",
+  "non blocking risks",
   "suggestions",
   "minor issues",
   "checklist",
@@ -133,18 +135,77 @@ function packet3Findings(output) {
   ];
 }
 
+function packet4Findings(output) {
+  const issueFound = packet4DuplicateContentsBypassFound(output);
+  return [
+    finding(
+      "duplicate_contents_key_bypass",
+      issueFound && packet4TreatsBypassAsBlocking(output),
+    ),
+  ];
+}
+
+function packet4DuplicateContentsBypassFound(output) {
+  const squashed = compact(output).toLowerCase();
+  const mentionsDuplicateContents = (
+    /\bduplicate\b/.test(squashed)
+    && /\bcontents\b/.test(squashed)
+  ) || (
+    /contents\s*:\s*read/.test(squashed)
+    && /contents\s*:\s*write/.test(squashed)
+  );
+  const mentionsEffectiveWrite = (
+    /\b(later|last|second|subsequent)\b/.test(squashed)
+    && /\b(wins|overrides|takes effect|effective|resolves?)\b/.test(squashed)
+    && /\bwrite\b/.test(squashed)
+  ) || /\beffective (?:permission|contents(?: permission)?) (?:can become|becomes|is) write\b/.test(squashed);
+  const mentionsVerifierBypass = (
+    /\b(verifier|verify_ai_review_governance|governance)\b/.test(squashed)
+    && /\b(pass|passes|bypass|miss|misses|not catch|does not catch|substring|snippet|presence)\b/.test(squashed)
+    && /contents\s*:\s*read/.test(squashed)
+  );
+  return mentionsDuplicateContents && mentionsEffectiveWrite && mentionsVerifierBypass;
+}
+
+function firstReviewVerdict(output) {
+  for (const line of text(output).split(/\r?\n/)) {
+    const match = line.match(/\bverdict\s*:\s*([^\r\n]+)/i);
+    if (!match) continue;
+    const value = compact(match[1]).toLowerCase();
+    if (/\b(?:do\s+not\s+approve|not\s+approved?|disapprove(?:d)?)\b/.test(value)) return "reject";
+    if (/\bapprove(?:d)?\b/.test(value)) return "approve";
+    if (/\brequest[-_\s]?changes?\b/.test(value)) return "request_changes";
+    if (/\breject(?:ed)?\b/.test(value)) return "reject";
+    if (/\bfail(?:ed)?\b/.test(value)) return "fail";
+    if (/\bnot[-_\s]?reviewed\b/.test(value)) return "not_reviewed";
+    return "other";
+  }
+  return null;
+}
+
+function packet4TreatsBypassAsBlocking(output) {
+  const blockingBody = blockingSectionBody(output);
+  const bypassInBlocking = Boolean(blockingBody && packet4DuplicateContentsBypassFound(blockingBody));
+  if (!bypassInBlocking) return false;
+  const verdict = firstReviewVerdict(output);
+  if (["request_changes", "reject", "fail", "not_reviewed"].includes(verdict)) return true;
+  return false;
+}
+
 const PACKET_FINDERS = Object.freeze({
   packet1_correctness: packet1Findings,
   packet2_security: packet2Findings,
   packet3_clean: packet3Findings,
+  packet4_relay_governance: packet4Findings,
 });
 
 /**
  * Evaluates one A/B seeded review packet against its expected findings.
  *
- * Supported packet names are packet1_correctness, packet2_security, and
- * packet3_clean. The returned object reports found/missing seeded findings and
- * whether the clean packet received an invented blocking finding.
+ * Supported packet names are packet1_correctness, packet2_security,
+ * packet3_clean, and packet4_relay_governance. The returned object reports
+ * found/missing seeded findings and whether the clean packet received an
+ * invented blocking finding.
  */
 export function evaluateSeededReviewPacket({ packet, output }) {
   if (!Object.hasOwn(PACKET_FINDERS, packet)) {

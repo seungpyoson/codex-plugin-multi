@@ -47,6 +47,14 @@ export const EXTERNAL_MODEL_FAILURE_CLASSES = Object.freeze([
       "Treat this review slot as not launched. Narrow or shard the source packet so the rendered prompt fits within the CLI argument-size limit, then retry. The selected source was not sent.",
   }),
   Object.freeze({
+    error_code: "required_evidence_missing",
+    category: "source_packet_policy",
+    error_cause: "pre_send_required_evidence_gap",
+    error_summary: "The external model review was blocked before launch because the selected source packet did not include evidence required by the review prompt.",
+    suggested_action:
+      "Treat this review slot as not launched. Include the required evidence in the selected source packet, narrow the prompt to the provided source, or run a manual relay that explicitly supplies the missing evidence.",
+  }),
+  Object.freeze({
     error_code: "cli_contract_mismatch",
     category: "cli_contract",
     error_cause: "cli_command_surface_mismatch",
