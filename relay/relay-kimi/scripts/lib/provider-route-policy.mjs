@@ -520,6 +520,23 @@ function sourcePacketBudgetBytes(providerCapabilities = {}, routeStep = null) {
   return parsed;
 }
 
+function renderedPromptTransportCapability(providerCapabilities = {}, routeStep = null) {
+  const routeCapability = capabilityForRouteStep(providerCapabilities, routeStep);
+  return routeCapability?.rendered_prompt_transport
+    ?? providerCapabilities?.rendered_prompt_transport
+    ?? null;
+}
+
+function renderedPromptTransportBudgetBytes(providerCapabilities = {}, routeStep = null) {
+  const configured = renderedPromptTransportCapability(providerCapabilities, routeStep)?.max_bytes;
+  if (configured == null) return null;
+  const parsed = Number(configured);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`rendered prompt transport max_bytes must be a positive integer; got ${JSON.stringify(configured)}`);
+  }
+  return parsed;
+}
+
 function sourcePacketResumeWithoutResendSupported(providerCapabilities = {}, routeStep = null) {
   const routeCapability = capabilityForRouteStep(providerCapabilities, routeStep);
   const configured = routeCapability?.source_packet?.resume_without_resend_supported
@@ -1310,6 +1327,56 @@ export function buildPacketRecovery({
       changed: sourcePacketPolicy?.review_surface_changed ?? null,
     }),
     actions,
+  });
+}
+
+export function evaluateRenderedPromptTransportPolicy({
+  provider = null,
+  routeStep = null,
+  providerCapabilities = {},
+  prompt = "",
+  sourcePacketPolicy = null,
+  sourceContentTransmission = "not_sent",
+} = {}) {
+  const budgetBytes = renderedPromptTransportBudgetBytes(providerCapabilities, routeStep);
+  if (budgetBytes == null) return null;
+  const renderedPromptBytes = Buffer.byteLength(prompt ?? "", "utf8");
+  if (renderedPromptBytes <= budgetBytes) return null;
+
+  const capability = renderedPromptTransportCapability(providerCapabilities, routeStep) ?? {};
+  const transport = capability.transport ?? "rendered_prompt";
+  const providerTarget = provider ? `${provider} ` : "";
+  const policy = {
+    ...(sourcePacketPolicy ?? {}),
+    source_send_allowed: false,
+    source_packet_action: "narrow_source_packet",
+    source_content_transmission: sourceContentTransmission,
+    source_packet_policy_error_code: "prompt_too_large",
+    suggested_action:
+      `Do not send selected source. Narrow or shard the ${providerTarget}prompt before retrying; ` +
+      "--allow-large-source-packet cannot bypass the rendered prompt transport cap.",
+    rendered_prompt_bytes: renderedPromptBytes,
+    rendered_prompt_transport_budget_bytes: budgetBytes,
+    transport,
+  };
+  if (transport === "argv_print") {
+    policy.rendered_prompt_argv_budget_bytes = budgetBytes;
+  }
+  return Object.freeze(policy);
+}
+
+export function renderedPromptTransportRuntimeDiagnostics(policy = null) {
+  if (!policy || policy.source_packet_policy_error_code !== "prompt_too_large") return Object.freeze({});
+  return Object.freeze({
+    rendered_prompt_transport: Object.freeze({
+      rendered_prompt_bytes: Number.isSafeInteger(policy.rendered_prompt_bytes)
+        ? policy.rendered_prompt_bytes
+        : null,
+      max_bytes: Number.isSafeInteger(policy.rendered_prompt_transport_budget_bytes)
+        ? policy.rendered_prompt_transport_budget_bytes
+        : null,
+      transport: typeof policy.transport === "string" ? policy.transport : null,
+    }),
   });
 }
 

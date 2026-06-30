@@ -164,6 +164,7 @@ const PROVIDER_RUNTIME_POLICY_ENTRYPOINTS = Object.freeze([
     provider: "agy",
     runtimePath: "plugins/agy/scripts/agy-companion.mjs",
     routeSelector: /\bselectProviderRoute\s*\(/,
+    renderedPromptTransportPolicy: /\bevaluateRenderedPromptTransportPolicy\s*\(/,
   }),
   Object.freeze({
     provider: "claude",
@@ -491,6 +492,13 @@ test("provider runtime policy wiring is checked per adapter", () => {
     assert.ok(providers.has(entry.provider), `${entry.provider} must be listed in provider parity table`);
     const source = readRepoFile(entry.runtimePath);
     assert.match(source, entry.routeSelector, `${entry.provider} runtime must use shared route selection policy`);
+    if (entry.renderedPromptTransportPolicy) {
+      assert.match(
+        source,
+        entry.renderedPromptTransportPolicy,
+        `${entry.provider} runtime must use shared rendered prompt transport policy`,
+      );
+    }
     assert.match(
       source,
       /buildReviewAuditManifest\s*\(/,

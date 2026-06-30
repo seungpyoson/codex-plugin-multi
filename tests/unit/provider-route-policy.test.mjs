@@ -9,11 +9,13 @@ import {
   normalizeApprovalScope,
   buildProviderPolicyContract,
   buildReviewSlotDisposition,
+  evaluateRenderedPromptTransportPolicy,
   evaluateSourcePacketPolicy,
   evaluateReviewSlotRetryPolicy,
   PROVIDER_POLICY_DOMAINS,
   PROVIDER_ROUTE_STEPS,
   redactReviewSlotDisposition,
+  renderedPromptTransportRuntimeDiagnostics,
   reviewSlotRetryFingerprint,
   selectProviderRoute,
   sourceSendApprovalProofMatches,
@@ -840,6 +842,61 @@ test("packet recovery records prompt budget shards and capability metadata", asy
     assert.equal(recovery.actions[0].review_surface_change, true, name);
     assert.equal(recovery.actions[0].shards.length, 2, name);
   }
+});
+
+test("rendered prompt transport policy blocks over-budget argv prompts through shared policy", () => {
+  const basePolicy = evaluateSourcePacketPolicy({
+    provider: "agy",
+    mode: "custom-review",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: {
+        source_packet: { max_bytes: 1024 },
+        rendered_prompt_transport: { transport: "argv_print", max_bytes: 20 },
+      },
+    },
+    selectedSource: selectedSourceFixture(4),
+    sourceBearing: true,
+    sourcePacketOverrideApproved: true,
+    sourcePacketOverrideSource: "--allow-large-source-packet",
+  });
+  const policy = evaluateRenderedPromptTransportPolicy({
+    provider: "AGY",
+    routeStep: "subscription",
+    providerCapabilities: {
+      subscription: {
+        rendered_prompt_transport: { transport: "argv_print", max_bytes: 20 },
+      },
+    },
+    prompt: "x".repeat(21),
+    sourcePacketPolicy: basePolicy,
+  });
+
+  assert.equal(policy.source_send_allowed, false);
+  assert.equal(policy.source_packet_policy_error_code, "prompt_too_large");
+  assert.equal(policy.source_packet_override_approved, true);
+  assert.equal(policy.rendered_prompt_bytes, 21);
+  assert.equal(policy.rendered_prompt_transport_budget_bytes, 20);
+  assert.equal(policy.rendered_prompt_argv_budget_bytes, 20);
+  assert.equal(policy.transport, "argv_print");
+  assert.match(policy.suggested_action, /cannot bypass the rendered prompt transport cap/);
+  assert.deepEqual(renderedPromptTransportRuntimeDiagnostics(policy), {
+    rendered_prompt_transport: {
+      rendered_prompt_bytes: 21,
+      max_bytes: 20,
+      transport: "argv_print",
+    },
+  });
+});
+
+test("rendered prompt transport policy is inactive without a declared transport cap", () => {
+  assert.equal(
+    evaluateRenderedPromptTransportPolicy({
+      providerCapabilities: {},
+      prompt: "x".repeat(1024),
+    }),
+    null,
+  );
 });
 
 test("packet recovery includes source-packet shards and no-source resume when supported", async () => {

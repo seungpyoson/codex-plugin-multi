@@ -38,7 +38,9 @@ import { sourceContentTransmissionForExecution } from "./lib/external-review.mjs
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import {
   CONCURRENCY_FACTS,
+  evaluateRenderedPromptTransportPolicy,
   latestSourcePacketPreviousAttempt,
+  renderedPromptTransportRuntimeDiagnostics,
   resolveConcurrencyAdmission,
   selectProviderRoute,
   sourcePacketPreviousAttemptFromJobRecord,
@@ -132,6 +134,10 @@ const ROUTE_CAPABILITIES = Object.freeze({
     source_packet: Object.freeze({
       max_bytes: AGY_SOURCE_PACKET_MAX_BYTES,
       resume_without_resend_supported: false,
+    }),
+    rendered_prompt_transport: Object.freeze({
+      transport: "argv_print",
+      max_bytes: AGY_RENDERED_PROMPT_ARGV_MAX_BYTES,
     }),
   }),
 });
@@ -910,9 +916,6 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath, select
 }
 
 function renderedPromptArgvPreflight(invocation, prompt, containmentPath, selectedFiles = null) {
-  const renderedPromptBytes = Buffer.byteLength(prompt ?? "", "utf8");
-  if (renderedPromptBytes <= AGY_RENDERED_PROMPT_ARGV_MAX_BYTES) return null;
-
   const auditFiles = selectedFiles ?? auditSourceFilesForPrompt(prompt, containmentPath);
   const baseManifest = buildAuditManifest({
     promptText: prompt,
@@ -923,39 +926,30 @@ function renderedPromptArgvPreflight(invocation, prompt, containmentPath, select
     status: "preflight_failed",
     errorCode: null,
   });
-  const basePolicy = baseManifest?.source_packet_policy ?? {};
-  const policy = Object.freeze({
-    ...basePolicy,
-    source_send_allowed: false,
-    source_packet_action: "narrow_source_packet",
-    source_content_transmission: NON_TRANSMITTING_DISCLOSURE.source_content_transmission,
-    source_packet_policy_error_code: "prompt_too_large",
-    suggested_action:
-      "Do not send selected source. Narrow or shard the AGY prompt before retrying; --allow-large-source-packet cannot bypass the platform argv transport cap.",
-    rendered_prompt_bytes: renderedPromptBytes,
-    rendered_prompt_argv_budget_bytes: AGY_RENDERED_PROMPT_ARGV_MAX_BYTES,
-    transport: "argv_print",
+  const policy = evaluateRenderedPromptTransportPolicy({
+    provider: "AGY",
+    routeStep: invocation.route_step ?? null,
+    providerCapabilities: ROUTE_CAPABILITIES,
+    prompt,
+    sourcePacketPolicy: baseManifest?.source_packet_policy ?? null,
+    sourceContentTransmission: NON_TRANSMITTING_DISCLOSURE.source_content_transmission,
   });
+  if (!policy) return null;
   const execution = {
     preflight: true,
     exitCode: null,
     parsed: {
       ok: false,
       reason: "prompt_too_large",
-      error: `rendered AGY --print argv is ${renderedPromptBytes} bytes; limit is ${AGY_RENDERED_PROMPT_ARGV_MAX_BYTES} bytes`,
+      error: `rendered AGY --print argv is ${policy.rendered_prompt_bytes} bytes; limit is ${policy.rendered_prompt_transport_budget_bytes} bytes`,
     },
     pidInfo: null,
     agySessionId: null,
     stdout: "",
     stderr: "",
     errorMessage:
-      `prompt_too_large: rendered AGY --print argv is ${renderedPromptBytes} bytes; limit is ${AGY_RENDERED_PROMPT_ARGV_MAX_BYTES} bytes`,
-    runtimeDiagnostics: {
-      agy_transport_argv: {
-        rendered_prompt_bytes: renderedPromptBytes,
-        max_bytes: AGY_RENDERED_PROMPT_ARGV_MAX_BYTES,
-      },
-    },
+      `prompt_too_large: rendered AGY --print argv is ${policy.rendered_prompt_bytes} bytes; limit is ${policy.rendered_prompt_transport_budget_bytes} bytes`,
+    runtimeDiagnostics: renderedPromptTransportRuntimeDiagnostics(policy),
   };
   execution.reviewAuditManifest = buildAuditManifest({
     promptText: prompt,
