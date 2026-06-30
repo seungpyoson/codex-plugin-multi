@@ -13,6 +13,7 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DESCRIPTION_MAX_LENGTH = 88;
 const DELEGATION_PLUGINS = ["claude", "gemini", "kimi"];
+const ACTIVE_DELEGATION_PLUGINS = ["claude", "kimi"];
 const AGY_WORKFLOWS = ["review", "adversarial-review", "custom-review", "setup", "status", "result", "cancel"];
 const API_REVIEWER_PROVIDERS = ["deepseek", "glm"];
 const GROK_WORKFLOWS = ["review", "adversarial-review", "custom-review", "setup"];
@@ -595,11 +596,12 @@ test("README documents install verification for discoverable delegation skills",
   assert.match(readme, /Verify skill discovery after installation/);
   assert.match(readme, /codex debug prompt-input 'list skills'/);
   assert.match(readme, /relay-claude:claude-delegation/);
-  assert.match(readme, /relay-gemini:gemini-delegation/);
   assert.match(readme, /relay-kimi:kimi-delegation/);
+  assert.match(readme, /relay-agy:agy-delegation/);
   assert.match(readme, /relay-grok:grok-delegation/);
   assert.match(readme, /relay-deepseek:deepseek-review/);
   assert.match(readme, /relay-glm:glm-review/);
+  assert.doesNotMatch(readme, /relay-gemini:gemini-delegation/);
   assert.match(readme, /CODEX_HOME/);
 });
 
@@ -611,12 +613,17 @@ test("README documents workflow-specific skill picker UX", () => {
   assert.match(readme, /slash-command files remain packaged/i);
   assert.match(readme, /advanced `custom-review` and `preflight` flows/);
   assert.match(readme, /remain available through those broad delegation skills/);
-  for (const plugin of DELEGATION_PLUGINS) {
+  for (const plugin of ACTIVE_DELEGATION_PLUGINS) {
     for (const workflow of DELEGATION_WORKFLOWS) {
       const skill = `${relayPluginName(plugin)}:${plugin}-${workflow}`;
       assert.match(readme, new RegExp(`\\b${skill}\\b`), `README missing ${skill}`);
     }
   }
+  for (const workflow of AGY_WORKFLOWS) {
+    const skill = `relay-agy:agy-${workflow}`;
+    assert.match(readme, new RegExp(`\\b${skill}\\b`), `README missing ${skill}`);
+  }
+  assert.doesNotMatch(readme, /\brelay-gemini:gemini-(?:review|adversarial-review|rescue|setup|status|result|cancel|delegation)\b/);
   for (const provider of API_REVIEWER_PROVIDERS) {
     for (const workflow of API_REVIEWER_WORKFLOWS) {
       const skill = `${relayPluginName(provider)}:${provider}-${workflow}`;

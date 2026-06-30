@@ -267,6 +267,11 @@ function writeClaudeRelayMarketplace({ outRoot, pluginRoots, sharedDirectApiRunt
     readJson(join(pluginRoot, ".claude-plugin", "plugin.json"))
   );
   const hiddenManifests = [readJson(join(sharedDirectApiRuntimeRoot, ".claude-plugin", "plugin.json"))];
+  const disabledPluginNames = new Set(
+    RELAY_PROVIDER_ORDER
+      .filter((provider) => RELAY_PROVIDER_DEFINITIONS[provider]?.disabledReason)
+      .map((provider) => RELAY_PROVIDER_DEFINITIONS[provider].claude.manifestName),
+  );
   // Marketplace root is the parent of the generated plugin dirs (outRoot), so a github/local
   // marketplace source resolves `.claude-plugin/marketplace.json` at the repo root; plugin
   // sources are root-relative `./<outRoot-basename>/<plugin>` (e.g. ./relay/relay-gemini).
@@ -279,7 +284,10 @@ function writeClaudeRelayMarketplace({ outRoot, pluginRoots, sharedDirectApiRunt
   writeJson(
     join(marketplaceRoot, ".claude-plugin", "marketplace.json"),
     renderClaudeRelayMarketplace([...visibleManifests, ...hiddenManifests], {
-      hiddenPluginNames: new Set(hiddenManifests.map((manifest) => manifest.name)),
+      hiddenPluginNames: new Set([
+        ...disabledPluginNames,
+        ...hiddenManifests.map((manifest) => manifest.name),
+      ]),
       sourcePrefix,
     }),
   );

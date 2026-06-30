@@ -2,18 +2,22 @@
 
 Relay packages external-model delegation plugins for Codex and Claude Code.
 The Codex marketplace suite is `relay-for-codex` and exposes peer plugins for
-**Claude Code**, **Gemini CLI**, **Kimi Code CLI**, **Grok**, **DeepSeek**, and
-**GLM**. The generated Claude Code suite is `relay-for-claude` and exposes the
-non-self providers **Gemini**, **Kimi**, **Grok**, **DeepSeek**, and **GLM**.
+**Claude Code**, **Kimi Code CLI**, **Google Antigravity CLI**, **Grok**,
+**DeepSeek**, and **GLM**. The generated Claude Code suite is
+`relay-for-claude` and exposes the non-self providers **Kimi**, **AGY**,
+**Grok**, **DeepSeek**, and **GLM**.
 DeepSeek and GLM are provider-specific surfaces in both hosts; their shared
 direct-API implementation remains a hidden runtime package named
 `api-reviewers` in Codex and `relay-api-reviewers` in Claude Code.
+The legacy Gemini adapter remains in source for traceability and local
+diagnostics, but `relay-gemini` is disabled in the Codex marketplace and hidden
+in the Claude marketplace. Use `relay-agy` for the supported Google CLI path.
 
 - **License:** AGPL-3.0-only. Commercial use is permitted under the AGPL, but
   modified versions distributed or offered over a network must provide
   corresponding source under the same license. Portions are ported from
   MIT-licensed upstream code; see `NOTICE`.
-- **State:** active development. Claude, Gemini, Kimi, Grok, DeepSeek, and GLM
+- **State:** active development. Claude, Kimi, AGY, Grok, DeepSeek, and GLM
   flows are implemented and covered by mock smoke tests. Current Codex
   verification uses workflow skills or companion scripts because Codex CLI
   0.125.0 installs the marketplace but does not register plugin command files
@@ -35,8 +39,9 @@ direct-API implementation remains a hidden runtime package named
   `claude auth status` alone is not enough for review readiness; `/claude-setup`
   also verifies OAuth-only non-interactive `claude -p` inference because status
   can report logged-in while print-mode inference returns HTTP 401.
-- Gemini CLI installed and authenticated if you enable the Gemini plugin.
 - Kimi Code CLI installed and authenticated if you enable the Kimi plugin.
+- Google Antigravity CLI installed and authenticated if you enable the AGY
+  plugin.
 - Grok CLI installed and authenticated if you enable the Grok plugin's default
   path. The optional legacy web/tunnel path is explicit via `--transport web`,
   and audited CLI-first fallback is explicit via `--transport auto` or
@@ -60,15 +65,16 @@ direct-API implementation remains a hidden runtime package named
 - `ZAI_API_KEY` if you enable the GLM direct API reviewer. GLM Coding Plan calls use
   `https://api.z.ai/api/coding/paas/v4`, not the general Z.ai endpoint.
 
-Claude and Gemini default to `--auth-mode subscription`: provider API-key env
-vars are stripped and the target CLI's native OAuth/subscription path must pass
-the live readiness probe. They also support explicit `--auth-mode api_key` for
+Claude defaults to `--auth-mode subscription`: provider API-key env vars are
+stripped and the target CLI's native OAuth/subscription path must pass the live
+readiness probe. Explicit `--auth-mode api_key` remains approval-gated for
 providers that have an API route; source-bearing API runs require the approval
 token flow before source is sent. The ambiguous automatic auth selector is
-rejected on operator-facing paths, because the selected route must be explicit. The selected path is
-reported as `selected_auth_path`; secret values are never printed. Kimi remains
-subscription/OAuth-only. Direct API reviewers are separate and only use API keys
-through explicit `auth_mode: "api_key"` provider config.
+rejected on operator-facing paths, because the selected route must be explicit.
+The selected path is reported as `selected_auth_path`; secret values are never
+printed. Kimi and AGY remain subscription/local-CLI paths. Direct API reviewers
+are separate and only use API keys through explicit `auth_mode: "api_key"`
+provider config.
 
 The Grok plugin defaults to subscription-backed Grok CLI transport
 (`subscription_cli`). It is not an `api.x.ai` integration and does not silently
@@ -141,18 +147,17 @@ file/byte bounds, and expiry still match. Grant files persist hashes, counts,
 relative paths, and safe metadata only; they do not persist approval token
 values, source bodies, prompts, or secrets.
 
-Claude, Gemini, and Kimi use first-party CLIs that read or write local OAuth,
+Claude, Kimi, and AGY use first-party CLIs that read or write local OAuth,
 session, config, or log state. If setup or review returns `sandbox_blocked`
-with a `.claude`, `.gemini`, or `.kimi-code` path, add the provider state directory
-as a writable root and start a fresh Codex session before retrying. Claude and
-Gemini usually need their full state trees because OAuth/session files can move
+with a `.claude`, `.kimi-code`, or `.antigravity` path, add the provider state
+directory as a writable root and start a fresh Codex session before retrying.
+Claude usually needs its full state tree because OAuth/session files can move
 across releases:
 
 ```toml
 [sandbox_workspace_write]
 writable_roots = [
-  "/Users/<you>/.claude",
-  "/Users/<you>/.gemini"
+  "/Users/<you>/.claude"
 ]
 ```
 
@@ -174,11 +179,17 @@ Use the narrowest root that works for your Kimi installation. Start with
 companion classifies `.kimi-code` permission denials as a writable-root problem so
 users see this action instead of a generic auth or CLI error.
 
-Gemini has a different sandbox interaction: Gemini CLI's native `-s` sandbox can
-fail when launched from inside Codex's outer sandbox. The Gemini companion omits
-only that native Gemini sandbox flag when `CODEX_SANDBOX` is active, while still
-keeping the read-only TOML policy, `--approval-mode plan`, `--skip-trust`,
-scoped input, and mutation detection.
+For AGY, allow `/Users/<you>/.antigravity` if the Antigravity CLI reports a
+state or session permission denial. AGY source-bearing review commands still use
+scoped input, mutation detection, and the Relay source-transmission disclosure
+contract.
+
+AGY currently receives the rendered review prompt as one `--print` command-line
+argument. Relay keeps AGY's default selected-source packet at 96 KiB and blocks
+rendered prompts over 112 KiB before launch so Linux does not fail with
+`spawn E2BIG`. `--allow-large-source-packet` can approve the source-packet
+policy budget, but it cannot bypass that hard argv transport cap; narrow or
+shard very broad AGY reviews instead.
 
 If you do not want sandbox-wide network access, use one-off escalation for a
 specific trusted reviewer command instead. In an interactive Codex session,
@@ -200,10 +211,11 @@ Troubleshooting signals:
   sending source.
 - Claude `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
   errors on `.claude` paths need `/Users/<you>/.claude` in writable roots.
-- Gemini `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
-  errors on `.gemini` paths need `/Users/<you>/.gemini` in writable roots.
 - Kimi `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
   errors on `.kimi-code` paths need a Kimi writable root.
+- AGY `Operation not permitted`, `Permission denied`, `EACCES`, or `EPERM`
+  errors on `.antigravity` paths need `/Users/<you>/.antigravity` in writable
+  roots.
 - Grok `tunnel_unavailable` means the subscription-backed local tunnel is not
   reachable at `GROK_WEB_BASE_URL`. Check `tunnel_start`: the plugin tries to
   bootstrap or start the non-Docker grok2api tunnel automatically. If
@@ -222,7 +234,7 @@ Troubleshooting signals:
   output, or text that admits the selected files were not inspected as failed
   review slots; rerun with a reviewer that can inspect the selected source
   instead of counting the slot as approved.
-- Claude/Gemini/Kimi subscription/OAuth modes intentionally ignore unrelated
+- Claude/Kimi/AGY subscription or local-CLI modes intentionally ignore unrelated
   API-key env vars. Do not treat stripped API keys as the cause unless you
   explicitly selected API-key auth for a provider that supports it.
 
@@ -254,9 +266,10 @@ node scripts/review-panel.mjs --workspace .
 The panel shows one row per provider job with provider, job id, operator state,
 source transmission, elapsed/configured timeout, verdict/error summary,
 readiness, terminal status, semantic failed-slot state, inspection state, error
-code, HTTP status, and semantic failure reasons. It aggregates Claude, Gemini,
-Kimi, Grok, and API Reviewers persisted JobRecords from their plugin data roots;
-DeepSeek and GLM appear as sub-providers from the API Reviewers root.
+code, HTTP status, and semantic failure reasons. It aggregates Claude, Kimi,
+AGY, Grok, API Reviewers, and hidden legacy Gemini persisted JobRecords from
+their plugin data roots; DeepSeek and GLM appear as sub-providers from the API
+Reviewers root.
 When `--workspace` points inside a recorded workspace, the ancestor record is
 included only if that ancestor is a real Git repository; non-Git workspaces are
 matched by their exact recorded path.
@@ -279,7 +292,7 @@ Then enable the plugins you want:
 /plugins
 ```
 
-In the plugin picker, enable `relay-claude`, `relay-gemini`, `relay-kimi`,
+In the plugin picker, enable `relay-claude`, `relay-kimi`, `relay-agy`,
 `relay-grok`, `relay-glm`, and/or `relay-deepseek`. You can enable one without
 the others. DeepSeek and GLM use a default-installed shared direct-API runtime
 package, so their provider plugins stay split without copying the same reviewer
@@ -302,14 +315,13 @@ https://code.claude.com/docs/en/plugin-marketplaces). The repo's CI verifies the
 generated manifest's location and `./relay/*` source paths; it does not exercise
 a live `github` install, so the remote-source claim rests on that documented
 contract rather than an integration test. Its marketplace name is
-`relay-for-claude`, and provider plugin sources stay under `relay/relay-*`. The
-suite/plugin pair is therefore `relay-for-claude:relay-gemini` conceptually;
+`relay-for-claude`, and provider plugin sources stay under `relay/relay-*`.
 Claude Code's install ref syntax is:
 
 ```bash
-claude plugin install relay-gemini@relay-for-claude
 claude plugin install relay-grok@relay-for-claude
 claude plugin install relay-kimi@relay-for-claude
+claude plugin install relay-agy@relay-for-claude
 claude plugin install relay-glm@relay-for-claude
 claude plugin install relay-deepseek@relay-for-claude
 ```
@@ -320,7 +332,7 @@ appears in `claude plugin list`, that is expected; review workflows should still
 use `relay-deepseek` or `relay-glm`.
 
 Claude Code command namespaces are plugin-scoped, such as
-`/relay-gemini:review`.
+`/relay-kimi:review`.
 
 ## Verify skill discovery after installation
 
@@ -328,11 +340,11 @@ After enabling the plugins, open Codex's skill picker or ask Codex what plugin
 skills are available. Current Codex builds expose plugin skills with their
 plugin namespace. The discoverable UX is `<plugin>:<provider-workflow>` through
 workflow-specific skills such as `relay-claude:claude-review`,
-`relay-gemini:gemini-rescue`, `relay-kimi:kimi-status`,
+`relay-kimi:kimi-status`, `relay-agy:agy-review`,
 `relay-grok:grok-review`, `relay-deepseek:deepseek-review`, and
 `relay-glm:glm-setup`. The installed skill list should also include the broad
 fallback skills `relay-claude:claude-delegation`,
-`relay-gemini:gemini-delegation`, `relay-kimi:kimi-delegation`, and
+`relay-kimi:kimi-delegation`, `relay-agy:agy-delegation`, and
 `relay-grok:grok-delegation`. DeepSeek and GLM are intentionally split into
 provider-specific workflow skills instead of a shared `api-reviewers`
 namespace.
@@ -429,11 +441,11 @@ refresh the installed cache by reinstalling the affected plugin while
 preserving its data:
 
 ```bash
-claude plugin uninstall --keep-data -y relay-gemini@relay-for-claude
-claude plugin install relay-gemini@relay-for-claude
+claude plugin uninstall --keep-data -y relay-kimi@relay-for-claude
+claude plugin install relay-kimi@relay-for-claude
 ```
 
-Use the same uninstall/install shape for `relay-kimi`, `relay-grok`,
+Use the same uninstall/install shape for `relay-agy`, `relay-grok`,
 `relay-glm`, `relay-deepseek`, and `relay-api-reviewers` when their generated
 files changed. Restart already-open Claude Code sessions after marketplace or
 plugin-cache changes.
@@ -461,14 +473,13 @@ contracts:
   `relay-claude:claude-adversarial-review`, `relay-claude:claude-rescue`,
   `relay-claude:claude-setup`, `relay-claude:claude-status`,
   `relay-claude:claude-result`, `relay-claude:claude-cancel`.
-- **Gemini:** `relay-gemini:gemini-review`,
-  `relay-gemini:gemini-adversarial-review`, `relay-gemini:gemini-rescue`,
-  `relay-gemini:gemini-setup`, `relay-gemini:gemini-status`,
-  `relay-gemini:gemini-result`, `relay-gemini:gemini-cancel`.
 - **Kimi:** `relay-kimi:kimi-review`, `relay-kimi:kimi-adversarial-review`,
   `relay-kimi:kimi-rescue`, `relay-kimi:kimi-setup`,
   `relay-kimi:kimi-status`, `relay-kimi:kimi-result`,
   `relay-kimi:kimi-cancel`.
+- **AGY:** `relay-agy:agy-review`, `relay-agy:agy-adversarial-review`,
+  `relay-agy:agy-custom-review`, `relay-agy:agy-setup`,
+  `relay-agy:agy-status`, `relay-agy:agy-result`, `relay-agy:agy-cancel`.
 - **Grok:** `relay-grok:grok-review`,
   `relay-grok:grok-adversarial-review`, `relay-grok:grok-custom-review`,
   `relay-grok:grok-setup`.
@@ -480,21 +491,20 @@ contracts:
   `relay-glm:glm-custom-review`, `relay-glm:glm-setup`.
 
 The broad delegation skills remain available as fallback/overview entries:
-`relay-claude:claude-delegation`, `relay-gemini:gemini-delegation`,
-`relay-kimi:kimi-delegation`, and `relay-grok:grok-delegation`.
+`relay-claude:claude-delegation`, `relay-kimi:kimi-delegation`,
+`relay-agy:agy-delegation`, and `relay-grok:grok-delegation`.
 
 The original user-invocable skill fallback remains available for users who
-prefer one overview entry per companion plugin. The Claude, Gemini, Kimi, and
+prefer one overview entry per companion plugin. The Claude, Kimi, AGY, and
 Grok delegation skills still route to their companion scripts as broad overview
-entries. For Claude, Gemini, and Kimi, advanced `custom-review` and `preflight` flows
-remain available through those broad delegation skills.
+entries. For Claude, Kimi, and AGY, advanced `custom-review` and `preflight` flows remain available through those broad delegation skills.
 
 Example prompts:
 
 ```text
 Use relay-claude:claude-review to review the current diff for regressions.
-Use relay-gemini:gemini-adversarial-review for an adversarial review of this design.
 Use relay-kimi:kimi-rescue to investigate this failing test in the background, then use relay-kimi:kimi-status and relay-kimi:kimi-result.
+Use relay-agy:agy-adversarial-review for an adversarial review of this design.
 Use relay-grok:grok-review to review the current diff using my subscription.
 Use relay-deepseek:deepseek-custom-review to review selected files.
 ```
@@ -509,8 +519,8 @@ command docs:
 
 ```text
 /claude-review check this diff for regressions
-/gemini-review check this diff for regressions
 /kimi-review check this diff for regressions
+/agy-review check this diff for regressions
 /grok-review check this diff for regressions
 /deepseek-review check this diff for regressions
 /glm-review check this diff for regressions
@@ -520,23 +530,23 @@ command docs:
 
 | Command | Status | Behavior |
 |---|---|---|
-| `/claude-setup` / `/gemini-setup` / `/kimi-setup` | Packaged | Target CLI availability and OAuth readiness check. Claude setup includes an OAuth-only non-interactive inference probe, not just `claude auth status`. |
+| `/claude-setup` / `/kimi-setup` / `/agy-setup` | Packaged | Target CLI availability and OAuth readiness check. Claude setup includes an OAuth-only non-interactive inference probe, not just `claude auth status`. |
 | `/deepseek-setup` / `/glm-setup` | Packaged | Direct API-key readiness check plus source-free live provider probe; reports key names and probe status only. |
 | `/grok-setup` | Packaged | Default Grok CLI readiness check; explicit `--transport web` probes the legacy local tunnel and reports key names only. |
-| `/claude-review [focus]` / `/gemini-review [focus]` / `/kimi-review [focus]` | Packaged | Read-only review profile over the selected scope. |
+| `/claude-review [focus]` / `/kimi-review [focus]` / `/agy-review [focus]` | Packaged | Read-only review profile over the selected scope. |
 | `/grok-review [focus]` | Packaged | Subscription-backed Grok CLI review over the selected scope. |
 | `/deepseek-review [focus]` / `/glm-review [focus]` | Packaged | Direct API-backed review over the selected scope. |
-| `/claude-adversarial-review [focus]` / `/gemini-adversarial-review [focus]` / `/kimi-adversarial-review [focus]` | Packaged | Read-only forced-dissent review profile. |
+| `/claude-adversarial-review [focus]` / `/kimi-adversarial-review [focus]` / `/agy-adversarial-review [focus]` | Packaged | Read-only forced-dissent review profile. |
 | `/grok-adversarial-review [focus]` | Packaged | Subscription-backed Grok CLI forced-dissent review. |
 | `/deepseek-adversarial-review [focus]` / `/glm-adversarial-review [focus]` | Packaged | Direct API-backed forced-dissent review. |
-| `/grok-custom-review --scope-paths <files>` | Packaged | Subscription-backed Grok CLI review of explicit files. |
+| `/agy-custom-review --scope-paths <files>` / `/grok-custom-review --scope-paths <files>` | Packaged | Subscription-backed local CLI review of explicit files. |
 | `/deepseek-custom-review --scope-paths <files>` / `/glm-custom-review --scope-paths <files>` | Packaged | Direct API-backed review of explicit files. |
-| `/claude-rescue <task>` / `/gemini-rescue <task>` / `/kimi-rescue <task>` | Packaged | Background investigation or fix by the target CLI. |
-| `/claude-status` / `/gemini-status` / `/kimi-status` | Packaged | List active and recent jobs for the current workspace. |
-| `/claude-result <job-id>` / `/gemini-result <job-id>` / `/kimi-result <job-id>` | Packaged | Show the persisted result for a job. |
+| `/claude-rescue <task>` / `/kimi-rescue <task>` | Packaged | Background investigation or fix by the target CLI. |
+| `/claude-status` / `/kimi-status` / `/agy-status` | Packaged | List active and recent jobs for the current workspace. |
+| `/claude-result <job-id>` / `/kimi-result <job-id>` / `/agy-result <job-id>` | Packaged | Show the persisted result for a job. |
 | `/claude-cancel <job-id>` | Packaged | Cancel a running Claude background job. Use Ctrl+C for foreground runs. |
-| `/gemini-cancel <job-id>` | Packaged | Cancel a running Gemini background job. Use Ctrl+C for foreground runs. |
 | `/kimi-cancel <job-id>` | Packaged | Cancel a running Kimi background job. Use Ctrl+C for foreground runs. |
+| `/agy-cancel <job-id>` | Packaged | Cancel a running AGY job. Use Ctrl+C for foreground runs. |
 
 Background jobs return a `job_id`. In a Codex build that supports plugin command
 files, use `/<target>-status` to list jobs and `/<target>-result <job-id>` to
@@ -545,25 +555,21 @@ inspect the terminal record.
 ## Safety posture
 
 - **Review modes are defensive, not magical.** Claude review paths use
-  `--disallowedTools`; Gemini review paths use
-  `plugins/gemini/policies/read-only.toml`; Kimi review paths use Kimi plan
-  mode plus disposable scoped input. Mutations are detected and reported rather
-  than auto-reverted.
-- **Gemini plan-mode is NOT a sandbox.** Gemini's plan mode alone is not the
-  enforcement layer for this plugin. The TOML policy file is the real read-only
-  control used by Gemini review and adversarial-review paths.
+  `--disallowedTools`; Kimi review paths use Kimi plan mode plus disposable
+  scoped input; AGY review paths use scoped source input and mutation detection.
+  Mutations are detected and reported rather than auto-reverted.
 - **`--dispose` is the default for review profiles.** Disposable containment
   materializes the selected scope outside the user's active working tree and
   cleans it up after the run.
 - **Scope narrowing is not provider isolation.** `branch-diff` reduces which
   files are reviewed, but a successful external review still sends selected
   source content to the target provider.
-- **Claude/Gemini auth is explicit and reported.** Claude and Gemini default to
-  `--auth-mode subscription`: provider API-key env vars are ignored and the
-  target CLI's OAuth/subscription inference path must work. `--auth-mode
-  api_key` requires a matching provider key. The legacy ambiguous automatic
-  auth selector is rejected on operator-facing paths; choose subscription or
-  api_key explicitly.
+- **Auth is explicit and reported.** Claude defaults to `--auth-mode
+  subscription`: provider API-key env vars are ignored and the target CLI's
+  OAuth/subscription inference path must work. `--auth-mode api_key` requires a
+  matching provider key where supported. Kimi and AGY use local subscription CLI
+  state. The legacy ambiguous automatic auth selector is rejected on
+  operator-facing paths; choose subscription or api_key explicitly.
   DeepSeek and GLM direct API reviewers use
   `auth_mode: "api_key"` in `plugins/relay-deepseek/config/providers.json` and
   `plugins/relay-glm/config/providers.json`.
@@ -608,14 +614,14 @@ inspect the terminal record.
 ## Manual E2E
 
 CI uses deterministic mock target CLIs and mock API responses. Real Claude
-Code, Gemini CLI, Kimi CLI, DeepSeek API, and GLM API checks are opt-in because
-they require local OAuth state or live credentials. See `docs/e2e.md` for the
-manual runbook:
+Code, Kimi CLI, AGY, DeepSeek API, and GLM API checks are opt-in because they
+require local OAuth state or live credentials. See `docs/e2e.md` for the manual
+runbook:
 
 ```bash
 CLAUDE_LIVE_E2E=1 npm run e2e:claude
-GEMINI_LIVE_E2E=1 npm run e2e:gemini
 KIMI_LIVE_E2E=1 npm run e2e:kimi
+AGY_LIVE_E2E=1 npm run e2e:agy
 ```
 
 Without the live env vars, those E2E tests skip by design.
@@ -634,8 +640,9 @@ Useful focused checks:
 
 ```bash
 npm run smoke:claude
-npm run smoke:gemini
 npm run smoke:kimi
+npm run smoke:agy
+npm run smoke:gemini  # hidden legacy adapter coverage
 npm run smoke:api-reviewers
 npm run readiness:manifest -- --fixture-root <git-fixture> --evidence-dir <dir> --out <manifest.json>
 COVERAGE_ENFORCE_TARGET=1 npm run test:coverage
@@ -666,8 +673,9 @@ cache freshness with `npm run doctor:cache`. For Claude Code, use scripts under
 refreshing the generated marketplace and reinstalling same-version changed
 plugins when needed.
 
-`readiness:manifest` normalizes Claude, Gemini, Kimi, Grok, DeepSeek, and GLM
-doctor/review/approval artifacts into one readiness manifest. It classifies
+`readiness:manifest` normalizes Claude, Kimi, AGY, Grok, DeepSeek, GLM, and
+hidden legacy Gemini doctor/review/approval artifacts into one readiness
+manifest. It classifies
 failures as `sandbox`, `auth`, `provider`, `tunnel`, `session_tokens`,
 `review_quality`, `approval_gate`, `cache_install`, or `missing_evidence`,
 emits `next_action` guidance, distinguishes missing mutation evidence from an
@@ -688,8 +696,9 @@ Repository layout:
 .
   .agents/plugins/marketplace.json  # Codex marketplace: relay-for-codex
   plugins/claude/
-  plugins/gemini/
+  plugins/gemini/                   # hidden legacy Gemini adapter source
   plugins/kimi/
+  plugins/agy/
   plugins/grok/
   plugins/api-reviewers/           # hidden Codex direct-API runtime
   plugins/relay-deepseek/
@@ -698,10 +707,11 @@ Repository layout:
   relay/                           # generated Claude Code marketplace plugin dirs
     relay-api-reviewers/           # hidden Claude direct-API runtime
     relay-deepseek/
-    relay-gemini/
+    relay-gemini/                   # hidden legacy Claude plugin
     relay-glm/
     relay-grok/
     relay-kimi/
+    relay-agy/
   docs/architecture-record.md
   docs/e2e.md
   docs/release-verification.md

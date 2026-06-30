@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename as basenamePath, dirname as dirnamePath, join as joinPath, resolve as resolvePath } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { parseArgs } from "./lib/args.mjs";
@@ -37,9 +37,19 @@ import { buildJobRecord, externalReviewForInvocation, resolveErrorSinkDisclosure
 import { sourceContentTransmissionForExecution } from "./lib/external-review.mjs";
 import { sanitizeTargetEnv } from "./lib/provider-env.mjs";
 import {
+  CONCURRENCY_FACTS,
+  evaluateRenderedPromptTransportPolicy,
   latestSourcePacketPreviousAttempt,
+  renderedPromptTransportRuntimeDiagnostics,
+  resolveConcurrencyAdmission,
+  selectProviderRoute,
   sourcePacketPreviousAttemptFromJobRecord,
 } from "./lib/provider-route-policy.mjs";
+import {
+  acquireProviderWorkloadLease,
+  providerWorkloadBlockedExecution,
+  releaseProviderWorkloadLease,
+} from "./lib/review-workload.mjs";
 import {
   REVIEW_PROMPT_CONTRACT_VERSION,
   buildReviewAuditManifest,
@@ -68,7 +78,12 @@ const READINESS_PREFLIGHT_TIMEOUT_MS = 30000;
 const READINESS_PREFLIGHT_PROMPT = "Reply with exactly: relay-agy-readiness";
 const PREFLIGHT_MODES = Object.freeze(["review", "adversarial-review", "custom-review"]);
 const REVIEW_PROMPT_SOURCE_DELIMITER_PREFIX = "AGY FILE";
-const AGY_SOURCE_PACKET_MAX_BYTES = 256 * 1024;
+// AGY receives the rendered prompt as one --print argv value. Linux caps a
+// single argv string near 128 KiB. The source-packet budget keeps normal review
+// packets below that after framing, and the rendered-prompt cap below is a hard
+// transport preflight for pathological many-small-file packets or huge focus text.
+const AGY_SOURCE_PACKET_MAX_BYTES = 96 * 1024;
+const AGY_RENDERED_PROMPT_ARGV_MAX_BYTES = 112 * 1024;
 const LARGE_SOURCE_PACKET_FLAG = "--allow-large-source-packet";
 const AGY_WRITABLE_SIDECARS = new Set([
   "git-status-before.txt",
@@ -114,9 +129,17 @@ function errorSinkDisclosure() {
 const NON_TRANSMITTING_DISCLOSURE = Object.freeze({ source_content_transmission: "not_sent" });
 
 const ROUTE_CAPABILITIES = Object.freeze({
-  source_packet: Object.freeze({
-    max_bytes: AGY_SOURCE_PACKET_MAX_BYTES,
-    resume_without_resend_supported: false,
+  subscription: Object.freeze({
+    kind: "oauth",
+    auth_path: "subscription_oauth",
+    source_packet: Object.freeze({
+      max_bytes: AGY_SOURCE_PACKET_MAX_BYTES,
+      resume_without_resend_supported: false,
+    }),
+    rendered_prompt_transport: Object.freeze({
+      transport: "argv_print",
+      max_bytes: AGY_RENDERED_PROMPT_ARGV_MAX_BYTES,
+    }),
   }),
 });
 
@@ -125,6 +148,73 @@ configureState({
   fallbackStateRootDir: resolvePath(tmpdir(), "agy-companion"),
   sessionIdEnv: "AGY_COMPANION_SESSION_ID",
 });
+
+function processHomeDir(env = process.env) {
+  return env.HOME || homedir();
+}
+
+function resolveAgyHomeDir(env = process.env) {
+  return resolvePath(env.ANTIGRAVITY_HOME || joinPath(processHomeDir(env), ".antigravity"));
+}
+
+function resolveSharedStateDir(pathValue) {
+  mkdirSync(pathValue, { recursive: true });
+  return realpathSync(pathValue);
+}
+
+function resolveAgyAdmissionContext(provider, route, env = process.env) {
+  const fact = CONCURRENCY_FACTS[provider]?.[route];
+  if (!fact) {
+    throw new Error(`missing concurrency fact for source-bearing route ${provider}.${route}`);
+  }
+  const sharedStateIdentity = resolveSharedStateDir(resolveAgyHomeDir(env));
+  return resolveConcurrencyAdmission({
+    category: fact.category,
+    declaredLimit: fact.limit,
+    limitEnv: fact.limit_env,
+    sharedStateIdentity,
+    provider,
+    route,
+    env,
+  });
+}
+
+function classifyAgyAdmissionContextError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (/\b(?:EACCES|EPERM)\b|permission denied|operation not permitted/i.test(message)) {
+    return {
+      reason: "concurrency_admission_state_dir_permission_denied",
+      message: "Antigravity state directory is not writable from this sandbox",
+    };
+  }
+  if (/\b(?:ENOTDIR|ENOENT|ELOOP)\b|not a directory|no such file|too many symbolic links/i.test(message)) {
+    return {
+      reason: "concurrency_admission_state_dir_unavailable",
+      message: "Antigravity state directory could not be resolved",
+    };
+  }
+  return {
+    reason: "concurrency_admission_failed",
+    message: "Antigravity workload admission could not be resolved",
+  };
+}
+
+function agyAdmissionContextBlockedExecution(provider, route, error) {
+  const classified = classifyAgyAdmissionContextError(error);
+  return providerWorkloadBlockedExecution({
+    ok: false,
+    reason: classified.reason,
+    message: `concurrency admission failed for ${provider}.${route}: ${classified.message}`,
+    capacity: null,
+  });
+}
+
+function assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing) {
+  if (workloadAdmission.ok && sourceBearing && workloadAdmission.lease == null) {
+    process.stderr.write("agy-companion: source-bearing admission returned no workload lease\n");
+    process.exit(2);
+  }
+}
 
 function commandBinary(options) {
   return typeof options.binary === "string" && options.binary ? options.binary : (process.env.AGY_BINARY || "agy");
@@ -559,6 +649,24 @@ function modeSendsSelectedSource(mode) {
   return mode === "review" || mode === "adversarial-review" || mode === "custom-review";
 }
 
+function subscriptionRouteFields({ sourceBearing = false } = {}) {
+  const route = selectProviderRoute({
+    requestedRoute: "subscription",
+    providerCapabilities: ROUTE_CAPABILITIES,
+    sourceBearing,
+  });
+  return Object.freeze({
+    selected_route: route.selected_route,
+    route_step: route.route_step,
+    route_steps: route.route_steps,
+    fallback_reason: route.fallback_reason,
+    selected_auth_path: route.auth_path,
+    billing_path: route.billing_path,
+    source_send_approval_required: route.source_send_approval_required,
+    source_send_approval_state: route.source_send_approval_state,
+  });
+}
+
 function reviewSlotInvocationFields(options = {}) {
   return Object.freeze({
     review_slot_disposition: typeof options["review-slot-disposition"] === "string"
@@ -666,6 +774,7 @@ function buildInvocation({
   reviewSlotFields = {},
   sourcePacketOverrideFields = {},
 }) {
+  const routeFields = subscriptionRouteFields({ sourceBearing: modeSendsSelectedSource(mode) });
   return {
     job_id: jobId,
     target: "agy",
@@ -687,14 +796,7 @@ function buildInvocation({
     review_prompt_provider: PROVIDER_DISPLAY,
     schema_spec: null,
     binary,
-    selected_route: "companion_cli",
-    route_step: "agy_print",
-    route_steps: null,
-    fallback_reason: null,
-    selected_auth_path: null,
-    billing_path: null,
-    source_send_approval_required: false,
-    source_send_approval_state: "not_required",
+    ...routeFields,
     previous_source_attempt: previousSourceAttempt,
     review_slot_prior_attempts: reviewSlotPriorAttempts,
     resend_confirmation_approved: resendConfirmationApproved,
@@ -706,7 +808,18 @@ function buildInvocation({
   };
 }
 
-function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, result, status, errorCode, pidInfo = null, gitIdentity = null }) {
+function buildAuditManifest({
+  promptText,
+  selectedFiles,
+  timeoutMs,
+  invocation,
+  result,
+  status,
+  errorCode,
+  pidInfo = null,
+  gitIdentity = null,
+  sourcePacketPolicy = null,
+}) {
   const sourceContentTransmission = sourceContentTransmissionForExecution({ status, errorCode, pidInfo });
   return buildReviewAuditManifest({
     prompt: promptText,
@@ -747,6 +860,8 @@ function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, 
       sourceSendApprovalRequired: invocation.source_send_approval_required ?? null,
       sourceSendApprovalState: invocation.source_send_approval_state ?? null,
       providerCapabilities: ROUTE_CAPABILITIES,
+      sourcePacketPolicy,
+      renderedPromptBudgetChars: AGY_RENDERED_PROMPT_ARGV_MAX_BYTES,
       previousAttempt: invocation.previous_source_attempt ?? null,
       resendConfirmationApproved: invocation.resend_confirmation_approved === true,
       resumeWithoutSourceResend: invocation.resume_without_source_resend === true,
@@ -759,11 +874,11 @@ function buildAuditManifest({ promptText, selectedFiles, timeoutMs, invocation, 
   });
 }
 
-function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
-  const selectedFiles = auditSourceFilesForPrompt(prompt, containmentPath);
+function sourcePacketPolicyPreflight(invocation, prompt, containmentPath, selectedFiles = null) {
+  const auditFiles = selectedFiles ?? auditSourceFilesForPrompt(prompt, containmentPath);
   const preflightManifest = buildAuditManifest({
     promptText: prompt,
-    selectedFiles,
+    selectedFiles: auditFiles,
     timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
     invocation,
     result: "",
@@ -817,13 +932,67 @@ function sourcePacketPolicyPreflight(invocation, prompt, containmentPath) {
   };
   execution.reviewAuditManifest = buildAuditManifest({
     promptText: prompt,
-    selectedFiles,
+    selectedFiles: auditFiles,
     timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
     invocation,
     result: "",
     status: "failed",
     errorCode,
     pidInfo: null,
+  });
+  execution.runtimeDiagnostics = sourcePacketRuntimeDiagnosticsForManifest(
+    execution.reviewAuditManifest,
+    execution.runtimeDiagnostics,
+  );
+  return execution;
+}
+
+function renderedPromptArgvPreflight(invocation, prompt, containmentPath, selectedFiles = null) {
+  const auditFiles = selectedFiles ?? auditSourceFilesForPrompt(prompt, containmentPath);
+  const baseManifest = buildAuditManifest({
+    promptText: prompt,
+    selectedFiles: auditFiles,
+    timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+    invocation,
+    result: "",
+    status: "preflight_failed",
+    errorCode: null,
+  });
+  const policy = evaluateRenderedPromptTransportPolicy({
+    provider: "AGY",
+    routeStep: invocation.route_step ?? null,
+    providerCapabilities: ROUTE_CAPABILITIES,
+    prompt,
+    sourcePacketPolicy: baseManifest?.source_packet_policy ?? null,
+    sourceContentTransmission: NON_TRANSMITTING_DISCLOSURE.source_content_transmission,
+  });
+  if (!policy) return null;
+  const execution = {
+    preflight: true,
+    exitCode: null,
+    parsed: {
+      ok: false,
+      reason: "prompt_too_large",
+      error: `rendered AGY --print argv is ${policy.rendered_prompt_bytes} bytes; limit is ${policy.rendered_prompt_transport_budget_bytes} bytes`,
+    },
+    pidInfo: null,
+    agySessionId: null,
+    stdout: "",
+    stderr: "",
+    errorMessage:
+      `prompt_too_large: rendered AGY --print argv is ${policy.rendered_prompt_bytes} bytes; limit is ${policy.rendered_prompt_transport_budget_bytes} bytes`,
+    runtimeDiagnostics: renderedPromptTransportRuntimeDiagnostics(policy),
+  };
+  execution.reviewAuditManifest = buildAuditManifest({
+    promptText: prompt,
+    selectedFiles: auditFiles,
+    timeoutMs: invocation.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+    invocation,
+    result: "",
+    status: "failed",
+    errorCode: "prompt_too_large",
+    pidInfo: null,
+    sourcePacketPolicy: policy,
   });
   execution.runtimeDiagnostics = sourcePacketRuntimeDiagnosticsForManifest(
     execution.reviewAuditManifest,
@@ -1170,6 +1339,7 @@ async function run(rest) {
   let sidecarPrompt = null;
   let mutationContext = null;
   let execution = null;
+  let workloadLease = null;
   // Single guaranteed finalization for the whole containment-holding body: any
   // throw that escapes the inner handlers (e.g. a post-spawn git_binary_rejected
   // from consumeCancelMarker / buildAuditManifest / persistRecord under a mid-run
@@ -1257,7 +1427,7 @@ async function run(rest) {
       process.exit(0);
     }
 
-    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, sidecarPrompt, containment.path);
+    const sourcePacketPreflight = sourcePacketPolicyPreflight(invocation, sidecarPrompt, containment.path, selectedFiles);
     if (sourcePacketPreflight) {
       if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
       const errorRecord = buildJobRecord(invocation, {
@@ -1276,11 +1446,108 @@ async function run(rest) {
       process.exit(2);
     }
 
+    const argvPreflight = renderedPromptArgvPreflight(invocation, sidecarPrompt, containment.path, selectedFiles);
+    if (argvPreflight) {
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: argvPreflight.exitCode,
+        endedAt: argvPreflight.endedAt,
+        parsed: argvPreflight.parsed,
+        pidInfo: null,
+        agySessionId: null,
+        errorMessage: argvPreflight.errorMessage,
+        reviewAuditManifest: argvPreflight.reviewAuditManifest,
+        runtimeDiagnostics: argvPreflight.runtimeDiagnostics,
+        ...redactionFieldsForPrompt(sidecarPrompt),
+      }, mutationContext.mutations);
+      persistRecord(invocation.workspace_root, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
+
+    const sourceBearing = modeSendsSelectedSource(invocation.mode);
+    let admissionContext = {};
+    if (sourceBearing) {
+      const route = "subscription";
+      try {
+        admissionContext = resolveAgyAdmissionContext(invocation.target, route, process.env);
+      } catch (error) {
+        const workloadPreflight = agyAdmissionContextBlockedExecution(invocation.target, route, error);
+        workloadPreflight.reviewAuditManifest = buildAuditManifest({
+          promptText: sidecarPrompt,
+          selectedFiles,
+          timeoutMs,
+          invocation,
+          result: "",
+          status: "failed",
+          errorCode: "provider_workload_blocked",
+          pidInfo: null,
+        });
+        if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+        const errorRecord = buildJobRecord(invocation, {
+          exitCode: workloadPreflight.exitCode,
+          endedAt: workloadPreflight.endedAt,
+          parsed: workloadPreflight.parsed,
+          pidInfo: null,
+          agySessionId: null,
+          errorMessage: workloadPreflight.errorMessage,
+          reviewAuditManifest: workloadPreflight.reviewAuditManifest,
+          runtimeDiagnostics: workloadPreflight.runtimeDiagnostics,
+          ...redactionFieldsForPrompt(sidecarPrompt),
+        }, mutationContext.mutations);
+        persistRecord(invocation.workspace_root, errorRecord);
+        printLifecycleJson(errorRecord, lifecycleEvents);
+        process.exit(2);
+      }
+    }
+
+    const workloadAdmission = acquireProviderWorkloadLease({
+      ...admissionContext,
+      provider: invocation.target,
+      jobId,
+      cwd,
+      sourceBearing,
+      env: process.env,
+    });
+    if (workloadAdmission.ok) {
+      assertSourceBearingWorkloadLease(workloadAdmission, sourceBearing);
+      workloadLease = workloadAdmission.lease;
+    } else {
+      const workloadPreflight = providerWorkloadBlockedExecution(workloadAdmission);
+      workloadPreflight.reviewAuditManifest = buildAuditManifest({
+        promptText: sidecarPrompt,
+        selectedFiles,
+        timeoutMs,
+        invocation,
+        result: "",
+        status: "failed",
+        errorCode: "provider_workload_blocked",
+        pidInfo: null,
+      });
+      if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
+      const errorRecord = buildJobRecord(invocation, {
+        exitCode: workloadPreflight.exitCode,
+        endedAt: workloadPreflight.endedAt,
+        parsed: workloadPreflight.parsed,
+        pidInfo: null,
+        agySessionId: null,
+        errorMessage: workloadPreflight.errorMessage,
+        reviewAuditManifest: workloadPreflight.reviewAuditManifest,
+        runtimeDiagnostics: workloadPreflight.runtimeDiagnostics,
+        ...redactionFieldsForPrompt(sidecarPrompt),
+      }, mutationContext.mutations);
+      persistRecord(invocation.workspace_root, errorRecord);
+      printLifecycleJson(errorRecord, lifecycleEvents);
+      process.exit(2);
+    }
+
     const readinessFailure = agyReadinessPreflight({
       binary,
       model: options.model ?? null,
     });
     if (readinessFailure) {
+      releaseProviderWorkloadLease(workloadLease);
+      workloadLease = null;
       if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
       persistAndPrintPreSpawnFailure(invocation, lifecycleEvents, readinessFailure.code, readinessFailure.error, {
         promptText: sidecarPrompt,
@@ -1331,6 +1598,8 @@ async function run(rest) {
         retryCount: 0,
       };
     }
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
     const cancelRequested = consumeCancelMarker(invocation.workspace_root, invocation.job_id);
     if (cancelRequested) {
       const reviewAuditManifest = buildAuditManifest({
@@ -1447,6 +1716,8 @@ async function run(rest) {
     // Guaranteed teardown: a source-bearing containment worktree must never leak
     // into os.tmpdir, no matter where the body threw. cleanup() is best-effort and
     // idempotent (a path an inner handler already removed just ENOENTs here).
+    releaseProviderWorkloadLease(workloadLease);
+    workloadLease = null;
     if (containment) { try { containment.cleanup(); } catch { /* best-effort */ } }
     // The confirmed escape class: a mid-run RELAY_GIT_BINARY topology change makes a
     // post-setup git call (consumeCancelMarker / buildAuditManifest / persistRecord)

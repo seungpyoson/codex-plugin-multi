@@ -1,10 +1,11 @@
 # Architecture Record
 
 This project is the Codex-side inverse of `openai/codex-plugin-cc`: Codex can
-delegate to Claude Code, Gemini CLI, Kimi Code CLI, Grok Web, and direct
-API-backed reviewers. The implementation intentionally differs from a simple upstream port
-in a few places because the review/rescue lifecycle has different failure modes
-when Codex is the caller.
+delegate to Claude Code, Kimi Code CLI, Google Antigravity CLI, Grok Web, and
+direct API-backed reviewers. The legacy Gemini CLI adapter remains hidden. The
+implementation intentionally differs from a simple upstream port in a few
+places because the review/rescue lifecycle has different failure modes when
+Codex is the caller.
 
 ## Core Improvement: Containment And Scope Are Separate
 

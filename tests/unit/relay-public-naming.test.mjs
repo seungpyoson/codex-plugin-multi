@@ -28,7 +28,6 @@ test("repo package and marketplace expose Relay public names", () => {
     userSelectablePlugins.map((plugin) => plugin.name),
     [
       "relay-claude",
-      "relay-gemini",
       "relay-kimi",
       "relay-agy",
       "relay-grok",
@@ -37,6 +36,10 @@ test("repo package and marketplace expose Relay public names", () => {
     ],
   );
   assert.equal(userSelectablePlugins.some((plugin) => plugin.name === "api-reviewers"), false);
+  assert.equal(
+    marketplace.plugins.find((plugin) => plugin.name === "relay-gemini")?.policy?.installation,
+    "NOT_AVAILABLE",
+  );
 });
 
 test("Codex installs shared direct API runtime by default", () => {
@@ -107,7 +110,6 @@ test("Claude relay marketplace exposes relay-for-claude suite over relay provide
   assert.deepEqual(
     publicPlugins.map((plugin) => plugin.name),
     [
-      "relay-gemini",
       "relay-grok",
       "relay-kimi",
       "relay-agy",
@@ -115,8 +117,9 @@ test("Claude relay marketplace exposes relay-for-claude suite over relay provide
       "relay-deepseek",
     ],
   );
-  assert.deepEqual(hiddenPlugins.map((plugin) => plugin.name), ["relay-api-reviewers"]);
-  assert.equal(hiddenPlugins[0].source, "./relay/relay-api-reviewers");
+  assert.deepEqual(hiddenPlugins.map((plugin) => plugin.name), ["relay-gemini", "relay-api-reviewers"]);
+  assert.equal(hiddenPlugins.find((plugin) => plugin.name === "relay-gemini").source, "./relay/relay-gemini");
+  assert.equal(hiddenPlugins.find((plugin) => plugin.name === "relay-api-reviewers").source, "./relay/relay-api-reviewers");
   assert.equal(publicPlugins.some((plugin) => plugin.name === "relay-claude"), false);
   for (const plugin of marketplace.plugins) {
     if (plugin.policy?.installation !== "HIDDEN") {

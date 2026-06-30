@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": { "const": 1 },
     "provider": {
-      "enum": ["claude", "gemini", "grok", "kimi", "deepseek", "glm", null]
+      "enum": ["claude", "gemini", "agy", "grok", "kimi", "deepseek", "glm", null]
     },
     "mode": { "$ref": "#/$defs/safeTextOrNull" },
     "reason": {
@@ -63,7 +63,7 @@
       "then": {
         "properties": {
           "provider": {
-            "enum": ["claude", "gemini", "grok", "kimi", "deepseek", "glm"]
+            "enum": ["claude", "gemini", "agy", "grok", "kimi", "deepseek", "glm"]
           }
         },
         "required": ["provider"]
@@ -242,10 +242,10 @@
       ],
       "properties": {
         "provider": {
-          "enum": ["claude", "gemini", "grok", "kimi", "deepseek", "glm", null]
+          "enum": ["claude", "gemini", "agy", "grok", "kimi", "deepseek", "glm", null]
         },
         "canonical_provider": {
-          "enum": ["claude", "gemini", "grok", "kimi", "deepseek", "glm", null]
+          "enum": ["claude", "gemini", "agy", "grok", "kimi", "deepseek", "glm", null]
         },
         "route_step": { "$ref": "#/$defs/safeTextOrNull" },
         "source_packet_budget_bytes": { "type": ["integer", "null"], "minimum": 0 },

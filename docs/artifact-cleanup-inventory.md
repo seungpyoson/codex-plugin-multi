@@ -4,7 +4,9 @@ Issue #61 requires cleanup to be rooted in an explicit artifact and ownership ma
 
 ## Companion Providers
 
-Applies to Claude, Gemini, and Kimi `review`, `adversarial-review`, `custom-review`, and `rescue`, in foreground, background, and continue flows.
+Applies to Claude, Gemini, Kimi, and AGY `review`, `adversarial-review`, and
+`custom-review` flows. Claude, Gemini, and Kimi also cover `rescue`,
+background, and continue flows where those modes are implemented.
 
 | Artifact | Root | Contents | Needed for | Safe deletion point | Owner |
 | --- | --- | --- | --- | --- | --- |

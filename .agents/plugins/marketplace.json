@@ -23,7 +23,7 @@
         "path": "./plugins/gemini"
       },
       "policy": {
-        "installation": "AVAILABLE",
+        "installation": "NOT_AVAILABLE",
         "authentication": "ON_USE"
       },
       "category": "Coding"

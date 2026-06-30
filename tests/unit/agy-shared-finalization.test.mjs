@@ -51,11 +51,15 @@ function writeAgyReviewMock(dir, name, { body, stderr = "mock stderr sidecar\n" 
 
 function runCompanion(args, { cwd, dataDir = mkdtempSync(path.join(tmpdir(), "agy-shared-data-")), env = {} } = {}) {
   assert.equal(existsSync(COMPANION), true, "AGY companion entrypoint must exist");
+  const home = path.join(dataDir, "home");
+  const antigravityHome = path.join(dataDir, "antigravity-home");
   const result = spawnSync(process.execPath, [COMPANION, ...args], {
     cwd,
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: home,
+      ANTIGRAVITY_HOME: antigravityHome,
       AGY_PLUGIN_DATA: dataDir,
       ...env,
     },

@@ -107,6 +107,8 @@ test("agy post-spawn git-policy escape: no source-bearing worktree leak + durabl
   assert.ok(realGit, "a real git binary must be resolvable for this test");
   const root = mkdtempSync(path.join(tmpdir(), "agy-escape-"));
   const dataDir = mkdtempSync(path.join(tmpdir(), "agy-escape-data-"));
+  const home = path.join(dataDir, "home");
+  const antigravityHome = path.join(dataDir, "antigravity-home");
   // Isolated TMPDIR so the companion's containment worktree lands here, not in the shared
   // os.tmpdir — makes leak detection precise and immune to other test files running in
   // parallel under `node --test`.
@@ -147,7 +149,15 @@ test("agy post-spawn git-policy escape: no source-bearing worktree leak + durabl
     ], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, TMPDIR: companionTmp, AGY_PLUGIN_DATA: dataDir, RELAY_GIT_BINARY: override, AGY_BINARY: mock },
+      env: {
+        ...process.env,
+        HOME: home,
+        ANTIGRAVITY_HOME: antigravityHome,
+        TMPDIR: companionTmp,
+        AGY_PLUGIN_DATA: dataDir,
+        RELAY_GIT_BINARY: override,
+        AGY_BINARY: mock,
+      },
     });
 
     // The source genuinely reached the target (this is a POST-spawn failure).
@@ -187,7 +197,14 @@ test("agy post-spawn git-policy escape: no source-bearing worktree leak + durabl
     //     resolveWorkspaceRoot/reconcile can resolve the inner ws/.git and heal state.json
     //     from the git-free terminal meta). Pre-fix this read returned queued / may_be_sent.
     const statusRun = spawnSync(process.execPath, [COMPANION, "status", "--cwd", cwd, "--job", jobId], {
-      cwd, encoding: "utf8", env: { ...process.env, AGY_PLUGIN_DATA: dataDir },
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: home,
+        ANTIGRAVITY_HOME: antigravityHome,
+        AGY_PLUGIN_DATA: dataDir,
+      },
     });
     assert.equal(statusRun.status, 0, statusRun.stderr || statusRun.stdout);
     const statusRecord = JSON.parse(statusRun.stdout);
@@ -199,7 +216,14 @@ test("agy post-spawn git-policy escape: no source-bearing worktree leak + durabl
     );
 
     const resultRun = spawnSync(process.execPath, [COMPANION, "result", "--cwd", cwd, "--job", jobId], {
-      cwd, encoding: "utf8", env: { ...process.env, AGY_PLUGIN_DATA: dataDir },
+      cwd,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: home,
+        ANTIGRAVITY_HOME: antigravityHome,
+        AGY_PLUGIN_DATA: dataDir,
+      },
     });
     assert.equal(resultRun.status, 0, resultRun.stderr || resultRun.stdout);
     const resultRecord = JSON.parse(resultRun.stdout);

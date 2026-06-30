@@ -383,11 +383,12 @@ test("buildRelaySuite: emits the full Claude relay provider suite without relay-
     const publicPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation !== "HIDDEN");
     const hiddenPlugins = marketplace.plugins.filter((plugin) => plugin.policy?.installation === "HIDDEN");
     assert.equal(marketplace.name, "relay-for-claude");
-    assert.deepEqual(publicPlugins.map((plugin) => plugin.name).sort(), pluginNames);
-    assert.deepEqual(hiddenPlugins.map((plugin) => plugin.name), ["relay-api-reviewers"]);
-    assert.equal(hiddenPlugins[0].source, "./relay/relay-api-reviewers");
+    assert.deepEqual(publicPlugins.map((plugin) => plugin.name).sort(), pluginNames.filter((name) => name !== "relay-gemini"));
+    assert.deepEqual(hiddenPlugins.map((plugin) => plugin.name), ["relay-gemini", "relay-api-reviewers"]);
+    assert.equal(hiddenPlugins.find((plugin) => plugin.name === "relay-gemini").source, "./relay/relay-gemini");
+    assert.equal(hiddenPlugins.find((plugin) => plugin.name === "relay-api-reviewers").source, "./relay/relay-api-reviewers");
     assert.equal(
-      existsSync(path.resolve(tmpRoot, hiddenPlugins[0].source, ".claude-plugin", "plugin.json")),
+      existsSync(path.resolve(tmpRoot, hiddenPlugins.find((plugin) => plugin.name === "relay-api-reviewers").source, ".claude-plugin", "plugin.json")),
       true,
     );
     assert.equal(existsSync(path.join(outRoot, "relay-api-reviewers")), true);

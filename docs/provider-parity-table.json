@@ -1,11 +1,12 @@
 {
   "schema_version": 1,
   "feature": "provider-architecture-parity",
-  "generated_at": "2026-05-24",
+  "generated_at": "2026-06-30",
   "providers": [
     "claude",
     "gemini",
     "kimi",
+    "agy",
     "grok",
     "deepseek",
     "glm"
@@ -20,6 +21,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -43,11 +45,12 @@
       "name": "packet budgets",
       "module": "scripts/lib/review-prompt.mjs",
       "interface": "buildReviewPrompt, buildReviewAuditManifest, evaluateSourcePacketPolicy",
-      "implementation": "Shared source packet policy records source_packet_budget_bytes, selected_source_bytes, source_packet_within_budget, source_packet_action, source_packet_override_approved, source_packet_override_source, resend_confirmation_required, review_surface_changed, and source_content_transmission. It blocks over-budget source-bearing packets before source send unless the operator explicitly passes the shared large-packet override, blocks automatic resend after source-sent failures unless explicitly confirmed or narrowed, uses shared git diff packets for branch-diff review across subscription and direct API paths, and permits same-session no-source repair for substantive invalid-verdict prose without losing the original source attempt across failed no-source repair chains.",
+      "implementation": "Shared source packet policy records source_packet_budget_bytes, selected_source_bytes, source_packet_within_budget, source_packet_action, source_packet_override_approved, source_packet_override_source, resend_confirmation_required, review_surface_changed, and source_content_transmission. It blocks over-budget source-bearing packets before source send unless the operator explicitly passes the shared large-packet override, blocks automatic resend after source-sent failures unless explicitly confirmed or narrowed, uses shared git diff packets for branch-diff review across subscription and direct API paths, and permits same-session no-source repair for substantive invalid-verdict prose without losing the original source attempt across failed no-source repair chains. AGY additionally enforces a hard rendered --print argv transport cap before launch; the large-packet override cannot bypass platform argv limits.",
       "adapters": [
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -79,6 +82,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -106,6 +110,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -130,6 +135,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -155,6 +161,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -180,6 +187,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -205,6 +213,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -230,6 +239,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -260,6 +270,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -286,6 +297,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -308,6 +320,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -330,6 +343,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -354,6 +368,7 @@
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -372,11 +387,12 @@
       "name": "concurrency budget",
       "module": "scripts/lib/review-workload.mjs, scripts/lib/provider-route-policy.mjs, scripts/lib/process-identity.mjs",
       "interface": "CONCURRENCY_FACTS, resolveConcurrencyAdmission, acquireProviderWorkloadLease",
-      "implementation": "Bounded capability-driven counting semaphore for source-bearing review workloads. Each source-bearing route declares a capability fact {category, limit[, limit_env]} in CONCURRENCY_FACTS: shared_state routes (claude/gemini/kimi/grok subscription and grok-web subscription_web) key on a resolved shared-state directory identity (dev:inode of the realpath'd home, e.g. ~/.kimi, ~/.gemini, GROK2API_HOME) and are pinned to limit 1; stateless routes (deepseek/glm direct_api) key on provider.route and admit limit 4 with a per-route env cap that can only lower (Math.min), never raise; custom direct_api stays single-flight at limit 1 until a specific endpoint is proven. resolveConcurrencyAdmission validates fail-closed (shared_state limit>1 throws, unresolved identity throws, malformed category throws); acquireProviderWorkloadLease enforces the bound across processes via per-key slot files with {pid,starttime,argv0} liveness and stale-boot-id reclaim. Limits are mirrored declaratively in this table's concurrency_budget section and audited against CONCURRENCY_FACTS.",
+      "implementation": "Bounded capability-driven counting semaphore for source-bearing review workloads. Each source-bearing route declares a capability fact {category, limit[, limit_env]} in CONCURRENCY_FACTS: shared_state routes (claude/gemini/kimi/agy/grok subscription and grok-web subscription_web) key on a resolved shared-state directory identity (dev:inode of the realpath'd home, e.g. ~/.kimi, ~/.gemini, GROK2API_HOME) and are pinned to limit 1; stateless routes (deepseek/glm direct_api) key on provider.route and admit limit 4 with a per-route env cap that can only lower (Math.min), never raise; custom direct_api stays single-flight at limit 1 until a specific endpoint is proven. resolveConcurrencyAdmission validates fail-closed (shared_state limit>1 throws, unresolved identity throws, malformed category throws); acquireProviderWorkloadLease enforces the bound across processes via per-key slot files with {pid,starttime,argv0} liveness and stale-boot-id reclaim. Limits are mirrored declaratively in this table's concurrency_budget section and audited against CONCURRENCY_FACTS.",
       "adapters": [
         "claude",
         "gemini",
         "kimi",
+        "agy",
         "grok",
         "deepseek",
         "glm"
@@ -399,14 +415,69 @@
     }
   ],
   "concurrency_budget": [
-    { "provider": "claude", "route": "subscription", "category": "shared_state", "limit": 1, "limit_env": null },
-    { "provider": "gemini", "route": "subscription", "category": "shared_state", "limit": 1, "limit_env": null },
-    { "provider": "kimi", "route": "subscription", "category": "shared_state", "limit": 1, "limit_env": null },
-    { "provider": "grok", "route": "subscription", "category": "shared_state", "limit": 1, "limit_env": null },
-    { "provider": "grok-web", "route": "subscription_web", "category": "shared_state", "limit": 1, "limit_env": null },
-    { "provider": "deepseek", "route": "direct_api", "category": "stateless", "limit": 4, "limit_env": "RELAY_DEEPSEEK_CONCURRENCY_LIMIT" },
-    { "provider": "glm", "route": "direct_api", "category": "stateless", "limit": 4, "limit_env": "RELAY_GLM_CONCURRENCY_LIMIT" },
-    { "provider": "custom", "route": "direct_api", "category": "stateless", "limit": 1, "limit_env": "RELAY_CUSTOM_DIRECT_API_CONCURRENCY_LIMIT" }
+    {
+      "provider": "claude",
+      "route": "subscription",
+      "category": "shared_state",
+      "limit": 1,
+      "limit_env": null
+    },
+    {
+      "provider": "gemini",
+      "route": "subscription",
+      "category": "shared_state",
+      "limit": 1,
+      "limit_env": null
+    },
+    {
+      "provider": "kimi",
+      "route": "subscription",
+      "category": "shared_state",
+      "limit": 1,
+      "limit_env": null
+    },
+    {
+      "provider": "agy",
+      "route": "subscription",
+      "category": "shared_state",
+      "limit": 1,
+      "limit_env": null
+    },
+    {
+      "provider": "grok",
+      "route": "subscription",
+      "category": "shared_state",
+      "limit": 1,
+      "limit_env": null
+    },
+    {
+      "provider": "grok-web",
+      "route": "subscription_web",
+      "category": "shared_state",
+      "limit": 1,
+      "limit_env": null
+    },
+    {
+      "provider": "deepseek",
+      "route": "direct_api",
+      "category": "stateless",
+      "limit": 4,
+      "limit_env": "RELAY_DEEPSEEK_CONCURRENCY_LIMIT"
+    },
+    {
+      "provider": "glm",
+      "route": "direct_api",
+      "category": "stateless",
+      "limit": 4,
+      "limit_env": "RELAY_GLM_CONCURRENCY_LIMIT"
+    },
+    {
+      "provider": "custom",
+      "route": "direct_api",
+      "category": "stateless",
+      "limit": 1,
+      "limit_env": "RELAY_CUSTOM_DIRECT_API_CONCURRENCY_LIMIT"
+    }
   ],
   "semantic_drift_policy": {
     "standard": "Provider parity does not require fake parity or fake sameness. Every provider difference must have a clear reason: either an Adapter capability fact consumed by shared policy fields, a documented policy exception with evidence and tests, or an explicitly tracked noncompliance/research gap. Unclassified provider-specific semantics are drift.",
@@ -575,7 +646,7 @@
       "difference_type": "adapter_capability_fact",
       "current_behavior": "Kimi subscription review declares a 32768-byte source-packet capacity and disables no-source repair after source-bearing step-limit failures. The shared policy still evaluates the same source_packet fields for every provider; Kimi's route capability makes over-capacity packets fail before launch with source_content_transmission:not_sent, and Kimi step-limit continuations fail before relaunch unless the retry sends an explicitly narrowed packet or has explicit resend confirmation.",
       "capability_fact": "Kimi Code CLI 1.43 did not produce a verdict for a compact 63197-byte source-bearing review at --max-steps-per-turn 128, and a raw no-tool continuation of that session returned NOT_REVIEWED because prior selected source was not retained in the current context. Kimi therefore cannot currently prove reliable same-session no-source source retention for review approvals.",
-      "shared_policy_boundary": "Kimi capacity is represented only as Adapter capability data consumed by the shared source-packet policy. The policy shape, resend gate, narrow-packet path, source_content_transmission audit fields, and pre-send enforcement remain shared across Claude, Gemini, Kimi, Grok, DeepSeek, and GLM.",
+      "shared_policy_boundary": "Kimi capacity is represented only as Adapter capability data consumed by the shared source-packet policy. The policy shape, resend gate, narrow-packet path, source_content_transmission audit fields, and pre-send enforcement remain shared across Claude, Gemini, Kimi, AGY, Grok, DeepSeek, and GLM.",
       "clear_reason": "This is not fake parity: Kimi has a measured lower source-bearing review capacity and unreliable no-source session repair, so treating it like providers that can retain source would create false not_sent audit claims and repeated step-limit burns.",
       "evidence": [
         "https://github.com/relay-org/relay/issues/177",
@@ -690,7 +761,7 @@
       "file": "tests/unit/provider-route-policy.test.mjs",
       "purpose": "Fail when the shared Provider Policy Interface stops covering one of the required cross-provider policy domains.",
       "red_condition": "buildProviderPolicyContract omits a provider, route step, or policy domain, or the parity table's guardrail inventory no longer matches the generated contract.",
-      "green_condition": "The generated Provider Policy Interface and parity table both enumerate the same provider-neutral policy domains for all six providers.",
+      "green_condition": "The generated Provider Policy Interface and parity table both enumerate the same provider-neutral policy domains for all seven providers.",
       "verification_command": "node --test tests/unit/provider-route-policy.test.mjs tests/unit/docs-contracts.test.mjs",
       "required_fields": [
         "route",
@@ -766,12 +837,13 @@
       "file": "tests/unit/plugin-copies-in-sync.test.mjs",
       "purpose": "Fail when provider-neutral policy usage is proven only by a combined source scan instead of by every provider runtime.",
       "red_condition": "A provider runtime is missing shared route selection, audit manifest construction, or source-packet pre-send enforcement, or the provider entrypoint matrix is not inventoried in the parity table.",
-      "green_condition": "Claude, Gemini, Kimi, Grok, DeepSeek, and GLM entrypoints are explicitly inventoried and each runtime is wired to shared route, audit, and source-packet policy; intentional transport differences remain classified Adapter capability facts.",
+      "green_condition": "Claude, Gemini, Kimi, AGY, Grok, DeepSeek, and GLM entrypoints are explicitly inventoried and each runtime is wired to shared route, audit, and source-packet policy; intentional transport differences remain classified Adapter capability facts.",
       "verification_command": "node --test tests/unit/plugin-copies-in-sync.test.mjs",
       "required_entrypoints": [
         "claude:plugins/claude/scripts/claude-companion.mjs",
         "gemini:plugins/gemini/scripts/gemini-companion.mjs",
         "kimi:plugins/kimi/scripts/kimi-companion.mjs",
+        "agy:plugins/agy/scripts/agy-companion.mjs",
         "grok:plugins/grok/scripts/grok-web-reviewer.mjs",
         "deepseek:plugins/api-reviewers/scripts/api-reviewer.mjs",
         "glm:plugins/api-reviewers/scripts/api-reviewer.mjs"
@@ -782,8 +854,8 @@
       "file": "tests/unit/plugin-copies-in-sync.test.mjs",
       "purpose": "Fail when a source-bearing launch path records source packet policy without enforcing it before provider launch.",
       "red_condition": "A provider runtime can build a review audit manifest but does not inspect source_packet_policy.source_send_allowed before launching the provider transport.",
-      "green_condition": "Claude, Gemini, Kimi, Grok, DeepSeek, and GLM launch paths all stop over-budget source packets before source send through the shared source packet policy.",
-      "verification_command": "node --test tests/unit/plugin-copies-in-sync.test.mjs tests/smoke/claude-companion.smoke.test.mjs tests/smoke/gemini-companion.smoke.test.mjs tests/smoke/kimi-companion.smoke.test.mjs tests/smoke/api-reviewers.smoke.test.mjs tests/smoke/grok-web.smoke.test.mjs",
+      "green_condition": "Claude, Gemini, Kimi, AGY, Grok, DeepSeek, and GLM launch paths all stop over-budget source packets before source send through the shared source packet policy.",
+      "verification_command": "node --test tests/unit/plugin-copies-in-sync.test.mjs tests/smoke/claude-companion.smoke.test.mjs tests/smoke/gemini-companion.smoke.test.mjs tests/smoke/kimi-companion.smoke.test.mjs tests/smoke/agy-companion.smoke.test.mjs tests/smoke/api-reviewers.smoke.test.mjs tests/smoke/grok-web.smoke.test.mjs",
       "required_fields": [
         "source_packet_policy",
         "source_send_allowed",
